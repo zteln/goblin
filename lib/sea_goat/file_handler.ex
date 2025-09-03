@@ -1,4 +1,11 @@
 defmodule SeaGoat.FileHandler do
+  def open!(path, opts \\ []) do
+    case open(path, opts) do
+      {:ok, io, offset} -> {io, offset}
+      _ -> raise "failed to open file #{inspect(path)}."
+    end
+  end
+
   def open(path, opts \\ []) do
     open_opts = [:binary, :read, :raw | List.wrap(if opts[:write?], do: :append)]
     position = if opts[:start?], do: 0, else: :eof
@@ -16,7 +23,16 @@ defmodule SeaGoat.FileHandler do
   end
 
   def read(io, offset, size) do
-    :file.pread(io, offset, size)
+    case :file.pread(io, offset, size) do
+      {:ok, data} ->
+        {:ok, data}
+
+      :eof ->
+        {:error, :eof}
+
+      {:error, _reason} = e ->
+        e
+    end
   end
 
   def rename(from, to) do
@@ -32,8 +48,10 @@ defmodule SeaGoat.FileHandler do
   end
 
   def rm(path) do
-    :file.delete(path)
+    case :file.delete(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      e -> e
+    end
   end
-
-  def path(dir, name), do: Path.join(dir, "#{name}.seagoat")
 end

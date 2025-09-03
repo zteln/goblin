@@ -21,3 +21,5 @@ sea_goat-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+.tprof.exs

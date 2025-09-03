@@ -1,21 +1,7 @@
-defmodule SeaGoat.Block do
-  @moduledoc """
-  Responsible for encoding and decoding data and meta information in block files.
-  A block file contains two parts: data and meta, joined together by a 32-bit uint separator token.
-
-
-  BLOCK_FILE = DATA + SEP + META
-  DATA = [KV_HEADER + KV]
-  KV_HEADER = 32-bit uint
-  KV = {key, value}
-  SEP = <<0xFFFFFFFF::unsigned-integer-32>>
-  META = RANGE + INDEX + BLOOM_FILTER + META_FOOTER
-  RANGE = {:range, {smallest, largest}}
-  INDEX = {:index, %{}}
-  BLOOM_FILTER = {:bloom_filter, %{}}
-  META_FOOTER = level 8-bit uint + range_size 32-bit uint + index_size 32-bit uint + bloom_filter_size 32-bit uint
-  """
+defmodule SeaGoat.Blocks.Block do
+  @identifier 0xFABCDEF0
   @block_separator 0xFFFFFFFF
+  @header_size byte_size(<<@identifier::unsigned-integer-32>>)
   @kv_header_size byte_size(<<0::unsigned-integer-32>>)
   @footer_size byte_size(<<
                  0::unsigned-integer-8,
@@ -23,6 +9,10 @@ defmodule SeaGoat.Block do
                  0::unsigned-integer-32,
                  0::unsigned-integer-32
                >>)
+
+  def make do
+    <<@identifier::unsigned-integer-32>>
+  end
 
   def offset_calc(offset, footer \\ nil, part)
 
@@ -37,18 +27,25 @@ defmodule SeaGoat.Block do
   def offset_calc(offset, {_, _, _, bloom_filter_size} = footer, :bloom_filter),
     do: offset_calc(offset, footer, :footer) - bloom_filter_size
 
-  def join(data, meta) do
-    <<data::binary, @block_separator::unsigned-integer-32, meta::binary>>
-  end
+  def footer_part({level, _, _, _}, :level), do: level
+  def footer_part({_, range_size, _, _}, :range), do: range_size
+  def footer_part({_, _, index_size, _}, :index), do: index_size
+  def footer_part({_, _, _, bloom_filter_size}, :bloom_filter), do: bloom_filter_size
 
-  def encode_block(key, value) do
-    bin = :erlang.term_to_binary({key, value})
-    size = byte_size(bin)
-    <<size::unsigned-integer-32, bin::binary>>
-  end
+  def size(:header), do: @header_size
+  def size(:footer), do: @footer_size
+  def size(:kv_header), do: @kv_header_size
 
-  def encode_meta(level, smallest, largest, index, bloom_filter) do
-    range = :erlang.term_to_binary({:range, {smallest, largest}})
+  def is_block(<<@identifier::unsigned-integer-32>>), do: true
+  def is_block(_), do: false
+
+  def encode(:meta, opts) do
+    level = opts[:level]
+    range = opts[:range]
+    index = opts[:index]
+    bloom_filter = opts[:bloom_filter]
+
+    range = :erlang.term_to_binary({:range, range})
     index = :erlang.term_to_binary({:index, index})
     bloom_filter = :erlang.term_to_binary({:bloom_filter, bloom_filter})
 
@@ -68,7 +65,17 @@ defmodule SeaGoat.Block do
     >>
   end
 
-  def decode_metafooter(<<
+  def encode(:data, opts) do
+    key = opts[:key]
+    value = opts[:value]
+
+    bin = :erlang.term_to_binary({key, value})
+    size = byte_size(bin)
+    <<size::unsigned-integer-32, bin::binary>>
+  end
+
+  @spec decode(type :: atom(), encoded :: binary()) :: {:ok, term()} | {:error, :invalid_format}
+  def decode(:footer, <<
         level::unsigned-integer-8,
         range_size::unsigned-integer-32,
         index_size::unsigned-integer-32,
@@ -77,36 +84,29 @@ defmodule SeaGoat.Block do
     {:ok, {level, range_size, index_size, bloom_filter_size}}
   end
 
-  def decode_metafooter(_), do: {:error, :invalid_format}
-
-  def decode_kv_header(<<@block_separator::unsigned-integer-32>>) do
+  def decode(:kv_header, <<@block_separator::unsigned-integer-32>>) do
     {:ok, :end_of_data}
   end
 
-  def decode_kv_header(<<size::unsigned-integer-32>>) do
+  def decode(:kv_header, <<size::unsigned-integer-32>>) do
     {:ok, size}
   end
 
-  def decode_kv_header(_block), do: {:error, :invalid_format}
-
-  def decode_block(<<_size::unsigned-integer-32, bin::binary>>) do
+  def decode(:data, <<_size::unsigned-integer-32, bin::binary>>) do
     case :erlang.binary_to_term(bin) do
-      {_key, _value} = decoded -> {:ok, decoded}
-      _ -> {:error, :unable_to_decode}
+      {_key, _value} = data -> {:ok, data}
+      _ -> {:error, :invalid_format}
     end
   end
 
-  def decode_block(_block), do: {:error, :invalid_format}
-
-  def metafooter_size, do: @footer_size
-  def kv_header_size, do: @kv_header_size
-
-  def decode_metadata(part) do
-    case :erlang.binary_to_term(part) do
+  def decode(:meta_part, meta_part) do
+    case :erlang.binary_to_term(meta_part) do
       {:range, range} -> {:ok, range}
       {:index, index} -> {:ok, index}
       {:bloom_filter, bloom_filter} -> {:ok, bloom_filter}
-      _ -> {:error, :unable_to_decode}
+      _ -> {:error, :invalid_format}
     end
   end
+
+  def decode(_, _), do: {:error, :invalid_format}
 end

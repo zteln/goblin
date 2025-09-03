@@ -5,130 +5,128 @@ defmodule SeaGoat.WAL do
   Default sync interval: 200.
   """
   use GenServer
+  alias SeaGoat.LockManager
 
   @default_sync_interval 200
   @wal_name :sea_goat_wal
   @tmp_wal_name :tmp_sea_goat_wal
-  @wal_file "seagoat.wal"
-  @tmp_wal_file ".tmp.wal"
+  @dump_wal_name :dump_sea_goat_wal
 
   defstruct [
-    :file,
     :log,
     :sync_interval,
     :last_sync,
+    :current_file,
     batch: [],
-    archived_logs: [],
-    waiting_for_sync?: false,
-    seq: 0
+    waiting_for_sync?: false
   ]
 
-  @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, Keyword.take(opts, [:dir, :sync_interval]),
-      name: opts[:name]
-    )
+    GenServer.start_link(__MODULE__, Keyword.take(opts, [:sync_interval]), name: opts[:name])
   end
 
-  @spec append(wal :: GenServer.server(), term :: term()) :: :ok
+  def start_log(wal, file) do
+    GenServer.call(wal, {:start_log, file})
+  end
+
+  def sync(wal) do
+    GenServer.call(wal, :sync_now)
+  end
+
   def append(wal, term) do
     GenServer.call(wal, {:append, term})
   end
 
-  @spec rotate(wal :: GenServer.server()) :: :ok
-  def rotate(wal) do
-    GenServer.call(wal, :rotate)
+  def rotate(wal, path, prepend, append) do
+    GenServer.call(wal, {:rotate, path, prepend, append})
   end
 
-  @spec drop_archived(wal :: GenServer.server(), ref :: reference()) :: :ok
-  def drop_archived(wal, ref) do
-    GenServer.cast(wal, {:drop_archived, ref})
+  def replay(wal, file) do
+    GenServer.call(wal, {:replay, file})
   end
 
-  @spec replay(wal :: GenServer.server()) :: [term()]
-  def replay(wal) do
-    GenServer.call(wal, :replay)
+  def dump(wal, path, dump) do
+    GenServer.call(wal, {:dump, path, dump})
+  end
+
+  def current_file(wal) do
+    GenServer.call(wal, :current_file)
   end
 
   @impl GenServer
   def init(opts) do
-    file = Path.join(opts[:dir], @wal_file)
-
-    case open_log(file, @wal_name) do
-      {:ok, log} ->
-        {:ok,
-         %__MODULE__{
-           log: log,
-           file: file,
-           sync_interval: opts[:sync_interval] || @default_sync_interval,
-           archived_logs: archived_logs(opts[:dir]),
-           last_sync: now()
-         }}
-
-      {:error, reason} ->
-        {:stop, reason}
-    end
+    {:ok,
+     %__MODULE__{
+       sync_interval: opts[:sync_interval] || @default_sync_interval,
+       last_sync: now()
+     }}
   end
 
   @impl GenServer
-  def handle_call({:append, term}, _from, state) do
-    {:reply, :ok,
-     %{
-       state
-       | batch: [{state.seq, term} | state.batch],
-         seq: state.seq + 1
-     }, {:continue, :sync}}
-  end
+  def handle_call({:start_log, file}, _from, state) do
+    case open_log(file, @wal_name) do
+      {:ok, log} ->
+        state = %{state | log: log, current_file: file}
+        {:reply, :ok, state}
 
-  def handle_call(:rotate, _from, state) do
-    dir = Path.dirname(state.file)
-    tmp_file = Path.join(dir, @tmp_wal_file <> ".#{length(state.archived_logs)}")
-
-    with :ok <- append_and_sync_log(state.log, Enum.reverse(state.batch)),
-         :ok <- close_log(state.log),
-         :ok <- rename_log(state.file, tmp_file),
-         {:ok, log} <- open_log(state.file, @wal_name) do
-      ref = make_ref()
-
-      {:reply, ref,
-       %{
-         state
-         | log: log,
-           seq: 0,
-           batch: [],
-           archived_logs: [{tmp_file, ref} | state.archived_logs],
-           last_sync: now()
-       }}
-    else
-      {:error, reason} ->
-        {:stop, reason}
+      {:error, _reason} = e ->
+        {:reply, e, state}
     end
   end
 
-  def handle_call(:replay, _from, state) do
+  def handle_call(:sync_now, _from, state) do
+    append_and_sync_log(state.log, Enum.reverse(state.batch))
+    {:reply, :ok, %{state | last_sync: now(), batch: []}}
+  end
+
+  def handle_call({:append, term}, _from, state) do
+    {:reply, :ok, %{state | batch: [term | state.batch]}, {:continue, :sync}}
+  end
+
+  def handle_call({:rotate, new_file, prepend, append}, _from, state) do
+    logs = [prepend | Enum.reverse([append | state.batch])]
+
+    with :ok <- append_and_sync_log(state.log, logs),
+         :ok <- close_log(state.log),
+         {:ok, log} <- open_log(new_file, @wal_name) do
+      {:reply, :ok,
+       %{
+         state
+         | log: log,
+           batch: [],
+           current_file: new_file,
+           last_sync: now()
+       }}
+    else
+      {:error, _reason} = e ->
+        {:stop, e, state}
+    end
+  end
+
+  def handle_call({:dump, path, dump}, _from, state) do
     reply =
-      []
-      |> collect_archived_logs(state.archived_logs)
-      |> collect_current_logs(state.log)
-      |> Enum.reverse()
+      with {:ok, log} <- open_log(path, @dump_wal_name),
+           :ok <- append_and_sync_log(log, dump) do
+        close_log(log)
+      end
 
     {:reply, reply, state}
   end
 
-  @impl GenServer
-  def handle_cast({:drop_archived, ref}, state) do
-    archived_logs =
-      Enum.reject(state.archived_logs, fn
-        {archived_log, ^ref} ->
-          rm_log(archived_log)
-          true
+  def handle_call({:replay, file}, _from, state) do
+    case open_log(file, @tmp_wal_name, mode: :read_only) do
+      {:ok, log} ->
+        logs = collect_logs(log)
+        close_log(log)
+        {:reply, {:ok, logs}, state}
 
-        _ ->
-          false
-      end)
+      {:error, _reason} ->
+        {:reply, {:error, :not_a_log}, state}
+    end
+  end
 
-    {:noreply, %{state | archived_logs: archived_logs}}
-    # {:reply, :ok, %{state | archived_logs: archived_logs}}
+  def handle_call(:current_file, _from, state) do
+    {:reply, state.current_file, state}
   end
 
   @impl GenServer
@@ -149,41 +147,10 @@ defmodule SeaGoat.WAL do
     {:noreply, %{state | waiting_for_sync?: false}, {:continue, :sync}}
   end
 
-  defp collect_archived_logs(acc, []), do: acc
+  defp open_log(file, name, opts \\ []) do
+    opts = [name: name, file: ~c"#{file}"] |> Keyword.merge(opts)
 
-  defp collect_archived_logs(acc, [{archived_log, ref} | archived_logs]) do
-    {:ok, log} = open_log(archived_log, @tmp_wal_name)
-
-    chunk =
-      log
-      |> collect_logged()
-      |> Enum.map(&elem(&1, 1))
-
-    close_log(log)
-    collect_archived_logs([{chunk, ref} | acc], archived_logs)
-  end
-
-  defp collect_current_logs(acc, log) do
-    chunk =
-      log
-      |> collect_logged()
-      |> Enum.map(&elem(&1, 1))
-
-    [{chunk, make_ref()} | acc]
-  end
-
-  defp collect_logged(log, acc \\ [], continuation \\ :start) do
-    case :disk_log.chunk(log, continuation) do
-      :eof ->
-        acc
-
-      {continuation, chunk} ->
-        collect_logged(log, acc ++ chunk, continuation)
-    end
-  end
-
-  defp open_log(file, name) do
-    case :disk_log.open(name: name, file: ~c"#{file}") do
+    case :disk_log.open(opts) do
       {:ok, log} -> {:ok, log}
       {:repaired, log, _recovered, _bad_bytes} -> {:ok, log}
       {:error, _reason} = e -> e
@@ -197,10 +164,6 @@ defmodule SeaGoat.WAL do
 
   defp close_log(log), do: :disk_log.close(log)
 
-  defp rename_log(from, to), do: File.rename(from, to)
-
-  defp rm_log(log), do: File.rm(log)
-
   defp send_sync(state) do
     if state.waiting_for_sync? do
       state
@@ -210,13 +173,13 @@ defmodule SeaGoat.WAL do
     end
   end
 
-  defp archived_logs(dir) do
-    with {:ok, files} <- File.ls(dir) do
-      files
-      |> Enum.filter(&String.starts_with?(&1, @tmp_wal_file))
-      |> Enum.map(fn "#{@tmp_wal_file}." <> n = file -> {String.to_integer(n), file} end)
-      |> List.keysort(0)
-      |> Enum.reduce([], fn {_, file}, acc -> [{Path.join(dir, file), make_ref()} | acc] end)
+  defp collect_logs(log, acc \\ [], continuation \\ :start) do
+    case :disk_log.chunk(log, continuation) do
+      :eof ->
+        acc
+
+      {continuation, chunk} ->
+        collect_logs(log, acc ++ chunk, continuation)
     end
   end
 

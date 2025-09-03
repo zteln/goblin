@@ -1,28 +1,27 @@
 defmodule SeaGoat.LockManager do
   use GenServer
+  alias __MODULE__.Lock
 
-  defstruct shared_locks: %{},
-            exclusive_locks: %{},
-            in_waiting: %{}
+  @public :public
+  @private :private
+  @lock_types [@public, @private]
+
+  defstruct locks: %{},
+            waiting: []
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: opts[:name])
   end
 
-  def acquire_shared_lock(server, resource) do
-    GenServer.call(server, {:shared, resource, self()})
+  def lock(server, resources, type, timeout \\ 5000) when type in @lock_types do
+    timeout = if type == @private, do: :infinity, else: timeout
+    GenServer.call(server, {:lock, type, resources, self()}, timeout)
   end
 
-  def acquire_exclusive_lock(server, resource) do
-    GenServer.call(server, {:exclusive, resource, self()}, :infinity)
-  end
+  def lock(_, _, _, _), do: {:error, :invalid_lock_type}
 
-  def release_lock(server, resource) do
-    GenServer.call(server, {:release, resource, self()})
-  end
-
-  def lock_status(server, resource) do
-    GenServer.call(server, {:status, resource})
+  def unlock(server, resource) do
+    GenServer.call(server, {:unlock, resource, self()})
   end
 
   @impl GenServer
@@ -31,115 +30,111 @@ defmodule SeaGoat.LockManager do
   end
 
   @impl GenServer
-  def handle_call({:shared, resource, client}, _from, state) do
-    cond do
-      Map.has_key?(state.exclusive_locks, resource) ->
-        {:reply, {:error, :not_shareable}, state}
+  def handle_call({:lock, @public, resources, pid}, _from, state) do
+    ref = monitor(pid)
 
-      true ->
-        ref = monitor_client(client)
-
-        shared_locks =
-          Map.update(state.shared_locks, resource, %{client => ref}, &Map.put(&1, client, ref))
-
-        state = %{state | shared_locks: shared_locks}
+    case add_locks(resources, pid, ref, @public, state.locks) do
+      {:ok, locks} ->
+        state = %{state | locks: locks}
         {:reply, :ok, state}
+
+      {:error, _reason} = e ->
+        demonitor(ref)
+        {:reply, e, state}
     end
   end
 
-  def handle_call({:exclusive, resource, client}, from, state) do
-    if Map.has_key?(state.shared_locks, resource) or Map.has_key?(state.exclusive_locks, resource) do
-      in_waiting =
-        Map.update(
-          state.in_waiting,
-          resource,
-          :queue.from_list([{client, from}]),
-          &:queue.in({client, from}, &1)
-        )
+  def handle_call({:lock, @private, resources, pid}, from, state) do
+    ref = monitor(pid)
 
-      {:noreply, %{state | in_waiting: in_waiting}}
-    else
-      ref = monitor_client(client)
-      exclusive_locks = Map.put(state.exclusive_locks, resource, {client, ref})
-      state = %{state | exclusive_locks: exclusive_locks}
-      {:reply, :ok, state}
+    case add_locks(resources, pid, ref, @private, state.locks) do
+      {:ok, locks} ->
+        state = %{state | locks: locks}
+        {:reply, :ok, state}
+
+      {:error, _reason} ->
+        waiting = [{pid, ref, resources, from} | state.waiting]
+        state = %{state | waiting: waiting}
+        {:noreply, state}
     end
   end
 
-  def handle_call({:release, resource, client}, _from, state) do
-    state =
-      cond do
-        Map.has_key?(state.shared_locks, resource) ->
-          resource_locks =
-            state.shared_locks
-            |> Map.get(resource, %{})
-            |> Enum.filter(fn
-              {^client, ref} ->
-                demonitor_client(ref)
-                false
+  def handle_call({:unlock, resource, pid}, _from, state) do
+    {ref, lock} =
+      state.locks
+      |> Map.get(resource)
+      |> Lock.pop(pid)
 
-              _ ->
-                true
-            end)
-            |> Enum.into(%{})
+    if ref, do: demonitor(ref)
 
-          if map_size(resource_locks) == 0 do
-            shared_locks = Map.delete(state.shared_locks, resource)
-
-            %{state | shared_locks: shared_locks}
-            |> release_to_waiting_client(resource)
-          else
-            shared_locks = Map.put(state.shared_locks, resource, resource_locks)
-            %{state | shared_locks: shared_locks}
-          end
-
-        Map.has_key?(state.exclusive_locks, resource) ->
-          {^client, ref} = Map.get(state.exclusive_locks, resource)
-          demonitor_client(ref)
-          exclusive_locks = Map.delete(state.exclusive_locks, resource)
-
-          %{state | exclusive_locks: exclusive_locks}
-          |> release_to_waiting_client(resource)
-
-        true ->
-          state
+    locks =
+      if lock do
+        Map.put(state.locks, resource, lock)
+      else
+        Map.delete(state.locks, resource)
       end
 
-    {:reply, :ok, state}
+    state = %{state | locks: locks}
+    {:reply, :ok, state, {:continue, :retry_waiting}}
   end
 
-  def handle_call({:status, resource}, _from, state) do
-    reply =
-      cond do
-        Map.has_key?(state.shared_locks, resource) -> :in_use
-        Map.has_key?(state.exclusive_locks, resource) -> :in_use
-        true -> :free
-      end
-
-    {:reply, reply, state}
+  @impl GenServer
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    waiting = Enum.filter(state.waiting, &elem(&1, 0) != pid)
+    locks = remove_pid_from_locks(state.locks, pid)
+    state = %{state | locks: locks, waiting: waiting}
+    {:noreply, state, {:continue, :retry_waiting}}
   end
 
-  defp release_to_waiting_client(state, resource) do
-    if Map.has_key?(state.in_waiting, resource) do
-      queue = Map.get(state.in_waiting, resource)
+  @impl GenServer
+  def handle_continue(:retry_waiting, state) do
+    {waiting, locks} = retry_waiting(Enum.reverse(state.waiting), state.locks)
+    state = %{state | waiting: waiting, locks: locks}
+    {:noreply, state}
+  end
 
-      case :queue.out(queue) do
-        {:empty, _queue} ->
-          in_waiting = Map.delete(state.in_waiting, resource)
-          %{state | in_waiting: in_waiting}
+  defp remove_pid_from_locks(locks, pid) do
+    locks
+    |> Enum.flat_map(fn {resource, lock} ->
+      {_ref, lock} = Lock.pop(lock, pid)
+      if lock, do: [{resource, lock}], else: []
+    end)
+    |> Enum.into(%{})
+  end
 
-        {{:value, {client, from}}, queue} ->
-          GenServer.reply(from, :ok)
-          ref = monitor_client(client)
-          exclusive_locks = Map.put(state.exclusive_locks, resource, {client, ref})
-          in_waiting = Map.put(state.in_waiting, resource, queue)
-          %{state | in_waiting: in_waiting, exclusive_locks: exclusive_locks}
-      end
-    else
-      state
+  defp retry_waiting(waiting, locks, acc \\ [])
+  defp retry_waiting([], locks, acc), do: {acc, locks}
+
+  defp retry_waiting([{pid, ref, resources, from} | waiting], locks, acc) do
+    case add_locks(resources, pid, ref, @private, locks) do
+      {:ok, locks} ->
+        GenServer.reply(from, :ok)
+        retry_waiting(waiting, locks, acc)
+
+      {:error, _reason} ->
+        retry_waiting(waiting, locks, [{pid, ref, resources, from} | acc])
     end
   end
 
-  defp monitor_client(client), do: Process.monitor(client)
-  defp demonitor_client(client), do: Process.demonitor(client)
+  defp add_locks([], _pid, _ref, _type, acc), do: {:ok, acc}
+
+  defp add_locks([resource | resources], pid, ref, type, acc) do
+    case Map.get(acc, resource) do
+      nil ->
+        lock = Lock.make(type) |> Lock.add(pid, ref)
+        acc = Map.put(acc, resource, lock)
+        add_locks(resources, pid, ref, type, acc)
+
+      %{type: @public} = lock when type == @public ->
+        lock = Lock.add(lock, pid, ref)
+        acc = Map.put(acc, resource, lock)
+        add_locks(resources, pid, ref, type, acc)
+
+      _ ->
+        {:error, :locked}
+    end
+  end
+
+  defp monitor(pid), do: Process.monitor(pid)
+  defp demonitor(ref), do: Process.demonitor(ref)
 end

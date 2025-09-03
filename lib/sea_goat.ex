@@ -15,18 +15,18 @@ defmodule SeaGoat do
   def init(opts) do
     lock_manager_name = name(opts[:name], :lock_manager)
     wal_name = name(opts[:name], :wal)
-    flusher_name = name(opts[:name], :flusher)
-    merger_name = name(opts[:name], :merger)
+    # flusher_name = name(opts[:name], :flusher)
+    # merger_name = name(opts[:name], :merger)
 
     children = [
       {SeaGoat.LockManager, name: lock_manager_name},
       {SeaGoat.WAL, name: wal_name, dir: opts[:dir], sync_interval: opts[:sync_interval]},
-      {SeaGoat.Flusher, dir: opts[:dir], lock_manager: lock_manager_name, name: flusher_name},
-      {SeaGoat.Merger, dir: opts[:dir], lock_manager: lock_manager_name, name: merger_name},
+      # {SeaGoat.Flusher, dir: opts[:dir], lock_manager: lock_manager_name, name: flusher_name},
+      # {SeaGoat.Merger, dir: opts[:dir], lock_manager: lock_manager_name, name: merger_name},
       {
         SeaGoat.Server,
-        merger: merger_name,
-        flusher: flusher_name,
+        # merger: merger_name,
+        # flusher: flusher_name,
         name: opts[:name] || __MODULE__,
         dir: opts[:dir],
         wal: wal_name,

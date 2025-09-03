@@ -1,0 +1,74 @@
+defmodule SeaGoat.BloomFilter do
+  @moduledoc """
+  Generate Bloom filters.
+  """
+  import Bitwise
+  @default_false_positive_probability 0.05
+
+  defstruct [
+    :hashes,
+    :size,
+    :array
+  ]
+
+  @type t :: %__MODULE__{}
+
+  @spec new(keys :: [term()], size :: non_neg_integer()) :: t()
+  def new(keys, size) do
+    for key <- keys, reduce: init(size) do
+      acc ->
+        update(acc, key)
+    end
+  end
+
+  @spec is_member(bloom_filter :: t(), key :: term()) :: boolean()
+  def is_member(bloom_filter, key) do
+    Enum.all?(bloom_filter.hashes, fn hash ->
+      bit_set?(bloom_filter.array, hash.(key))
+      # MapSet.member?(bloom_filter.set, hash.(key))
+    end)
+  end
+
+  defp init(size) do
+    no_of_bits = no_of_bits(size)
+    no_of_hashes = no_of_hashes(size, no_of_bits)
+    hashes = hashes(no_of_hashes, no_of_bits, no_of_bits, [])
+    %__MODULE__{hashes: hashes, array: <<0::size(no_of_bits)>>, size: no_of_bits}
+  end
+
+  defp update(bloom_filter, key) do
+    for hash <- bloom_filter.hashes, reduce: bloom_filter do
+      acc ->
+        %{acc | array: set_bit(acc.array, hash.(key), acc.size)}
+        # %{acc | set: MapSet.put(acc.set, hash.(key))}
+    end
+  end
+
+  defp set_bit(array, idx, size) do
+    # <<pre::bitstring-size(idx - 1), _::size(1), post::bitstring>> = array
+    # <<pre::bitstring, 1::size(1), post::bitstring>>
+    <<int::size(size)>> = array
+    bit_position = size - idx
+    int = int ||| 1 <<< bit_position
+    <<int::size(size)>>
+  end
+
+  defp bit_set?(array, idx) do
+    match?(<<_pre::bitstring-size(idx - 1), 1::size(1), _post::bitstring>>, array)
+  end
+
+  defp no_of_bits(size) do
+    floor(-size * :math.log(@default_false_positive_probability) / :math.pow(:math.log(2), 2))
+  end
+
+  defp no_of_hashes(size, no_of_bits) do
+    ceil(div(no_of_bits, size) * :math.log(2))
+  end
+
+  defp hashes(0, _no_of_bits, _range, hashes), do: hashes
+
+  defp hashes(no_of_hashes, no_of_bits, range, hashes) do
+    hash = &(rem(:erlang.phash2(&1, range), no_of_bits) + 1)
+    hashes(no_of_hashes - 1, no_of_bits, range + 10, [hash | hashes])
+  end
+end
