@@ -36,7 +36,17 @@ defmodule SeaGoat.FileHandler do
   end
 
   def rename(from, to) do
-    :file.rename(from, to)
+    case :file.rename(from, to) do
+      {:error, :enoent} ->
+        dbg({from, to})
+        :ok
+
+      :ok ->
+        :ok
+
+      e ->
+        e
+    end
   end
 
   def sync(io) do

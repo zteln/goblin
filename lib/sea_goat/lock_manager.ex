@@ -1,4 +1,5 @@
 defmodule SeaGoat.LockManager do
+  # TODO: check if resource exists before locking: File.exists?
   use GenServer
   alias __MODULE__.Lock
 
@@ -13,7 +14,9 @@ defmodule SeaGoat.LockManager do
     GenServer.start_link(__MODULE__, opts, name: opts[:name])
   end
 
-  def lock(server, resources, type, timeout \\ 5000) when type in @lock_types do
+  def lock(server, resources, type, timeout \\ 5000)
+
+  def lock(server, resources, type, timeout) when type in @lock_types do
     timeout = if type == @private, do: :infinity, else: timeout
     GenServer.call(server, {:lock, type, resources, self()}, timeout)
   end

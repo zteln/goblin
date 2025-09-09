@@ -1,8 +1,8 @@
 dir = "/tmp/sea_goat_test/"
-File.rm_rf!(dir)
-File.mkdir(dir)
+# File.rm_rf!(dir)
+# File.mkdir(dir)
 
-{:ok, _db} = SeaGoat.start_link(dir: dir, limit: 10000, sync_interval: 200)
+{:ok, _db} = SeaGoat.start_link(dir: dir, limit: 10_000, sync_interval: 50)
 
 timer_f = fn ->
   :timer.tc(

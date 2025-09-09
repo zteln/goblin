@@ -1,0 +1,105 @@
+defmodule SeaGoat.BloomFilter do
+  @moduledoc """
+  Generate Bloom filters.
+
+  RADIX TRIES
+
+  {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+  ...
+  """
+  @default_false_positive_probability 0.05
+
+  defstruct [
+    :hashes,
+    :max_depth,
+    :set
+  ]
+
+  @type t :: %__MODULE__{}
+
+  @spec new(keys :: [term()], size :: non_neg_integer()) :: t()
+  def new(keys, size) do
+    for key <- keys, reduce: init(size) do
+      acc ->
+        update(acc, key)
+    end
+  end
+
+  @spec is_member(bloom_filter :: t(), key :: term()) :: boolean()
+  def is_member(bloom_filter, key) do
+    %{set: set, max_depth: max_depth, hashes: hashes} = bloom_filter
+
+    Enum.all?(hashes, fn hash ->
+      idx = hash.(key)
+      digits = get_digits(idx, max_depth)
+      is_set(set, digits)
+    end)
+  end
+
+  # def is_member(bloom_filter, key) do
+  #   Enum.all?(bloom_filter.hashes, fn hash ->
+  #     MapSet.member?(bloom_filter.set, hash.(key))
+  #   end)
+  # end
+
+  defp init(size) do
+    no_of_bits = no_of_bits(size)
+    no_of_hashes = no_of_hashes(size, no_of_bits)
+    hashes = hashes(no_of_hashes, no_of_bits, no_of_bits, [])
+    max_depth = no_of_bits |> Integer.digits() |> length()
+    %__MODULE__{hashes: hashes, max_depth: max_depth, set: new_set()}
+  end
+
+  defp update(bloom_filter, key) do
+    for hash <- bloom_filter.hashes, reduce: bloom_filter do
+      acc ->
+        idx = hash.(key) 
+        digits = get_digits(idx, bloom_filter.max_depth) 
+        %{acc | set: set_idx(acc.set, digits)}
+        # %{acc | set: MapSet.put(acc.set, hash.(key))}
+    end
+  end
+
+  defp no_of_bits(size) do
+    floor(-size * :math.log(@default_false_positive_probability) / :math.pow(:math.log(2), 2))
+  end
+
+  defp no_of_hashes(size, no_of_bits) do
+    ceil(div(no_of_bits, size) * :math.log(2))
+  end
+
+  defp hashes(0, _no_of_bits, _range, hashes), do: hashes
+
+  defp hashes(no_of_hashes, no_of_bits, range, hashes) do
+    hash = &rem(:erlang.phash2(&1, range), no_of_bits)
+    hashes(no_of_hashes - 1, no_of_bits, range + 10, [hash | hashes])
+  end
+
+  defp get_digits(int, max_depth) do
+    digits = Integer.digits(int) 
+    padding_length = max_depth - length(digits)
+    (List.duplicate(0, padding_length) ++ digits) |> Enum.reverse()
+  end
+
+  defp new_set, do: {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+
+  defp set_idx(set, []), do: set
+
+  defp set_idx(set, [digit | digits]) do
+    case elem(set, digit) do
+      0 ->
+        put_elem(set, digit, set_idx(new_set(), digits))
+
+      next_set ->
+        put_elem(set, digit, set_idx(next_set, digits))
+    end
+  end
+
+  defp is_set(_set, []), do: true
+  defp is_set(set, [digit | digits]) do
+    case elem(set, digit) do
+      0 -> false
+      next_set -> is_set(next_set, digits)
+    end
+  end
+end

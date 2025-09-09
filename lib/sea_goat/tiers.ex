@@ -46,7 +46,9 @@ defmodule SeaGoat.Tiers do
   end
 
   def tiers(tiers) do
-    Map.keys(tiers)
+    tiers
+    |> Map.keys()
+    |> Enum.sort()
   end
 
   def get(tiers, tier, getter) do

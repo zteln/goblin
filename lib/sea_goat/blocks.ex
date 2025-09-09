@@ -1,50 +1,68 @@
 defmodule SeaGoat.Blocks do
-  alias SeaGoat.LockManager
   alias SeaGoat.FileHandler
   alias SeaGoat.BloomFilter
   alias __MODULE__.Block
 
   @task_timeout :timer.minutes(5)
 
-  def delete_block(path, lock_manager) do
-    :ok = LockManager.lock(lock_manager, [path], :private)
+  def delete_block(path) do
     :ok = FileHandler.rm(path)
-    :ok = LockManager.unlock(lock_manager, path)
   end
 
-  def switch(from, to, lock_manager) do
-    :ok = LockManager.lock(lock_manager, [from, to], :private)
+  def switch(from, to) do
     :ok = FileHandler.rename(from, to)
-    :ok = LockManager.unlock(lock_manager, from)
-    :ok = LockManager.unlock(lock_manager, to)
   end
 
-  def flush(mem_table, pass_path, path, level, lock_manager) do
+  def flush(mem_table, pass_path, path, level) do
     with {:ok, bloom_filter} <-
-           write_to_file(path, lock_manager, Enum.sort(mem_table), level, &next_flush_data/1) do
+           write_to_file(path, Enum.sort(mem_table), level, &next_flush_data/1) do
       {:flushed, bloom_filter, pass_path, path}
     end
   end
 
-  def merge(blocks_to_merge, pass_path, path, level, lock_manager) do
-    next =
-      with {:ok, open_blocks} <- open_blocks(blocks_to_merge, lock_manager),
-           {:ok, bloom_filter} <-
-             write_to_file(path, lock_manager, open_blocks, level, &next_merge_data/1),
-           :ok <- close_blocks(open_blocks, lock_manager) do
-        {:merged, blocks_to_merge, pass_path, path, bloom_filter, level}
-      end
+  def merge(blocks_to_merge, pass_path, path, level) do
+    with {:ok, open_blocks} <- open_blocks(blocks_to_merge),
+         {:ok, bloom_filter} <-
+           write_to_file(path, open_blocks, level, &next_merge_data/1),
+         :ok <- close_blocks(open_blocks) do
+      {:merged, blocks_to_merge, pass_path, path, bloom_filter, level}
+    end
   end
 
-  defp write_to_file(path, lock_manager, data, level, next) do
+  def read_bloom_filter(file) do
+    read_f = fn io, offset, footer ->
+      tier = Block.footer_part(footer, :level)
+
+      # TODO: Check if DB file first
+      case read_meta_part(io, offset, footer, :bloom_filter) do
+        {:ok, bloom_filter} ->
+          {:ok, {bloom_filter, tier}}
+
+        e ->
+          e
+      end
+    end
+
+    read = &read_meta(&1, &2, read_f)
+    read_file(file, read)
+  end
+
+  def read_key(files, key) do
+    files
+    |> Task.async_stream(&search_for_key(&1, key), timeout: @task_timeout)
+    |> Stream.map(fn {:ok, res} -> res end)
+    |> Stream.filter(& &1)
+    |> Stream.take(1)
+    |> Enum.to_list()
+  end
+
+  defp write_to_file(path, data, level, next) do
     starting_offset = 0
 
-    with :ok <- LockManager.lock(lock_manager, [path], :private),
-         {:ok, io, ^starting_offset} <- FileHandler.open(path, write?: true),
+    with {:ok, io, ^starting_offset} <- FileHandler.open(path, write?: true),
          {:ok, bloom_filter} <- write(io, starting_offset, data, level, next),
          :ok <- FileHandler.sync(io),
-         :ok <- FileHandler.close(io),
-         :ok <- LockManager.unlock(lock_manager, path) do
+         :ok <- FileHandler.close(io) do
       {:ok, bloom_filter}
     end
   end
@@ -60,9 +78,9 @@ defmodule SeaGoat.Blocks do
     case next.(data) do
       {:next, {k, v}, data} ->
         block = Block.encode(:data, key: k, value: v)
-        {:ok, offset} = FileHandler.write(io, offset, block)
+        {:ok, new_offset} = FileHandler.write(io, offset, block)
         index = Map.put(index, k, {offset, byte_size(block)})
-        write_data(io, offset, data, next, index)
+        write_data(io, new_offset, data, next, index)
 
       :eod ->
         {:ok, index, offset}
@@ -82,28 +100,23 @@ defmodule SeaGoat.Blocks do
     end
   end
 
-  defp open_blocks(blocks, lock_manager) do
-    with :ok <- LockManager.lock(lock_manager, blocks, :public) do
-      open_blocks_io(blocks)
+  defp open_blocks(blocks, acc \\ [])
+  defp open_blocks([], acc), do: {:ok, acc}
+
+  defp open_blocks([block | blocks], acc) do
+    starting_offset = 0
+
+    with {:ok, io, ^starting_offset} <- FileHandler.open(block, start?: true),
+         {:ok, offset, kv} <- next_kv(io, starting_offset + Block.size(:header)) do
+      open_blocks(blocks, [{io, offset, kv, block} | acc])
     end
   end
 
-  defp open_blocks_io(blocks, acc \\ [])
-  defp open_blocks_io([], acc), do: {:ok, acc}
+  defp close_blocks([]), do: :ok
 
-  defp open_blocks_io([block | blocks], acc) do
-    with {:ok, io, offset} <- FileHandler.open(block, start?: true),
-         {:ok, offset, kv} <- next_kv(io, offset + Block.size(:header)) do
-      open_blocks_io(blocks, [{io, offset, kv, block} | acc])
-    end
-  end
-
-  defp close_blocks([], _lock_manager), do: :ok
-
-  defp close_blocks([{io, _, _, block} | blocks], lock_manager) do
-    with :ok <- FileHandler.close(io),
-         :ok <- LockManager.unlock(lock_manager, block) do
-      close_blocks(blocks, lock_manager)
+  defp close_blocks([{io, _, _, _} | blocks]) do
+    with :ok <- FileHandler.close(io) do
+      close_blocks(blocks)
     end
   end
 
@@ -152,15 +165,14 @@ defmodule SeaGoat.Blocks do
 
   defp next_kv(io, offset) do
     with {:ok, encoded_kv_size} <- FileHandler.read(io, offset, Block.size(:kv_header)),
-         {:ok, kv_size} <- get_size(io, offset, encoded_kv_size),
-         {:ok, encoded_data} <-
-           FileHandler.read(io, offset, Block.size(:kv_header) + kv_size),
+         {:ok, kv_size} <- get_size(offset, encoded_kv_size),
+         {:ok, encoded_data} <- FileHandler.read(io, offset, Block.size(:kv_header) + kv_size),
          {:ok, kv} <- Block.decode(:data, encoded_data) do
       {:ok, offset + Block.size(:kv_header) + kv_size, kv}
     end
   end
 
-  defp get_size(io, offset, encoded_kv_size) do
+  defp get_size(offset, encoded_kv_size) do
     case Block.decode(:kv_header, encoded_kv_size) do
       {:ok, :end_of_data} ->
         {:ok, offset, nil}
@@ -173,33 +185,7 @@ defmodule SeaGoat.Blocks do
     end
   end
 
-  def read_bloom_filter(file, lock_manager) do
-    read_f = fn io, offset, footer ->
-      tier = Block.footer_part(footer, :level)
-
-      case read_meta_part(io, offset, footer, :bloom_filter) do
-        {:ok, bloom_filter} ->
-          {:ok, {bloom_filter, tier}}
-
-        e ->
-          e
-      end
-    end
-
-    read = &read_meta(&1, &2, read_f)
-    read_file(file, lock_manager, read)
-  end
-
-  def read_key([file | files], lock_manager, key) do
-    files
-    |> Task.async_stream(&search_for_key(&1, lock_manager, key), timeout: @task_timeout)
-    |> Stream.map(fn {:ok, res} -> res end)
-    |> Stream.filter(& &1)
-    |> Stream.take(1)
-    |> Enum.to_list()
-  end
-
-  defp search_for_key(file, lock_manager, key) do
+  defp search_for_key(file, key) do
     read_f = fn io, offset, footer ->
       with {:ok, {smallest, largest}} when key >= smallest and key <= largest <-
              read_meta_part(io, offset, footer, :range),
@@ -216,11 +202,10 @@ defmodule SeaGoat.Blocks do
       end
     end
 
-    read_file(file, lock_manager, read)
+    read_file(file, read)
   end
 
-  defp read_file(file, lock_manager, f) do
-    :ok = LockManager.lock(lock_manager, [file], :public)
+  defp read_file(file, f) do
     {io, offset} = FileHandler.open!(file)
 
     case f.(io, offset) do
@@ -256,7 +241,7 @@ defmodule SeaGoat.Blocks do
 
   defp read_data(io, key_offset, size, key) do
     with {:ok, encoded} <- FileHandler.read(io, key_offset, size),
-         {:ok, {fetched_key, value}} <- Block.decode(:data, block) do
+         {:ok, {fetched_key, value}} <- Block.decode(:data, encoded) do
       if fetched_key == key do
         value = if value == :tombstone, do: nil, else: value
         {:ok, {:value, value}}

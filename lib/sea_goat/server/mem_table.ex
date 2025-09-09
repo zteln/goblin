@@ -23,8 +23,8 @@ defmodule SeaGoat.Server.MemTable do
   @spec read(mem_table :: t(), key :: term()) :: term() | nil
   def read(mem_table, key) do
     case Map.get(mem_table, key) do
-      nil -> nil
-      :tombstone -> nil
+      nil -> :not_found
+      :tombstone -> {:value, nil}
       value -> {:value, value}
     end
   end
@@ -49,4 +49,12 @@ defmodule SeaGoat.Server.MemTable do
 
   @spec has_overflow(mem_table :: t(), limit :: non_neg_integer()) :: boolean()
   def has_overflow(mem_table, limit), do: size(mem_table) >= limit
+
+  def is_disjoint(mem_table1, mem_table2) do
+    MapSet.disjoint?(MapSet.new(keys(mem_table1)), MapSet.new(keys(mem_table2)))
+  end
+
+  def merge(mem_table1, mem_table2) do
+    Map.merge(mem_table1, mem_table2)
+  end
 end

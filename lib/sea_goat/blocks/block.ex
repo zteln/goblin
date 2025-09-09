@@ -1,7 +1,7 @@
 defmodule SeaGoat.Blocks.Block do
   @identifier 0xFABCDEF0
   @block_separator 0xFFFFFFFF
-  @header_size byte_size(<<@identifier::unsigned-integer-32>>)
+  @header_size byte_size(<<0::unsigned-integer-32>>)
   @kv_header_size byte_size(<<0::unsigned-integer-32>>)
   @footer_size byte_size(<<
                  0::unsigned-integer-8,
@@ -70,7 +70,7 @@ defmodule SeaGoat.Blocks.Block do
     value = opts[:value]
 
     bin = :erlang.term_to_binary({key, value})
-    size = byte_size(bin)
+    size = byte_size(bin) 
     <<size::unsigned-integer-32, bin::binary>>
   end
 

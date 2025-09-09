@@ -1,10 +1,12 @@
 defmodule SeaGoat.Server do
   use GenServer
   alias SeaGoat.Server.MemTable
+  alias SeaGoat.Server.Transaction
   alias SeaGoat.BloomFilter
   alias SeaGoat.WAL
   alias SeaGoat.Blocks
   alias SeaGoat.Tiers
+  alias SeaGoat.LockManager
 
   @flush_tier 0
   @default_mem_limit 20000
@@ -41,17 +43,48 @@ defmodule SeaGoat.Server do
   end
 
   def transaction(server, f) do
-    GenServer.call(server, {:transaction, f, self()})
+    with {:ok, tx} <- start_transaction(server, self()) do
+      run_transaction(server, f, tx)
+    end
+  end
+
+  defp start_transaction(server, pid) do
+    GenServer.call(server, {:start_transaction, pid})
+  end
+
+  defp run_transaction(server, f, tx) do
+    case f.(tx) do
+      {:commit, tx, reply} ->
+        :ok = commit_transaction(server, tx, self())
+        reply
+
+      _ ->
+        cancel_transaction(server, self())
+    end
+  end
+
+  defp commit_transaction(server, tx, pid) do
+    GenServer.call(server, {:commit_transaction, tx, pid})
+  end
+
+  defp cancel_transaction(server, pid) do
+    GenServer.call(server, {:cancel_transaction, pid})
   end
 
   @spec put(server :: GenServer.server(), key :: term(), value :: term()) :: :ok
   def put(server, key, value) do
-    GenServer.call(server, {:put, key, value})
+    transaction(server, fn tx ->
+      tx = Transaction.put(tx, key, value)
+      {:commit, tx, :ok}
+    end)
   end
 
   @spec remove(server :: GenServer.server(), key :: term()) :: :ok
   def remove(server, key) do
-    GenServer.call(server, {:remove, key})
+    transaction(server, fn tx ->
+      tx = Transaction.remove(tx, key)
+      {:commit, tx, :ok}
+    end)
   end
 
   @spec get(server :: GenServer.server(), key :: term()) :: {:ok, term()} | {:error, term()}
@@ -80,29 +113,57 @@ defmodule SeaGoat.Server do
   end
 
   @impl GenServer
-  def handle_call({:put, key, value}, _from, state) do
-    command = {:put, key, value}
-    WAL.append(state.wal, command)
-    state = run_command(state, command)
-    {:reply, :ok, state, {:continue, :flush}}
-  end
-
-  def handle_call({:remove, key}, _from, state) do
-    command = {:remove, key}
-    WAL.append(state.wal, command)
-    state = run_command(state, command)
-    {:reply, :ok, state, {:continue, :flush}}
-  end
-
   def handle_call({:get, key}, from, state) do
-    case read_in_memory(state, key) do
+    case read_memory(state, key) do
       {:ok, value} ->
         {:reply, {:ok, value}, state}
 
-      {:error, :not_found} ->
-        start_read(state.tiers, key, from, state.lock_manager)
+      :not_found ->
+        read_disk(state.tiers, key, from, state.lock_manager)
         {:noreply, state}
     end
+  end
+
+  def handle_call({:start_transaction, pid}, _from, state) do
+    if not Map.has_key?(state.transactions, pid) do
+      tx = Transaction.make(pid)
+      transactions = Map.put(state.transactions, pid, [])
+      {:reply, {:ok, tx}, %{state | transactions: transactions}}
+    else
+      {:reply, {:error, :already_in_transaction}, state}
+    end
+  end
+
+  def handle_call({:commit_transaction, tx, pid}, _from, state) do
+    case Map.get(state.transactions, pid) do
+      nil ->
+        {:reply, {:error, :no_tx_found}, state}
+
+      commits ->
+        if not Transaction.is_in_conflict(tx, commits) do
+          transactions =
+            state.transactions
+            |> Map.delete(pid)
+            |> Enum.into(%{}, fn {pid, commits} ->
+              {pid, [tx.mem_table | commits]}
+            end)
+
+          WAL.append_batch(state.wal, tx.writes)
+          mem_table = MemTable.merge(state.mem_table, tx.mem_table)
+          state = %{state | transactions: transactions, mem_table: mem_table}
+          {:reply, :ok, state, {:continue, :flush}}
+        else
+          transactions = Map.delete(state.transactions, pid)
+          state = %{state | transactions: transactions}
+          {:reply, {:error, :in_conflict}, state}
+        end
+    end
+  end
+
+  def handle_call({:cancel_transaction, pid}, _from, state) do
+    transactions = Map.delete(state.transactions, pid)
+    state = %{state | transactions: transactions}
+    {:reply, :ok, state}
   end
 
   @impl GenServer
@@ -115,9 +176,15 @@ defmodule SeaGoat.Server do
       files
       |> sort_files()
       |> Enum.flat_map(fn {block, file} ->
-        case try_wal(block, file, state.wal) do
-          [] -> try_level(block, file)
-          wal_result -> wal_result
+        case wal_or_db(file, state.wal) do
+          {:ok, :logs, logs} ->
+            [{:logs, logs, block, file}]
+
+          {:ok, :level, bloom_filter, tier} ->
+            [{:level, bloom_filter, tier, block, file}]
+
+          _ ->
+            []
         end
       end)
       |> Enum.reduce(state, fn
@@ -130,15 +197,7 @@ defmodule SeaGoat.Server do
           %{acc | tiers: tiers, block_count: block}
       end)
 
-    path = path(state.dir, state.block_count)
-
-    case WAL.start_log(state.wal, path) do
-      :ok ->
-        {:noreply, state}
-
-      e ->
-        {:stop, e, state}
-    end
+    {:noreply, state}
   end
 
   @impl GenServer
@@ -196,27 +255,36 @@ defmodule SeaGoat.Server do
         mem_table = MemTable.delete(state.mem_table, key)
         %{state | mem_table: mem_table}
 
-      {:del, to_delete} ->
-        Task.async(fn ->
-          Enum.each(to_delete, &Blocks.delete_block(&1, state.lock_manager))
-        end)
-
-        state
+      {:del, files} ->
+        wrap_in_lock(
+          state.lock_manager,
+          [],
+          files,
+          fn ->
+            Enum.each(files, &Blocks.delete_block/1)
+          end
+        )
 
       {:mv, from, to} ->
-        Task.async(fn ->
-          Blocks.switch(from, to, state.lock_manager)
-        end)
-
-        state
+        wrap_in_lock(
+          state.lock_manager,
+          [],
+          [from, to],
+          fn -> Blocks.switch(from, to) end
+        )
 
       {:merge, to_merge, path, tmp_path, tier} ->
         lock_manager = state.lock_manager
 
-        %{ref: ref} =
-          Task.async(fn ->
-            Blocks.merge(Enum.map(to_merge, & &1.path), path, tmp_path, tier + 1, lock_manager)
-          end)
+        ref =
+          lock_and_run(
+            lock_manager,
+            to_merge,
+            [tmp_path],
+            fn ->
+              Blocks.merge(Enum.map(to_merge, & &1.path), path, tmp_path, tier + 1)
+            end
+          )
 
         tiers =
           Enum.reduce(to_merge, state.tiers, fn to_merge_entry, acc ->
@@ -235,10 +303,15 @@ defmodule SeaGoat.Server do
         mem_table = state.mem_table
         lock_manager = state.lock_manager
 
-        %{ref: ref} =
-          Task.async(fn ->
-            Blocks.flush(mem_table, path, tmp_path, @flush_tier, lock_manager)
-          end)
+        ref =
+          lock_and_run(
+            lock_manager,
+            [],
+            [tmp_path],
+            fn ->
+              Blocks.flush(mem_table, path, tmp_path, @flush_tier)
+            end
+          )
 
         tiers = Tiers.insert(state.tiers, @flush_tier, path, mem_table, nil, {:flushing, ref})
 
@@ -260,7 +333,7 @@ defmodule SeaGoat.Server do
       WAL.rotate(state.wal, new_path, prepend, append)
 
       Enum.reduce(
-        [prepend, append],
+        [append],
         %{state | block_count: new_block_count},
         &run_command(&2, &1)
       )
@@ -283,9 +356,10 @@ defmodule SeaGoat.Server do
 
         new_block_count = acc.block_count + 1
         {path, tmp_path} = path(acc.dir, new_block_count) |> path_pair()
-        commands = [{:del, [tmp_path]}, {:merge, to_merge, path, tmp_path, tier}]
-        WAL.dump(acc.wal, path, commands)
-        Enum.reduce(commands, %{acc | block_count: new_block_count}, &run_command(&2, &1))
+        del_command = {:del, [tmp_path]}
+        merge_command = {:merge, to_merge, path, tmp_path, tier}
+        WAL.dump(acc.wal, path, [del_command, merge_command])
+        Enum.reduce([merge_command], %{acc | block_count: new_block_count}, &run_command(&2, &1))
       else
         acc
       end
@@ -309,24 +383,37 @@ defmodule SeaGoat.Server do
     |> List.keysort(0)
   end
 
-  defp try_wal(block, file, wal) do
+  defp wal_or_db(file, wal) do
     case WAL.replay(wal, file) do
-      {:ok, logs} -> [{:logs, logs, block, file}]
-      _ -> []
-    end
-  end
-
-  defp try_level(block, file) do
-    case Blocks.fetch_level(file) do
-      {:ok, bloom_filter, level} ->
-        [{:level, bloom_filter, level, block, file}]
+      {:ok, logs} ->
+        {:ok, :logs, logs}
 
       _ ->
-        []
+        case Blocks.read_bloom_filter(file) do
+          {:ok, {bloom_filter, tier}} ->
+            {:ok, :level, bloom_filter, tier}
+
+          _ ->
+            {:error, :not_wal_or_db}
+        end
     end
   end
 
-  defp read_in_memory(state, key) do
+  # defp try_wal(file, wal) do
+  #   WAL.replay(wal, file)
+  # end
+  #
+  # defp try_level(file) do
+  #   case Blocks.read_bloom_filter(file) do
+  #     {:ok, {bloom_filter, tier}} ->
+  #       {:ok, bloom_filter, tier}
+  #
+  #     _ ->
+  #       {:error, :not_a_db_file}
+  #   end
+  # end
+
+  defp read_memory(state, key) do
     [
       state.mem_table
       | state.tiers
@@ -339,32 +426,85 @@ defmodule SeaGoat.Server do
     |> read_mem_tables(key)
   end
 
-  defp read_mem_tables([], _key), do: {:error, :not_found}
+  defp read_mem_tables([], _key), do: :not_found
 
   defp read_mem_tables([mem_table | mem_tables], key) do
     case MemTable.read(mem_table, key) do
       {:value, value} -> {:ok, value}
-      _ -> read_mem_tables(mem_tables, key)
+      :not_found -> read_mem_tables(mem_tables, key)
     end
   end
 
-  defp start_read(levels, key, from, lock_manager) do
-    # move filter in to Blocks.read_file
-    files_to_read =
-      levels
-      |> Enum.sort_by(fn {level, _tables} -> level end)
-      |> Enum.flat_map(fn {_level, tables} ->
-        tables
-      end)
-      |> Enum.filter(fn table ->
-        BloomFilter.is_member(table.bloom_filter, key)
-      end)
-      |> Enum.map(&Map.get(&1, :path))
+  defp read_disk(tiers, key, from, lock_manager) do
+    files =
+      tiers
+      |> Tiers.tiers()
+      |> Enum.reduce([], fn tier, acc ->
+        files =
+          Tiers.get_all(
+            tiers,
+            tier,
+            fn entry ->
+              not match?({:flushing, _}, entry.state) &&
+                BloomFilter.is_member(entry.bloom_filter, key)
+            end,
+            fn entry -> entry.path end
+          )
 
-    Task.async(fn ->
-      reply = Blocks.read_files(files_to_read, key, lock_manager)
-      GenServer.reply(from, reply)
-    end)
+        acc ++ files
+      end)
+
+    lock_and_run(
+      lock_manager,
+      files,
+      [],
+      fn ->
+        case Blocks.read_key(files, key) do
+          [{:ok, {:value, value}}] -> value
+          _ -> nil
+        end
+      end,
+      &GenServer.reply(from, &1)
+    )
+  end
+
+  defp lock_and_run(lock_manager, public_resources, private_resources, run, post \\ & &1) do
+    parent = self()
+    lock_ref = make_ref()
+
+    %{ref: ref} =
+      Task.async(fn ->
+        result =
+          wrap_in_lock(
+            lock_manager,
+            public_resources,
+            private_resources,
+            fn ->
+              send(parent, {:locked, lock_ref})
+              run.()
+            end
+          )
+
+        post.(result)
+      end)
+
+    receive do
+      {:locked, ^lock_ref} -> :ok
+    end
+
+    ref
+  end
+
+  defp wrap_in_lock(lock_manager, public_resources, private_resources, run) do
+    LockManager.lock(lock_manager, public_resources, :public)
+    LockManager.lock(lock_manager, private_resources, :private)
+
+    result = run.()
+
+    for resource <- public_resources ++ private_resources,
+        do: LockManager.unlock(lock_manager, resource)
+
+    result
   end
 
   defp path(dir, block_count) do

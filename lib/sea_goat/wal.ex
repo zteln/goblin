@@ -5,11 +5,9 @@ defmodule SeaGoat.WAL do
   Default sync interval: 200.
   """
   use GenServer
-  alias SeaGoat.LockManager
 
   @default_sync_interval 200
   @wal_name :sea_goat_wal
-  @tmp_wal_name :tmp_sea_goat_wal
   @dump_wal_name :dump_sea_goat_wal
 
   defstruct [
@@ -25,16 +23,16 @@ defmodule SeaGoat.WAL do
     GenServer.start_link(__MODULE__, Keyword.take(opts, [:sync_interval]), name: opts[:name])
   end
 
-  def start_log(wal, file) do
-    GenServer.call(wal, {:start_log, file})
-  end
-
   def sync(wal) do
     GenServer.call(wal, :sync_now)
   end
 
   def append(wal, term) do
     GenServer.call(wal, {:append, term})
+  end
+
+  def append_batch(wal, batch) do
+    GenServer.call(wal, {:append_batch, batch})
   end
 
   def rotate(wal, path, prepend, append) do
@@ -63,17 +61,6 @@ defmodule SeaGoat.WAL do
   end
 
   @impl GenServer
-  def handle_call({:start_log, file}, _from, state) do
-    case open_log(file, @wal_name) do
-      {:ok, log} ->
-        state = %{state | log: log, current_file: file}
-        {:reply, :ok, state}
-
-      {:error, _reason} = e ->
-        {:reply, e, state}
-    end
-  end
-
   def handle_call(:sync_now, _from, state) do
     append_and_sync_log(state.log, Enum.reverse(state.batch))
     {:reply, :ok, %{state | last_sync: now(), batch: []}}
@@ -81,6 +68,10 @@ defmodule SeaGoat.WAL do
 
   def handle_call({:append, term}, _from, state) do
     {:reply, :ok, %{state | batch: [term | state.batch]}, {:continue, :sync}}
+  end
+
+  def handle_call({:append_batch, batch}, _from, state) do
+    {:reply, :ok, %{state | batch: batch ++ state.batch}, {:continue, :sync}}
   end
 
   def handle_call({:rotate, new_file, prepend, append}, _from, state) do
@@ -114,11 +105,11 @@ defmodule SeaGoat.WAL do
   end
 
   def handle_call({:replay, file}, _from, state) do
-    case open_log(file, @tmp_wal_name, mode: :read_only) do
+    case open_log(file, @wal_name) do
       {:ok, log} ->
+        state.log && close_log(state.log)
         logs = collect_logs(log)
-        close_log(log)
-        {:reply, {:ok, logs}, state}
+        {:reply, {:ok, logs}, %{state | log: log, current_file: file}}
 
       {:error, _reason} ->
         {:reply, {:error, :not_a_log}, state}
