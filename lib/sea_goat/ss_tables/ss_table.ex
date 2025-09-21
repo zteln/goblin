@@ -1,4 +1,4 @@
-defmodule SeaGoat.Blocks.Block do
+defmodule SeaGoat.SSTables.SSTable do
   @identifier 0xFABCDEF0
   @block_separator 0xFFFFFFFF
   @header_size byte_size(<<0::unsigned-integer-32>>)

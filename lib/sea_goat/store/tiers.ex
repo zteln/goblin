@@ -1,23 +1,7 @@
-defmodule SeaGoat.Tiers do
-  defstruct [
-    :path,
-    :mem_table,
-    :bloom_filter,
-    :state
-  ]
+defmodule SeaGoat.Store.Tiers do
+  def new, do: %{}
 
-  def new do
-    %{}
-  end
-
-  def insert(tiers, tier, path, mem_table, bloom_filter, state) do
-    entry = %__MODULE__{
-      path: path,
-      mem_table: mem_table,
-      bloom_filter: bloom_filter,
-      state: state
-    }
-
+  def insert(tiers, tier, entry) do
     Map.update(tiers, tier, [entry], &[entry | &1])
   end
 
@@ -51,15 +35,17 @@ defmodule SeaGoat.Tiers do
     |> Enum.sort()
   end
 
-  def get(tiers, tier, getter) do
+  def get_entry(tiers, tier, getter) do
     tiers
-    |> Map.get(tier, [])
+    |> Map.get(tier, :queue.new())
+    |> :queue.to_list()
     |> Enum.find(&getter.(&1))
   end
 
-  def get_all(tiers, tier, predicate, mapper \\ & &1) do
+  def get_all_entries(tiers, tier, predicate, mapper \\ & &1) do
     tiers
-    |> Map.get(tier, [])
+    |> Map.get(tier, :queue.new())
+    |> :queue.to_list()
     |> Enum.flat_map(fn entry ->
       if predicate.(entry) do
         [mapper.(entry)]

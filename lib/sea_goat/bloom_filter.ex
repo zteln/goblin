@@ -4,9 +4,10 @@ defmodule SeaGoat.BloomFilter do
   """
   @default_false_positive_probability 0.05
 
+  @derive {Inspect, except: [:array]}
   defstruct [
     :hashes,
-    set: MapSet.new()
+    :array
   ]
 
   @type t :: %__MODULE__{}
@@ -22,7 +23,7 @@ defmodule SeaGoat.BloomFilter do
   @spec is_member(bloom_filter :: t(), key :: term()) :: boolean()
   def is_member(bloom_filter, key) do
     Enum.all?(bloom_filter.hashes, fn hash ->
-      MapSet.member?(bloom_filter.set, hash.(key))
+      1 == :array.get(hash.(key), bloom_filter.array)
     end)
   end
 
@@ -30,13 +31,15 @@ defmodule SeaGoat.BloomFilter do
     no_of_bits = no_of_bits(size)
     no_of_hashes = no_of_hashes(size, no_of_bits)
     hashes = hashes(no_of_hashes, no_of_bits, no_of_bits, [])
-    %__MODULE__{hashes: hashes}
+    array = :array.new(no_of_bits, default: 0)
+    %__MODULE__{hashes: hashes, array: array}
   end
 
   defp update(bloom_filter, key) do
     for hash <- bloom_filter.hashes, reduce: bloom_filter do
       acc ->
-        %{acc | set: MapSet.put(acc.set, hash.(key))}
+        array = :array.set(hash.(key), 1, acc.array)
+        %{acc | array: array}
     end
   end
 
@@ -45,7 +48,7 @@ defmodule SeaGoat.BloomFilter do
   end
 
   defp no_of_hashes(size, no_of_bits) do
-    ceil(div(no_of_bits, size) * :math.log(2))
+    round(no_of_bits / size * :math.log(2))
   end
 
   defp hashes(0, _no_of_bits, _range, hashes), do: hashes

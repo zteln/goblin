@@ -1,4 +1,4 @@
-defmodule SeaGoat.Server.MemTable do
+defmodule SeaGoat.Writer.MemTable do
   @type t :: map()
 
   @spec new() :: t()

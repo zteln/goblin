@@ -1,5 +1,5 @@
-defmodule SeaGoat.Server.Transaction do
-  alias SeaGoat.Server.MemTable
+defmodule SeaGoat.Writer.Transaction do
+  alias SeaGoat.Writer.MemTable
 
   defstruct mem_table: MemTable.new(),
             writes: [],

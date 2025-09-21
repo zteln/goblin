@@ -1,9 +1,9 @@
 defmodule SeaGoat do
   use Supervisor
 
-  defdelegate put(db \\ __MODULE__, key, value), to: SeaGoat.Server
-  defdelegate remove(db \\ __MODULE__, key), to: SeaGoat.Server
-  defdelegate get(db \\ __MODULE__, key), to: SeaGoat.Server
+  defdelegate put(db \\ __MODULE__, key, value), to: SeaGoat.Writer
+  defdelegate remove(db \\ __MODULE__, key), to: SeaGoat.Writer
+  # defdelegate get(db \\ __MODULE__, key), to: SeaGoat.Server
 
   def start_link(opts) do
     opts[:dir] || raise "no dir provided."
@@ -13,26 +13,30 @@ defmodule SeaGoat do
 
   @impl true
   def init(opts) do
-    lock_manager_name = name(opts[:name], :lock_manager)
+    rw_locks_name = name(opts[:name], :rw_locks)
     wal_name = name(opts[:name], :wal)
-    # flusher_name = name(opts[:name], :flusher)
-    # merger_name = name(opts[:name], :merger)
+    writer_name = name(opts[:name], :writer)
+    compactor_name = name(opts[:name], :compactor)
+    store_name = name(opts[:name], :store)
 
     children = [
-      {SeaGoat.LockManager, name: lock_manager_name},
-      {SeaGoat.WAL, name: wal_name, dir: opts[:dir], sync_interval: opts[:sync_interval]},
-      # {SeaGoat.Flusher, dir: opts[:dir], lock_manager: lock_manager_name, name: flusher_name},
-      # {SeaGoat.Merger, dir: opts[:dir], lock_manager: lock_manager_name, name: merger_name},
+      {SeaGoat.RWLocks, name: rw_locks_name},
+      {SeaGoat.WAL, name: wal_name, sync_interval: opts[:sync_interval]},
+      {SeaGoat.Writer, name: writer_name, wal: wal_name, store: store_name, limit: opts[:limit]},
+      {SeaGoat.Compactor,
+       name: compactor_name,
+       wal: wal_name,
+       store: store_name,
+       rw_locks: rw_locks_name,
+       tier_limit: opts[:tier_limit]},
       {
-        SeaGoat.Server,
-        # merger: merger_name,
-        # flusher: flusher_name,
-        name: opts[:name] || __MODULE__,
+        SeaGoat.Store,
+        name: store_name,
         dir: opts[:dir],
+        writer: writer_name,
         wal: wal_name,
-        lock_manager: lock_manager_name,
-        limit: opts[:limit],
-        level_limit: opts[:level_limit]
+        rw_locks: rw_locks_name,
+        compactor: compactor_name
       }
     ]
 

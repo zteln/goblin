@@ -8,6 +8,7 @@ defmodule SeaGoat.WAL do
 
   @default_sync_interval 200
   @wal_name :sea_goat_wal
+  @tmp_wal_name :sea_goat_tmp_wal
   @dump_wal_name :dump_sea_goat_wal
 
   defstruct [
@@ -23,6 +24,10 @@ defmodule SeaGoat.WAL do
     GenServer.start_link(__MODULE__, Keyword.take(opts, [:sync_interval]), name: opts[:name])
   end
 
+  def start_log(wal, file) do
+    GenServer.call(wal, {:start_log, file})
+  end
+
   def sync(wal) do
     GenServer.call(wal, :sync_now)
   end
@@ -35,12 +40,12 @@ defmodule SeaGoat.WAL do
     GenServer.call(wal, {:append_batch, batch})
   end
 
-  def rotate(wal, path, prepend, append) do
-    GenServer.call(wal, {:rotate, path, prepend, append})
+  def rotate(wal, path) do
+    GenServer.call(wal, {:rotate, path})
   end
 
-  def replay(wal, file) do
-    GenServer.call(wal, {:replay, file})
+  def get_logs(wal, file) do
+    GenServer.call(wal, {:get_logs, file})
   end
 
   def dump(wal, path, dump) do
@@ -61,6 +66,17 @@ defmodule SeaGoat.WAL do
   end
 
   @impl GenServer
+  def handle_call({:start_log, file}, _from, state) do
+    case open_log(file, @wal_name) do
+      {:ok, log} ->
+        state = %{state | log: log, current_file: file} 
+        {:reply, :ok, state}
+
+      {:error, _reason} = e ->
+        {:reply, e, state}
+    end
+  end
+
   def handle_call(:sync_now, _from, state) do
     append_and_sync_log(state.log, Enum.reverse(state.batch))
     {:reply, :ok, %{state | last_sync: now(), batch: []}}
@@ -74,10 +90,8 @@ defmodule SeaGoat.WAL do
     {:reply, :ok, %{state | batch: batch ++ state.batch}, {:continue, :sync}}
   end
 
-  def handle_call({:rotate, new_file, prepend, append}, _from, state) do
-    logs = [prepend | Enum.reverse([append | state.batch])]
-
-    with :ok <- append_and_sync_log(state.log, logs),
+  def handle_call({:rotate, new_file}, _from, state) do
+    with :ok <- append_and_sync_log(state.log, Enum.reverse(state.batch)),
          :ok <- close_log(state.log),
          {:ok, log} <- open_log(new_file, @wal_name) do
       {:reply, :ok,
@@ -104,10 +118,14 @@ defmodule SeaGoat.WAL do
     {:reply, reply, state}
   end
 
-  def handle_call({:replay, file}, _from, state) do
-    case open_log(file, @wal_name) do
+  def handle_call({:get_logs, file}, _from, state) do
+    case open_log(file, @tmp_wal_name) do
       {:ok, log} ->
         state.log && close_log(state.log)
+        ### TODO: Fix
+        close_log(log)
+        {:ok, log} = open_log(file, @wal_name)
+        ###
         logs = collect_logs(log)
         {:reply, {:ok, logs}, %{state | log: log, current_file: file}}
 

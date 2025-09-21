@@ -1,4 +1,4 @@
-defmodule SeaGoat.FileHandler do
+defmodule SeaGoat.Disk do
   def open!(path, opts \\ []) do
     case open(path, opts) do
       {:ok, io, offset} -> {io, offset}
@@ -38,7 +38,6 @@ defmodule SeaGoat.FileHandler do
   def rename(from, to) do
     case :file.rename(from, to) do
       {:error, :enoent} ->
-        dbg({from, to})
         :ok
 
       :ok ->
