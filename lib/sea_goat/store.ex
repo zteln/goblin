@@ -35,8 +35,9 @@ defmodule SeaGoat.Store do
     GenServer.call(store, :new_path)
   end
 
-  # def read(key) do
-  # end
+  def read(store, key) do
+    GenServer.call(store, {:read, key})
+  end
 
   def tmp_path(path), do: path <> @tmp_suffix
   def dump_path(path), do: path <> @dump_suffix
@@ -65,6 +66,10 @@ defmodule SeaGoat.Store do
 
     {:reply, :ok, %{state | tiers: tiers}}
   end
+
+  # def handle_call({:read, key}, _from, state) do
+  #
+  # end
 
   def handle_call(:new_path, _from, state) do
     new_file_count = state.file_count + 1

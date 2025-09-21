@@ -92,7 +92,7 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_call({:read, key}, from, state) do
+  def handle_call({:read, key}, _from, state) do
     mem_tables = [state.mem_table | Enum.map(state.flushing, &elem(&1, 1))]
 
     case search_for_key(mem_tables, key) do
@@ -239,7 +239,7 @@ defmodule SeaGoat.Writer do
     %{state | mem_table: mem_table}
   end
 
-  defp search_for_key([], key), do: :not_found
+  defp search_for_key([], _key), do: :not_found
 
   defp search_for_key([mem_table | mem_tables], key) do
     case MemTable.read(mem_table, key) do

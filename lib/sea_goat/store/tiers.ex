@@ -37,15 +37,13 @@ defmodule SeaGoat.Store.Tiers do
 
   def get_entry(tiers, tier, getter) do
     tiers
-    |> Map.get(tier, :queue.new())
-    |> :queue.to_list()
+    |> Map.get(tier, [])
     |> Enum.find(&getter.(&1))
   end
 
   def get_all_entries(tiers, tier, predicate, mapper \\ & &1) do
     tiers
-    |> Map.get(tier, :queue.new())
-    |> :queue.to_list()
+    |> Map.get(tier, [])
     |> Enum.flat_map(fn entry ->
       if predicate.(entry) do
         [mapper.(entry)]
