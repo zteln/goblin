@@ -16,7 +16,7 @@ defmodule SeaGoat.Writer do
     :limit,
     mem_table: MemTable.new(),
     transactions: %{},
-    flushing: %{},
+    flushing: [],
     subscribers: %{}
   ]
 
@@ -58,9 +58,7 @@ defmodule SeaGoat.Writer do
     end
   end
 
-  defp start_transaction(writer, pid) do
-    GenServer.call(writer, {:start_transaction, pid})
-  end
+  defp start_transaction(writer, pid), do: GenServer.call(writer, {:start_transaction, pid})
 
   defp run_transaction(writer, f, tx) do
     case f.(tx) do
@@ -94,16 +92,17 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  # def handle_call({:get, key}, from, state) do
-  #   case read_memory(state, key) do
-  #     {:ok, value} ->
-  #       {:reply, {:ok, value}, state}
-  #
-  #     :not_found ->
-  #       read_disk(state.tiers, key, from, state.lock_manager)
-  #       {:noreply, state}
-  #   end
-  # end
+  def handle_call({:read, key}, from, state) do
+    mem_tables = [state.mem_table | Enum.map(state.flushing, &elem(&1, 1))]
+
+    case search_for_key(mem_tables, key) do
+      {:ok, value} ->
+        {:reply, {:ok, value}, state}
+
+      :not_found ->
+        {:reply, :error, state}
+    end
+  end
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
@@ -164,7 +163,8 @@ defmodule SeaGoat.Writer do
 
   @impl GenServer
   def handle_info({ref, :flushed}, state) do
-    flushing = Map.delete(state.flushing, ref)
+    # flushing = Map.delete(state.flushing, ref)
+    flushing = Enum.reject(state.flushing, &(elem(&1, 0) == ref))
     state = %{state | flushing: flushing}
     {:noreply, state}
   end
@@ -175,7 +175,8 @@ defmodule SeaGoat.Writer do
     if MemTable.has_overflow(state.mem_table, state.limit) do
       {path, tmp_path} = rotate_log(state, path)
       ref = flush(state.mem_table, path, tmp_path, state.store)
-      flushing = Map.put(state.flushing, ref, state.mem_table)
+      # flushing = Map.put(state.flushing, ref, state.mem_table)
+      flushing = [{ref, state.mem_table} | state.flushing]
       %{state | mem_table: MemTable.new(), flushing: flushing}
     else
       state
@@ -218,7 +219,8 @@ defmodule SeaGoat.Writer do
 
   def replay_commands(state, [{path, batch} | commands]) do
     batch
-    |> Enum.reduce(state, &replay_command/2) |> maybe_flush(path)
+    |> Enum.reduce(state, &replay_command/2)
+    |> maybe_flush(path)
     |> replay_commands(commands)
   end
 
@@ -235,5 +237,17 @@ defmodule SeaGoat.Writer do
   def replay_command({:remove, key}, state) do
     mem_table = MemTable.delete(state.mem_table, key)
     %{state | mem_table: mem_table}
+  end
+
+  defp search_for_key([], key), do: :not_found
+
+  defp search_for_key([mem_table | mem_tables], key) do
+    case MemTable.read(mem_table, key) do
+      {:value, value} ->
+        {:ok, value}
+
+      :not_found ->
+        search_for_key(mem_tables, key)
+    end
   end
 end
