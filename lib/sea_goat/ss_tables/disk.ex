@@ -1,4 +1,4 @@
-defmodule SeaGoat.Disk do
+defmodule SeaGoat.SSTable.Disk do
   def open!(path, opts \\ []) do
     case open(path, opts) do
       {:ok, io, offset} -> {io, offset}

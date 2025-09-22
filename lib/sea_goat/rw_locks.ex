@@ -31,8 +31,8 @@ defmodule SeaGoat.RWLocks do
   If the lock is held by a writer, then `{:error, :lock_in_use}` is returned.
   """
   @spec rlock(GenServer.server(), resource()) :: :ok | {:error, :lock_in_use}
-  def rlock(rw_locks, resource) do
-    GenServer.call(rw_locks, {:rlock, resource})
+  def rlock(rw_locks, resource, pid \\ self()) do
+    GenServer.call(rw_locks, {:rlock, resource, pid})
   end
 
   @doc """
@@ -40,8 +40,8 @@ defmodule SeaGoat.RWLocks do
   If the process is the last reader to hold the lock, then the lock is released to a waiting writer, if one exists.
   """
   @spec unlock(GenServer.server(), resource()) :: :ok
-  def unlock(rw_locks, resource) do
-    GenServer.call(rw_locks, {:unlock, resource})
+  def unlock(rw_locks, resource, pid \\ self()) do
+    GenServer.call(rw_locks, {:unlock, resource, pid})
   end
 
   @impl GenServer
@@ -73,11 +73,11 @@ defmodule SeaGoat.RWLocks do
     end
   end
 
-  def handle_call({:rlock, resource}, {pid, ref}, state) do
+  def handle_call({:rlock, resource, pid}, _from, state) do
     lock = Map.get(state.locks, resource, %Lock{})
     monitor_ref = Process.monitor(pid)
 
-    case Lock.lock(lock, :r, {pid, ref, monitor_ref}) do
+    case Lock.lock(lock, :r, {pid, nil, monitor_ref}) do
       {:busy, lock} ->
         Process.demonitor(monitor_ref)
         locks = Map.put(state.locks, resource, lock)
@@ -91,7 +91,7 @@ defmodule SeaGoat.RWLocks do
     end
   end
 
-  def handle_call({:unlock, resource}, {pid, _ref}, state) do
+  def handle_call({:unlock, resource, pid}, _from, state) do
     lock = Map.get(state.locks, resource, %Lock{})
 
     state =

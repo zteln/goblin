@@ -4,6 +4,8 @@ defmodule SeaGoat.Store do
   alias SeaGoat.Compactor
   alias SeaGoat.SSTables
   alias SeaGoat.WAL
+  alias SeaGoat.RWLocks
+  alias SeaGoat.BloomFilter
 
   @file_suffix ".seagoat"
   @tmp_suffix ".tmp"
@@ -13,13 +15,14 @@ defmodule SeaGoat.Store do
     :dir,
     :wal,
     :compactor,
+    :rw_locks,
     replays: [],
     file_count: 0,
     tiers: Tiers.new()
   ]
 
   def start_link(opts) do
-    args = Keyword.take(opts, [:dir, :wal, :compactor, :writer])
+    args = Keyword.take(opts, [:dir, :wal, :compactor, :rw_locks, :writer])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
@@ -35,8 +38,8 @@ defmodule SeaGoat.Store do
     GenServer.call(store, :new_path)
   end
 
-  def read(store, key) do
-    GenServer.call(store, {:read, key})
+  def get_ss_tables(store, key) do
+    GenServer.call(store, {:get_ss_tables, key})
   end
 
   def tmp_path(path), do: path <> @tmp_suffix
@@ -48,28 +51,49 @@ defmodule SeaGoat.Store do
      %__MODULE__{
        dir: args[:dir],
        wal: args[:wal],
+       rw_locks: args[:rw_locks],
        compactor: args[:compactor]
      }, {:continue, {:replay, args[:writer]}}}
   end
 
   @impl GenServer
   def handle_call({:put, path, bloom_filter, tier}, _from, state) do
-    tiers = Tiers.insert(state.tiers, tier, {path, nil, bloom_filter})
+    tiers = Tiers.insert(state.tiers, tier, {path, bloom_filter})
     {:reply, :ok, %{state | tiers: tiers}, {:continue, {:put_in_compactor, tier, path}}}
   end
 
   def handle_call({:remove, paths, tier}, _from, state) do
     tiers =
-      Tiers.remove(state.tiers, tier, fn {path, _, _} ->
+      Tiers.remove(state.tiers, tier, fn {path, _} ->
         path in paths
       end)
 
     {:reply, :ok, %{state | tiers: tiers}}
   end
 
-  # def handle_call({:read, key}, _from, state) do
-  #
-  # end
+  def handle_call({:get_ss_tables, key}, {pid, _ref}, state) do
+    ss_tables =
+      state.tiers
+      |> Tiers.tiers()
+      |> Enum.reduce([], fn tier, acc ->
+        acc ++
+          Tiers.get_all_entries(
+            state.tiers,
+            tier,
+            fn {_path, bloom_filter} ->
+              BloomFilter.is_member(bloom_filter, key)
+            end,
+            fn {path, _bloom_filter} ->
+              RWLocks.rlock(state.rw_locks, path, pid)
+
+              {fn -> SSTables.search_for_key(path, key) end,
+               fn -> RWLocks.unlock(state.rw_locks, path, pid) end}
+            end
+          )
+      end)
+
+    {:reply, ss_tables, state}
+  end
 
   def handle_call(:new_path, _from, state) do
     new_file_count = state.file_count + 1
@@ -135,7 +159,7 @@ defmodule SeaGoat.Store do
         %{acc | replays: replays, file_count: file_count}
 
       {:level, bloom_filter, tier, file_count, path}, acc ->
-        tiers = Tiers.insert(state.tiers, tier, {path, nil, bloom_filter})
+        tiers = Tiers.insert(acc.tiers, tier, {path, bloom_filter})
         :ok = Compactor.put(state.compactor, tier, path)
         %{acc | tiers: tiers, file_count: file_count}
     end)

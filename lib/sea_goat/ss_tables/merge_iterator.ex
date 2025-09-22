@@ -30,7 +30,7 @@ defmodule SeaGoat.SSTables.MergeIterator do
     defp open_ss_tables([path | paths], acc) do
       starting_offset = 0
 
-      with {:ok, io, ^starting_offset} <- SeaGoat.Disk.open(path, start?: true),
+      with {:ok, io, ^starting_offset} <- SeaGoat.SSTable.Disk.open(path, start?: true),
            {:ok, offset, kv} <- next_kv(io, starting_offset + SeaGoat.SSTables.SSTable.size(:header)) do
         open_ss_tables(paths, [{io, offset, kv, path} | acc])
       end
@@ -39,7 +39,7 @@ defmodule SeaGoat.SSTables.MergeIterator do
     defp close_ss_tables([]), do: :ok
 
     defp close_ss_tables([{io, _, _, _} | ss_tables]) do
-      with :ok <- SeaGoat.Disk.close(io) do
+      with :ok <- SeaGoat.SSTable.Disk.close(io) do
         close_ss_tables(ss_tables)
       end
     end
@@ -71,10 +71,10 @@ defmodule SeaGoat.SSTables.MergeIterator do
 
     defp next_kv(io, offset) do
       with {:ok, encoded_kv_size} <-
-             SeaGoat.Disk.read(io, offset, SeaGoat.SSTables.SSTable.size(:kv_header)),
+             SeaGoat.SSTable.Disk.read(io, offset, SeaGoat.SSTables.SSTable.size(:kv_header)),
            {:ok, kv_size} <- get_size(offset, encoded_kv_size),
            {:ok, encoded_data} <-
-             SeaGoat.Disk.read(io, offset, SeaGoat.SSTables.SSTable.size(:kv_header) + kv_size),
+             SeaGoat.SSTable.Disk.read(io, offset, SeaGoat.SSTables.SSTable.size(:kv_header) + kv_size),
            {:ok, kv} <- SeaGoat.SSTables.SSTable.decode(:data, encoded_data) do
         {:ok, offset + SeaGoat.SSTables.SSTable.size(:kv_header) + kv_size, kv}
       end

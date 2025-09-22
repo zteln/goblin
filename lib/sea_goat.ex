@@ -1,14 +1,25 @@
 defmodule SeaGoat do
   use Supervisor
 
-  defdelegate put(db \\ __MODULE__, key, value), to: SeaGoat.Writer
-  defdelegate remove(db \\ __MODULE__, key), to: SeaGoat.Writer
-  # defdelegate get(db \\ __MODULE__, key), to: SeaGoat.Server
+  def put(db, key, value) do
+    writer = name(db, :writer)
+    SeaGoat.Writer.put(writer, key, value)
+  end
+
+  def remove(db, key) do
+    writer = name(db, :writer)
+    SeaGoat.Writer.remove(writer, key)
+  end
+
+  def get(db, key) do
+    writer = name(db, :writer)
+    store = name(db, :store)
+    SeaGoat.Reader.get(writer, store, key)
+  end
 
   def start_link(opts) do
     opts[:dir] || raise "no dir provided."
-    name = name(opts[:name], :sup)
-    Supervisor.start_link(__MODULE__, opts, name: name)
+    Supervisor.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 
   @impl true
@@ -41,6 +52,19 @@ defmodule SeaGoat do
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  defp name(name, suffix) when is_pid(name) do
+    case Process.info(name, :registered_name) do
+      {:registered_name, []} ->
+        name(nil, suffix)
+
+      {:registered_name, __MODULE__} ->
+        name(nil, suffix)
+
+      {:registered_name, registered_name} ->
+        name(registered_name, suffix)
+    end
   end
 
   defp name(name, suffix) do
