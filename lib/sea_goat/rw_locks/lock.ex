@@ -38,6 +38,9 @@ defmodule SeaGoat.RWLocks.Lock do
         lock = %{lock | current: current}
         {:locked, lock}
 
+      %{current: [{:wlock, _id}]} ->
+        {:busy, lock}
+
       %{waiting: nil} ->
         waiting = {:wlock, id}
         lock = %{lock | waiting: waiting}

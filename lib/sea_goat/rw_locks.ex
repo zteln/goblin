@@ -1,25 +1,45 @@
 defmodule SeaGoat.RWLocks do
   @moduledoc """
-  Simple reader-writer locks implementation.
-  Writers wait until all read-locks are released.
+  Management of reader-writer locks.
+  Locks are PID-based and all processes acquiring a lock are monitored.
   """
   use GenServer
   alias __MODULE__.Lock
 
+  @type resource :: term()
+
   defstruct locks: %{}
 
+  @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, nil, name: opts[:name])
   end
 
+  @doc """
+  Attempts to acquire a write-lock on `resource`.
+  If there is no other writer waiting, then the caller is blocked until the lock is acquired and returns `:ok`.
+  If there is another writer waiting already, then `{:error, :lock_in_use}` is returned immediately.
+  """
+  @spec wlock(GenServer.server(), resource()) :: :ok | {:error, :lock_in_use}
   def wlock(rw_locks, resource) do
     GenServer.call(rw_locks, {:wlock, resource}, :infinity)
   end
 
+  @doc """
+  Attempts to acquire a read-lock on `resource`.
+  If no writer currently holds the lock, then `rlock` succeeds and returns `:ok`.
+  If the lock is held by a writer, then `{:error, :lock_in_use}` is returned.
+  """
+  @spec rlock(GenServer.server(), resource()) :: :ok | {:error, :lock_in_use}
   def rlock(rw_locks, resource) do
     GenServer.call(rw_locks, {:rlock, resource})
   end
 
+  @doc """
+  Unlocks the lock held by the process. Returns `:ok`.
+  If the process is the last reader to hold the lock, then the lock is released to a waiting writer, if one exists.
+  """
+  @spec unlock(GenServer.server(), resource()) :: :ok
   def unlock(rw_locks, resource) do
     GenServer.call(rw_locks, {:unlock, resource})
   end

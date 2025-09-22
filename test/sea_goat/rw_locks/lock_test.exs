@@ -14,8 +14,22 @@ defmodule SeaGoat.RWLocks.LockTest do
             %Lock{
               waiting: {:wlock, :lock_id_2},
               current: [{:rlock, :lock_id_1}, {:rlock, :lock_id_0}]
-            }} =
+            } = lock} =
              Lock.lock(lock, :w, :lock_id_2)
+
+    assert {:busy,
+            %Lock{
+              waiting: {:wlock, :lock_id_2},
+              current: [{:rlock, :lock_id_1}, {:rlock, :lock_id_0}]
+            }} =
+             Lock.lock(lock, :w, :lock_id_3)
+  end
+
+  test "lock/3 does not let readers acquire lock when writer has it" do
+    assert {:locked, %Lock{waiting: nil, current: [{:wlock, :lock_id_0}]} = lock} =
+             Lock.lock(%Lock{}, :w, :lock_id_0)
+
+    assert {:busy, lock} == Lock.lock(lock, :r, :lock_id_1)
   end
 
   test "unlock/2 releases to waiting" do
