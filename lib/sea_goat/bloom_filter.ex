@@ -12,15 +12,23 @@ defmodule SeaGoat.BloomFilter do
 
   @type t :: %__MODULE__{}
 
-  @spec new(keys :: [term()], size :: non_neg_integer()) :: t()
-  def new(keys, size) do
+  @doc """
+  Generates a new BloomFilter datastructure.
+  `keys` is a list of unique keys.
+  """
+  @spec new([term()]) :: t()
+  def new(keys) when is_list(keys) do
+    size = length(keys)
     for key <- keys, reduce: init(size) do
       acc ->
         update(acc, key)
     end
   end
 
-  @spec is_member(bloom_filter :: t(), key :: term()) :: boolean()
+  @doc """
+  Checks whether `key` is a member of the BloomFilter structure or not.
+  """
+  @spec is_member(t(), term()) :: boolean()
   def is_member(bloom_filter, key) do
     Enum.all?(bloom_filter.hashes, fn hash ->
       1 == :array.get(hash.(key), bloom_filter.array)

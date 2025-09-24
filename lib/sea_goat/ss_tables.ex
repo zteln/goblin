@@ -96,7 +96,7 @@ defmodule SeaGoat.SSTables do
   defp write_meta(io, offset, index, tier) do
     keys = Map.keys(index)
     range = {Enum.min(keys), Enum.max(index)}
-    bloom_filter = BloomFilter.new(keys, length(keys))
+    bloom_filter = BloomFilter.new(keys)
 
     meta =
       SSTable.encode(:meta, level: tier, range: range, index: index, bloom_filter: bloom_filter)
