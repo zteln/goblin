@@ -106,7 +106,7 @@ defmodule SeaGoat.Writer do
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
-      tx = Transaction.make(pid)
+      tx = Transaction.new(pid, self(), state.store)
       transactions = Map.put(state.transactions, pid, [])
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
     else
@@ -120,7 +120,7 @@ defmodule SeaGoat.Writer do
         {:reply, {:error, :no_tx_found}, state}
 
       commits ->
-        if not Transaction.is_in_conflict(tx, commits) do
+        if not Transaction.has_conflict(tx, commits) do
           transactions =
             state.transactions
             |> Map.delete(pid)

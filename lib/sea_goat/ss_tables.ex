@@ -73,7 +73,7 @@ defmodule SeaGoat.SSTables do
 
   defp write(io, offset, tier, iterator, data) do
     with {:ok, iterator} <- SSTableIterator.init(iterator, data),
-         {:ok, offset} <- Disk.write(io, offset, SSTable.make()),
+         {:ok, offset} <- Disk.write(io, offset, SSTable.new()),
          {:ok, index, offset, iterator} <- write_data(io, offset, iterator),
          :ok <- SSTableIterator.deinit(iterator) do
       write_meta(io, offset, index, tier)

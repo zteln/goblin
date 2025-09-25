@@ -10,7 +10,7 @@ defmodule SeaGoat.SSTables.SSTable do
                  0::unsigned-integer-32
                >>)
 
-  def make do
+  def new do
     <<@identifier::unsigned-integer-32>>
   end
 

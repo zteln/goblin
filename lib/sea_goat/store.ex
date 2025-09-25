@@ -113,7 +113,7 @@ defmodule SeaGoat.Store do
         [] ->
           file_count = 0
           path = path(state.dir, file_count)
-          WAL.start_log(state.wal, path)
+          WAL.open(state.wal, path)
           send(writer, {:replay, state.replays})
           %{state | file_count: file_count}
 
@@ -168,6 +168,7 @@ defmodule SeaGoat.Store do
   defp wal_or_db(file, wal) do
     case WAL.get_logs(wal, file) do
       {:ok, logs} ->
+        WAL.open(wal, file)
         {:logs, logs}
 
       _ ->

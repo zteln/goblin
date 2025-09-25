@@ -5,7 +5,7 @@ defmodule SeaGoat.BloomFilterTest do
   test "new/2 returns valid Bloom Filter" do
     keys = Enum.to_list(1..100)
     size = 100
-    assert %BloomFilter{} = bloom_filter = BloomFilter.new(keys, size)
+    assert %BloomFilter{} = bloom_filter = BloomFilter.new(keys)
 
     for n <- 1..100 do
       assert BloomFilter.is_member(bloom_filter, n)

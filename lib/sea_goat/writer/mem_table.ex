@@ -38,7 +38,7 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Reads the value for a key in the mem-table.
-  Returns `{:value, value}` if the key exists, where value is `nil` if the key has been deleted.
+  Returns `{:value, value}` if the key exists, where `value` is `nil` if the key has been deleted.
   If the key does not exist, then `:not_found` is returned.
   """
   @spec read(t(), term()) :: {:value, nil | term()} | :not_found
