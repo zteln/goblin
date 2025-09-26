@@ -1,6 +1,13 @@
 defmodule SeaGoat.Writer.Transaction do
   @moduledoc """
+  A transaction keeps an internal MemTable that is merged into the main MemTable when committed as long as it is conflict-free.
+  The transaction tracks what is written and read and checks for eventual conflicts.
 
+  There are two possible conflicts:
+  1. read conflict: the transaction reads a value corresponding to a key that has changed since the read. E.g. transaction A reads `key` with value `val1`, then transaction B writes `val2` to `key` and commits. Transaction A has then a read conflict.
+  2. write conflict: a concurrent transaction commits a change to a key before this transaction. E.g. two transactions, A and B, write to `key` values `val1` and `val2`, respectively. A commits before B, then B has a write conflict.
+
+  Reading a key in a transaction first searches for the key-value pair in its internal MemTable before calling the `:fallback_read` function.
   """
   alias SeaGoat.Writer.MemTable
 
@@ -20,7 +27,7 @@ defmodule SeaGoat.Writer.Transaction do
   The writer pid is used for reading from the in-memory MemTable.
   The store pid is used to reading the on-disk SSTables.
   """
-  @spec new(pid(), (term() -> {:value, term() | nil} | nil)) :: t()
+  @spec new(pid(), (term() -> term())) :: t()
   def new(pid, fallback_read \\ fn _ -> nil end) do
     %__MODULE__{owner: pid, fallback_read: fallback_read}
   end
@@ -59,12 +66,15 @@ defmodule SeaGoat.Writer.Transaction do
   defp has_read_conflict(_, []), do: false
 
   defp has_read_conflict(reads, [mem_table | mem_tables]) do
-    Enum.any?(reads, fn {key, read} ->
-      case MemTable.read(mem_table, key) do
-        :not_found -> false
-        {:value, value} -> value != read
-      end
-    end) || has_read_conflict(reads, mem_tables)
+    read_conflict? =
+      Enum.any?(reads, fn {key, read} ->
+        case MemTable.read(mem_table, key) do
+          :not_found -> false
+          {:value, value} -> value != read
+        end
+      end)
+
+    if read_conflict?, do: true, else: has_read_conflict(reads, mem_tables)
   end
 
   defp has_write_conflict(_mem_table, []), do: false
