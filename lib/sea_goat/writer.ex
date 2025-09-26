@@ -106,7 +106,8 @@ defmodule SeaGoat.Writer do
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
-      tx = Transaction.new(pid, self(), state.store)
+      parent = self()
+      tx = Transaction.new(pid, &SeaGoat.Reader.get(parent, state.store, &1))
       transactions = Map.put(state.transactions, pid, [])
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
     else

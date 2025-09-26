@@ -1,36 +1,95 @@
 defmodule SeaGoat.Writer.Transaction do
+  @moduledoc """
+
+  """
   alias SeaGoat.Writer.MemTable
 
-  defstruct mem_table: MemTable.new(),
-            writes: [],
-            owner: nil
+  defstruct [
+    :owner,
+    :fallback_read,
+    mem_table: MemTable.new(),
+    writes: [],
+    reads: %{}
+  ]
 
-  def make(pid) do
-    %__MODULE__{owner: pid}
+  @type t :: %__MODULE__{}
+
+  @doc """
+  Returns a new `Transaction` structure.
+  Each transaction keeps track of its owner (the process executing the transaction), the writer (the process that commits the transactions), and the store (the process responsible for on-disk storage).
+  The writer pid is used for reading from the in-memory MemTable.
+  The store pid is used to reading the on-disk SSTables.
+  """
+  @spec new(pid(), (term() -> {:value, term() | nil} | nil)) :: t()
+  def new(pid, fallback_read \\ fn _ -> nil end) do
+    %__MODULE__{owner: pid, fallback_read: fallback_read}
   end
 
+  @doc """
+  Puts the key-value pair in the transactions MemTable, overriding `key` if it exists.
+  """
+  @spec put(t(), term(), term()) :: t()
   def put(tx, key, value) do
     write = {:put, key, value}
     mem_table = MemTable.upsert(tx.mem_table, key, value)
     %{tx | mem_table: mem_table, writes: [write | tx.writes]}
   end
 
+  @doc """
+  Removes `key` and corresponding value in the transactions MemTable.
+  """
+  @spec remove(t(), term()) :: t()
   def remove(tx, key) do
     write = {:remove, key}
     mem_table = MemTable.delete(tx.mem_table, key)
     %{tx | mem_table: mem_table, writes: [write | tx.writes]}
   end
 
-  def read(tx, key) do
-    case MemTable.read(tx.mem_table, key) do
-      {:value, value} -> value
-      nil -> nil
+  @doc """
+  Checks whether the transaction has any conflicts with other MemTables.
+  A conflict can arise two ways:
+  - if the transaction has read a key with a value differing to the value found under the same in one of the MemTables.
+  - if the transaction attempts to write to a key already existing in one of the MemTables.
+  """
+  @spec has_conflict(t(), [MemTable.t()]) :: boolean()
+  def has_conflict(tx, mem_tables) do
+    has_read_conflict(tx.reads, mem_tables) || has_write_conflict(tx.mem_table, mem_tables)
+  end
+
+  defp has_read_conflict(_, []), do: false
+
+  defp has_read_conflict(reads, [mem_table | mem_tables]) do
+    Enum.any?(reads, fn {key, read} ->
+      case MemTable.read(mem_table, key) do
+        :not_found -> false
+        {:value, value} -> value != read
+      end
+    end) || has_read_conflict(reads, mem_tables)
+  end
+
+  defp has_write_conflict(_mem_table, []), do: false
+
+  defp has_write_conflict(mem_table1, [mem_table2 | mem_tables]) do
+    if MemTable.is_disjoint(mem_table1, mem_table2) do
+      has_write_conflict(mem_table1, mem_tables)
+    else
+      true
     end
   end
 
-  def is_in_conflict(_, []), do: false
+  @doc """
+  Reads `key` from either its own MemTable or via its `fallback_read` function if `:not_found` is returned from its own MemTable..
+  """
+  @spec read(t(), term()) :: term | nil
+  def read(tx, key) do
+    read =
+      case MemTable.read(tx.mem_table, key) do
+        {:value, value} -> value
+        :not_found -> tx.fallback_read.(key)
+      end
 
-  def is_in_conflict(tx, [committed | commits]) do
-    MemTable.is_disjoint(tx.mem_table, committed) && is_in_conflict(tx, commits)
+    reads = Map.put(tx.reads, key, read)
+    tx = %{tx | reads: reads}
+    {read, tx}
   end
 end
