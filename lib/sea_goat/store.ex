@@ -1,6 +1,6 @@
 defmodule SeaGoat.Store do
   use GenServer
-  alias SeaGoat.Store.Tiers
+  alias SeaGoat.Store.Levels
   alias SeaGoat.Compactor
   alias SeaGoat.SSTables
   alias SeaGoat.WAL
@@ -18,7 +18,7 @@ defmodule SeaGoat.Store do
     :rw_locks,
     replays: [],
     file_count: 0,
-    tiers: Tiers.new()
+    levels: Levels.new()
   ]
 
   def start_link(opts) do
@@ -26,12 +26,12 @@ defmodule SeaGoat.Store do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  def put(store, path, bloom_filter, tier) do
-    GenServer.call(store, {:put, path, bloom_filter, tier})
+  def put(store, path, bloom_filter, level) do
+    GenServer.call(store, {:put, path, bloom_filter, level})
   end
 
-  def remove(store, paths, tier) do
-    GenServer.call(store, {:remove, paths, tier})
+  def remove(store, paths, level) do
+    GenServer.call(store, {:remove, paths, level})
   end
 
   def new_path(store) do
@@ -57,29 +57,29 @@ defmodule SeaGoat.Store do
   end
 
   @impl GenServer
-  def handle_call({:put, path, bloom_filter, tier}, _from, state) do
-    tiers = Tiers.insert(state.tiers, tier, {path, bloom_filter})
-    {:reply, :ok, %{state | tiers: tiers}, {:continue, {:put_in_compactor, tier, path}}}
+  def handle_call({:put, path, bloom_filter, level}, _from, state) do
+    levels = Levels.insert(state.levels, level, {path, bloom_filter})
+    {:reply, :ok, %{state | levels: levels}, {:continue, {:put_in_compactor, level, path}}}
   end
 
-  def handle_call({:remove, paths, tier}, _from, state) do
-    tiers =
-      Tiers.remove(state.tiers, tier, fn {path, _} ->
+  def handle_call({:remove, paths, level}, _from, state) do
+    levels =
+      Levels.remove(state.levels, level, fn {path, _} ->
         path in paths
       end)
 
-    {:reply, :ok, %{state | tiers: tiers}}
+    {:reply, :ok, %{state | levels: levels}}
   end
 
   def handle_call({:get_ss_tables, key}, {pid, _ref}, state) do
     ss_tables =
-      state.tiers
-      |> Tiers.tiers()
-      |> Enum.reduce([], fn tier, acc ->
+      state.levels
+      |> Levels.levels()
+      |> Enum.reduce([], fn level, acc ->
         acc ++
-          Tiers.get_all_entries(
-            state.tiers,
-            tier,
+          Levels.get_all_entries(
+            state.levels,
+            level,
             fn {_path, bloom_filter} ->
               BloomFilter.is_member(bloom_filter, key)
             end,
@@ -102,8 +102,8 @@ defmodule SeaGoat.Store do
   end
 
   @impl GenServer
-  def handle_continue({:put_in_compactor, tier, path}, state) do
-    :ok = Compactor.put(state.compactor, tier, path)
+  def handle_continue({:put_in_compactor, level, path}, state) do
+    :ok = Compactor.put(state.compactor, level, path)
     {:noreply, state}
   end
 
@@ -146,8 +146,8 @@ defmodule SeaGoat.Store do
         {:logs, logs} ->
           [{:logs, logs, block, file}]
 
-        {:level, bloom_filter, tier} ->
-          [{:level, bloom_filter, tier, block, file}]
+        {:level, bloom_filter, level} ->
+          [{:level, bloom_filter, level, block, file}]
 
         _ ->
           []
@@ -158,10 +158,10 @@ defmodule SeaGoat.Store do
         replays = [{path, logs} | acc.replays]
         %{acc | replays: replays, file_count: file_count}
 
-      {:level, bloom_filter, tier, file_count, path}, acc ->
-        tiers = Tiers.insert(acc.tiers, tier, {path, bloom_filter})
-        :ok = Compactor.put(state.compactor, tier, path)
-        %{acc | tiers: tiers, file_count: file_count}
+      {:level, bloom_filter, level, file_count, path}, acc ->
+        levels = Levels.insert(acc.levels, level, {path, bloom_filter})
+        :ok = Compactor.put(state.compactor, level, path)
+        %{acc | levels: levels, file_count: file_count}
     end)
   end
 
@@ -173,8 +173,8 @@ defmodule SeaGoat.Store do
 
       _ ->
         case SSTables.read_bloom_filter(file) do
-          {:ok, {bloom_filter, tier}} ->
-            {:level, bloom_filter, tier}
+          {:ok, {bloom_filter, level}} ->
+            {:level, bloom_filter, level}
 
           _ ->
             {:error, :not_wal_or_db}

@@ -6,7 +6,7 @@ defmodule SeaGoat.Writer do
   alias SeaGoat.SSTables
   alias SeaGoat.Store
 
-  @flush_tier 0
+  @flush_level 0
   @default_mem_limit 20000
 
   defstruct [
@@ -106,8 +106,9 @@ defmodule SeaGoat.Writer do
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
-      parent = self()
-      tx = Transaction.new(pid, &SeaGoat.Reader.get(parent, state.store, &1))
+      writer = self()
+      store = state.store
+      tx = Transaction.new(pid, &SeaGoat.Reader.get(writer, store, &1))
       transactions = Map.put(state.transactions, pid, [])
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
     else
@@ -176,7 +177,6 @@ defmodule SeaGoat.Writer do
     if MemTable.has_overflow(state.mem_table, state.limit) do
       {path, tmp_path} = rotate_log(state, path)
       ref = flush(state.mem_table, path, tmp_path, state.store)
-      # flushing = Map.put(state.flushing, ref, state.mem_table)
       flushing = [{ref, state.mem_table} | state.flushing]
       %{state | mem_table: MemTable.new(), flushing: flushing}
     else
@@ -200,15 +200,15 @@ defmodule SeaGoat.Writer do
   defp flush(mem_table, path, tmp_path, store) do
     %{ref: ref} =
       Task.async(fn ->
-        with {:ok, bloom_filter, tmp_path, tier} <-
+        with {:ok, bloom_filter, tmp_path, level} <-
                SSTables.write(
                  %SSTables.FlushIterator{},
                  mem_table,
                  tmp_path,
-                 @flush_tier
+                 @flush_level
                ),
              :ok <- SSTables.switch(tmp_path, path),
-             :ok <- Store.put(store, path, bloom_filter, tier) do
+             :ok <- Store.put(store, path, bloom_filter, level) do
           :flushed
         end
       end)

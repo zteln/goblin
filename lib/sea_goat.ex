@@ -39,7 +39,7 @@ defmodule SeaGoat do
        wal: wal_name,
        store: store_name,
        rw_locks: rw_locks_name,
-       tier_limit: opts[:tier_limit]},
+       level_limit: opts[:level_limit]},
       {
         SeaGoat.Store,
         name: store_name,

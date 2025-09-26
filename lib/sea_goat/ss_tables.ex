@@ -16,20 +16,20 @@ defmodule SeaGoat.SSTables do
     :ok = Disk.rename(from, to)
   end
 
-  def write(iterator, data, path, tier) do
-    with {:ok, bloom_filter} <- write_to_file(path, tier, iterator, data) do
-      {:ok, bloom_filter, path, tier}
+  def write(iterator, data, path, level) do
+    with {:ok, bloom_filter} <- write_to_file(path, level, iterator, data) do
+      {:ok, bloom_filter, path, level}
     end
   end
 
   def read_bloom_filter(file) do
     read_f = fn io, offset, footer ->
-      tier = SSTable.footer_part(footer, :level)
+      level = SSTable.footer_part(footer, :level)
 
       # TODO: Check if DB file first
       case read_meta_part(io, offset, footer, :bloom_filter) do
         {:ok, bloom_filter} ->
-          {:ok, {bloom_filter, tier}}
+          {:ok, {bloom_filter, level}}
 
         e ->
           e
@@ -60,23 +60,23 @@ defmodule SeaGoat.SSTables do
     read_file(file, read)
   end
 
-  defp write_to_file(path, tier, iterator, data) do
+  defp write_to_file(path, level, iterator, data) do
     starting_offset = 0
 
     with {:ok, io, ^starting_offset} <- Disk.open(path, write?: true),
-         {:ok, bloom_filter} <- write(io, starting_offset, tier, iterator, data),
+         {:ok, bloom_filter} <- write(io, starting_offset, level, iterator, data),
          :ok <- Disk.sync(io),
          :ok <- Disk.close(io) do
       {:ok, bloom_filter}
     end
   end
 
-  defp write(io, offset, tier, iterator, data) do
+  defp write(io, offset, level, iterator, data) do
     with {:ok, iterator} <- SSTableIterator.init(iterator, data),
          {:ok, offset} <- Disk.write(io, offset, SSTable.new()),
          {:ok, index, offset, iterator} <- write_data(io, offset, iterator),
          :ok <- SSTableIterator.deinit(iterator) do
-      write_meta(io, offset, index, tier)
+      write_meta(io, offset, index, level)
     end
   end
 
@@ -93,13 +93,13 @@ defmodule SeaGoat.SSTables do
     end
   end
 
-  defp write_meta(io, offset, index, tier) do
+  defp write_meta(io, offset, index, level) do
     keys = Map.keys(index)
     range = {Enum.min(keys), Enum.max(index)}
     bloom_filter = BloomFilter.new(keys)
 
     meta =
-      SSTable.encode(:meta, level: tier, range: range, index: index, bloom_filter: bloom_filter)
+      SSTable.encode(:meta, level: level, range: range, index: index, bloom_filter: bloom_filter)
 
     with {:ok, _offset} <- Disk.write(io, offset, meta) do
       {:ok, bloom_filter}
