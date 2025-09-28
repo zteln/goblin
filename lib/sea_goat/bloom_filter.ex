@@ -7,19 +7,32 @@ defmodule SeaGoat.BloomFilter do
   @derive {Inspect, except: [:array]}
   defstruct [
     :hashes,
-    :array
+    :array,
+    set: MapSet.new()
   ]
 
   @type t :: %__MODULE__{}
 
   @doc """
-  Generates a new BloomFilter datastructure.
-  `keys` is a list of unique keys.
+  Returns a new BloomFilter struct.
   """
-  @spec new([term()]) :: t()
-  def new(keys) when is_list(keys) do
-    size = length(keys)
-    for key <- keys, reduce: init(size) do
+  @spec new() :: t()
+  def new, do: %__MODULE__{}
+
+  @doc """
+  Puts a key into the Bloom filters set, to be used when generating the Bloom Filter.
+  """
+  @spec put(t(), term()) :: t()
+  def put(bf, key), do: %{bf | set: MapSet.put(bf.set, key)}
+
+  @doc """
+  Generates the Bloom filter, i.e. from the set of keys generates hashes and populates the bit array.
+  """
+  @spec generate(t()) :: t()
+  def generate(bf) do
+    size = MapSet.size(bf.set)
+
+    for key <- MapSet.to_list(bf.set), reduce: init(size) do
       acc ->
         update(acc, key)
     end

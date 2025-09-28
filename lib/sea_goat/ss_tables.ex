@@ -22,38 +22,35 @@ defmodule SeaGoat.SSTables do
     end
   end
 
-  def read_bloom_filter(file) do
-    read_f = fn io, offset, footer ->
-      level = SSTable.footer_part(footer, :level)
+  def fetch_bloom_filter(file) do
+    read_f = fn io, _offset, metadata ->
+      {level, bf_size, bf_pos, _, _, _, _} = metadata
 
-      # TODO: Check if DB file first
-      case read_meta_part(io, offset, footer, :bloom_filter) do
-        {:ok, bloom_filter} ->
-          {:ok, {bloom_filter, level}}
-
-        e ->
-          e
+      with {:ok, bf} <- fetch_part(io, bf_pos, bf_size, &SSTable.decode_bloom_filter/1) do
+        {:ok, {bf, level}}
       end
     end
 
-    read = &read_meta(&1, &2, read_f)
+    read = &fetch_metadata(&1, &2, read_f)
     read_file(file, read)
   end
 
   def search_for_key(file, key) do
-    read_f = fn io, offset, footer ->
-      with {:ok, {smallest, largest}} when key >= smallest and key <= largest <-
-             read_meta_part(io, offset, footer, :range),
-           {:ok, index} <- read_meta_part(io, offset, footer, :index) do
-        {:ok, Map.get(index, key)}
-      else
-        _ -> nil
+    read_f = fn io, _offset, metadata ->
+      {_, _, _, range_size, range_pos, no_of_blocks, _} = metadata
+
+      case fetch_part(io, range_pos, range_size, &SSTable.decode_range/1) do
+        {:ok, {smallest, largest}} when key >= smallest and key <= largest ->
+          {:ok, no_of_blocks}
+
+        _ ->
+          nil
       end
     end
 
     read = fn io, offset ->
-      with {:ok, {key_offset, size}} <- read_meta(io, offset, read_f) do
-        read_data(io, key_offset, size, key)
+      with {:ok, no_of_blocks} <- fetch_metadata(io, offset, read_f) do
+        fetch_key(io, 0, no_of_blocks, key)
       end
     end
 
@@ -64,91 +61,111 @@ defmodule SeaGoat.SSTables do
     starting_offset = 0
 
     with {:ok, io, ^starting_offset} <- Disk.open(path, write?: true),
-         {:ok, bloom_filter} <- write(io, starting_offset, level, iterator, data),
+         {:ok, bloom_filter} <- write_ss_table(io, starting_offset, level, iterator, data),
          :ok <- Disk.sync(io),
          :ok <- Disk.close(io) do
       {:ok, bloom_filter}
     end
   end
 
-  defp write(io, offset, level, iterator, data) do
+  defp write_ss_table(io, offset, level, iterator, data) do
     with {:ok, iterator} <- SSTableIterator.init(iterator, data),
-         {:ok, offset} <- Disk.write(io, offset, SSTable.new()),
-         {:ok, index, offset, iterator} <- write_data(io, offset, iterator),
+         {:ok, no_of_blocks, offset, range, bloom_filter, iterator} <-
+           write_data(io, offset, iterator),
          :ok <- SSTableIterator.deinit(iterator) do
-      write_meta(io, offset, index, level)
+      write_meta(io, level, bloom_filter, range, offset, no_of_blocks)
     end
   end
 
-  defp write_data(io, offset, iterator, index \\ %{}) do
+  defp write_data(
+         io,
+         offset,
+         iterator,
+         no_of_blocks \\ 0,
+         {smallest, largest} \\ {nil, nil},
+         bloom_filter \\ BloomFilter.new()
+       ) do
     case SSTableIterator.next(iterator) do
       {:next, {k, v}, iterator} ->
-        block = SSTable.encode(:data, key: k, value: v)
-        {:ok, new_offset} = Disk.write(io, offset, block)
-        index = Map.put(index, k, {offset, byte_size(block)})
-        write_data(io, new_offset, iterator, index)
+        {:ok, offset} = Disk.write(io, offset, SSTable.encode_block(k, v))
+        smallest = if smallest, do: smallest, else: k
+        largest = k
+        bloom_filter = BloomFilter.put(bloom_filter, k)
+        write_data(io, offset, iterator, no_of_blocks + 1, {smallest, largest}, bloom_filter)
 
       {:eod, iterator} ->
-        {:ok, index, offset, iterator}
+        bloom_filter = BloomFilter.generate(bloom_filter)
+        {:ok, no_of_blocks, offset, {smallest, largest}, bloom_filter, iterator}
     end
   end
 
-  defp write_meta(io, offset, index, level) do
-    keys = Map.keys(index)
-    range = {Enum.min(keys), Enum.max(index)}
-    bloom_filter = BloomFilter.new(keys)
+  defp write_meta(io, level, bloom_filter, range, offset, no_of_blocks) do
+    footer = SSTable.encode_footer(level, bloom_filter, range, offset, no_of_blocks)
 
-    meta =
-      SSTable.encode(:meta, level: level, range: range, index: index, bloom_filter: bloom_filter)
-
-    with {:ok, _offset} <- Disk.write(io, offset, meta) do
+    with {:ok, _offset} <- Disk.write(io, offset, footer) do
       {:ok, bloom_filter}
     end
   end
 
-  defp read_file(file, f) do
+  defp read_file(file, reader) do
     {io, offset} = Disk.open!(file)
 
-    case f.(io, offset) do
-      {:ok, data} ->
+    with {:ok, magic} <- Disk.read(io, offset - SSTable.size(:magic), SSTable.size(:magic)),
+         true <- SSTable.is_ss_table(magic) do
+      result = reader.(io, offset)
+      Disk.close(io)
+      result
+    else
+      _ ->
         Disk.close(io)
-        {:ok, data}
-
-      e ->
-        Disk.close(io)
-        e
+        {:error, :not_an_ss_table}
     end
   end
 
-  defp read_meta(io, offset, f) do
-    with {:ok, encoded_footer} <-
-           Disk.read(io, SSTable.offset_calc(offset, :footer), SSTable.size(:footer)),
-         {:ok, footer} <- SSTable.decode(:footer, encoded_footer) do
-      f.(io, offset, footer)
-    end
-  end
-
-  defp read_meta_part(io, offset, footer, meta_part_key) do
-    with {:ok, encoded} <-
+  defp fetch_metadata(io, offset, f) do
+    with {:ok, encoded_metadata} <-
            Disk.read(
              io,
-             SSTable.offset_calc(offset, footer, meta_part_key),
-             SSTable.footer_part(footer, meta_part_key)
+             offset - SSTable.size(:magic) - SSTable.size(:metadata),
+             SSTable.size(:metadata)
            ),
-         {:ok, decoded} <- SSTable.decode(:meta_part, encoded) do
+         {:ok, metadata} <- SSTable.decode_metadata(encoded_metadata) do
+      f.(io, offset, metadata)
+    end
+  end
+
+  defp fetch_part(io, offset, size, decoder) do
+    with {:ok, encoded} <- Disk.read(io, offset, size),
+         {:ok, decoded} <- decoder.(encoded) do
       {:ok, decoded}
     end
   end
 
-  defp read_data(io, key_offset, size, key) do
-    with {:ok, encoded} <- Disk.read(io, key_offset, size),
-         {:ok, {fetched_key, value}} <- SSTable.decode(:data, encoded) do
-      if fetched_key == key do
-        value = if value == :tombstone, do: nil, else: value
-        {:ok, {:value, value}}
-      else
-        {:error, :next}
+  defp fetch_key(io, low, high, key) do
+    mid = div(low + high, 2)
+    offset = (mid - 1) * SSTable.size(:block)
+
+    with {:ok, k, v} <- get_block(io, offset) do
+      cond do
+        key < k -> fetch_key(io, low, mid - 1, key)
+        key > k -> fetch_key(io, mid + 1, high, key)
+        key == k -> {:ok, {:value, v}}
       end
+    end
+  end
+
+  defp get_block(io, offset) do
+    with {:ok, encoded_header} <- Disk.read(io, offset, SSTable.size(:block_header)),
+         {:ok, span} <- SSTable.block_span(encoded_header),
+         {:ok, encoded} <- Disk.read(io, offset, SSTable.size(:block) * span),
+         {:ok, {key, value}} <- SSTable.decode_block(encoded) do
+      {:ok, key, value}
+    else
+      {:error, :not_block_start} ->
+        get_block(io, offset - SSTable.size(:block))
+
+      e ->
+        e
     end
   end
 end

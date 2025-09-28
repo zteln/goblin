@@ -172,7 +172,7 @@ defmodule SeaGoat.Store do
         {:logs, logs}
 
       _ ->
-        case SSTables.read_bloom_filter(file) do
+        case SSTables.fetch_bloom_filter(file) do
           {:ok, {bloom_filter, level}} ->
             {:level, bloom_filter, level}
 
