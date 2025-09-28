@@ -42,7 +42,7 @@ defmodule SeaGoat.Store.Levels do
   end
 
   @doc """
-  Returns a list of all levels.
+  Returns a list of all level keys.
   """
   @spec levels(t()) :: [level()]
   def levels(levels) do

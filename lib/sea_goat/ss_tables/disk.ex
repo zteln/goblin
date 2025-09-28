@@ -1,4 +1,4 @@
-defmodule SeaGoat.SSTable.Disk do
+defmodule SeaGoat.SSTables.Disk do
   def open!(path, opts \\ []) do
     case open(path, opts) do
       {:ok, io, offset} -> {io, offset}
@@ -7,7 +7,7 @@ defmodule SeaGoat.SSTable.Disk do
   end
 
   def open(path, opts \\ []) do
-    open_opts = [:binary, :read, :raw | List.wrap(if opts[:write?], do: :append)]
+    open_opts = [:binary, :read, :raw] ++ if opts[:write?], do: [:append], else: []
     position = if opts[:start?], do: 0, else: :eof
 
     with {:ok, io} <- :file.open(path, open_opts),

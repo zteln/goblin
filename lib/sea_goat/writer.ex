@@ -165,7 +165,6 @@ defmodule SeaGoat.Writer do
 
   @impl GenServer
   def handle_info({ref, :flushed}, state) do
-    # flushing = Map.delete(state.flushing, ref)
     flushing = Enum.reject(state.flushing, &(elem(&1, 0) == ref))
     state = %{state | flushing: flushing}
     {:noreply, state}

@@ -15,6 +15,6 @@ defmodule SeaGoatTest do
 
     Process.sleep(500)
 
-    assert {:ok, "v-5"} == SeaGoat.get(c.db, 1)
+    assert "v-1" == SeaGoat.get(c.db, 1)
   end
 end

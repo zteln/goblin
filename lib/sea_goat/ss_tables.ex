@@ -1,6 +1,6 @@
 defmodule SeaGoat.SSTables do
-  alias SeaGoat.SSTable.Disk
   alias SeaGoat.BloomFilter
+  alias SeaGoat.SSTables.Disk
   alias SeaGoat.SSTables.SSTable
   alias SeaGoat.SSTables.SSTableIterator
 
@@ -87,11 +87,21 @@ defmodule SeaGoat.SSTables do
        ) do
     case SSTableIterator.next(iterator) do
       {:next, {k, v}, iterator} ->
-        {:ok, offset} = Disk.write(io, offset, SSTable.encode_block(k, v))
+        block = SSTable.encode_block(k, v)
+        span = SSTable.span(byte_size(block))
         smallest = if smallest, do: smallest, else: k
         largest = k
         bloom_filter = BloomFilter.put(bloom_filter, k)
-        write_data(io, offset, iterator, no_of_blocks + 1, {smallest, largest}, bloom_filter)
+        {:ok, offset} = Disk.write(io, offset, block)
+
+        write_data(
+          io,
+          offset,
+          iterator,
+          no_of_blocks + span,
+          {smallest, largest},
+          bloom_filter
+        )
 
       {:eod, iterator} ->
         bloom_filter = BloomFilter.generate(bloom_filter)
@@ -141,6 +151,8 @@ defmodule SeaGoat.SSTables do
     end
   end
 
+  defp fetch_key(_io, low, high, _key) when high < low, do: :error
+
   defp fetch_key(io, low, high, key) do
     mid = div(low + high, 2)
     offset = (mid - 1) * SSTable.size(:block)
@@ -155,6 +167,8 @@ defmodule SeaGoat.SSTables do
   end
 
   defp get_block(io, offset) do
+    offset = max(0, offset)
+
     with {:ok, encoded_header} <- Disk.read(io, offset, SSTable.size(:block_header)),
          {:ok, span} <- SSTable.block_span(encoded_header),
          {:ok, encoded} <- Disk.read(io, offset, SSTable.size(:block) * span),
