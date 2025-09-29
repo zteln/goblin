@@ -17,7 +17,7 @@ defmodule SeaGoat.RWLocksTest do
 
     assert :ok == RWLocks.wlock(c.rw_locks, :resource0)
 
-    spawn(fn -> 
+    spawn(fn ->
       assert {:error, :lock_in_use} == RWLocks.wlock(c.rw_locks, :resource0)
       send(parent, {:done, ref})
     end)
@@ -51,6 +51,7 @@ defmodule SeaGoat.RWLocksTest do
     assert :ok == RWLocks.rlock(c.rw_locks, :resource0)
 
     ref = make_ref()
+
     spawn(fn ->
       assert :ok == RWLocks.wlock(c.rw_locks, :resource0)
       send(parent, {:acquired, ref})
@@ -59,6 +60,7 @@ defmodule SeaGoat.RWLocksTest do
     refute_receive {:acquired, ^ref}
 
     ref = make_ref()
+
     spawn(fn ->
       assert :ok == RWLocks.rlock(c.rw_locks, :resource0)
       send(parent, {:acquired, ref})
@@ -71,14 +73,15 @@ defmodule SeaGoat.RWLocksTest do
     parent = self()
     ref = make_ref()
 
-    reader = spawn(fn -> 
-      assert :ok == RWLocks.rlock(c.rw_locks, :resource0)
-      send(parent, {:acquired, ref})
+    reader =
+      spawn(fn ->
+        assert :ok == RWLocks.rlock(c.rw_locks, :resource0)
+        send(parent, {:acquired, ref})
 
-      receive do
-        :term -> :ok
-      end
-    end)
+        receive do
+          :term -> :ok
+        end
+      end)
 
     assert_receive {:acquired, ^ref}
 

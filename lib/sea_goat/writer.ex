@@ -10,7 +10,6 @@ defmodule SeaGoat.Writer do
   @default_mem_limit 20000
 
   defstruct [
-    :dir,
     :wal,
     :store,
     :limit,
@@ -23,7 +22,7 @@ defmodule SeaGoat.Writer do
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
     args =
-      Keyword.take(opts, [:dir, :wal, :store, :limit])
+      Keyword.take(opts, [:wal, :store, :limit])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
@@ -83,7 +82,6 @@ defmodule SeaGoat.Writer do
   def init(opts) do
     {:ok,
      %__MODULE__{
-       dir: opts[:dir],
        wal: opts[:wal],
        store: opts[:store],
        mem_table: MemTable.new(),
@@ -215,6 +213,18 @@ defmodule SeaGoat.Writer do
     ref
   end
 
+  defp search_for_key([], _key), do: :not_found
+
+  defp search_for_key([mem_table | mem_tables], key) do
+    case MemTable.read(mem_table, key) do
+      {:value, value} ->
+        {:ok, value}
+
+      :not_found ->
+        search_for_key(mem_tables, key)
+    end
+  end
+
   def replay_commands(state, []), do: state
 
   def replay_commands(state, [{path, batch} | commands]) do
@@ -237,17 +247,5 @@ defmodule SeaGoat.Writer do
   def replay_command({:remove, key}, state) do
     mem_table = MemTable.delete(state.mem_table, key)
     %{state | mem_table: mem_table}
-  end
-
-  defp search_for_key([], _key), do: :not_found
-
-  defp search_for_key([mem_table | mem_tables], key) do
-    case MemTable.read(mem_table, key) do
-      {:value, value} ->
-        {:ok, value}
-
-      :not_found ->
-        search_for_key(mem_tables, key)
-    end
   end
 end

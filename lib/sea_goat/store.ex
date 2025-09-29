@@ -16,6 +16,7 @@ defmodule SeaGoat.Store do
     :wal,
     :compactor,
     :rw_locks,
+    reuse_paths: %{},
     replays: [],
     file_count: 0,
     levels: Levels.new()
@@ -36,6 +37,10 @@ defmodule SeaGoat.Store do
 
   def new_path(store) do
     GenServer.call(store, :new_path)
+  end
+
+  def reuse_path(store, paths) do
+    GenServer.call(store, {:reuse_path, paths})
   end
 
   def get_ss_tables(store, key) do
@@ -101,6 +106,11 @@ defmodule SeaGoat.Store do
     {:reply, new_path, %{state | file_count: new_file_count}}
   end
 
+  def handle_call({:reuse_path, paths}, _from, state) do
+    {path, reuse_paths} = Map.pop(state.reuse_paths, paths)
+    {:reply, path, %{state | reuse_paths: reuse_paths}}
+  end
+
   @impl GenServer
   def handle_continue({:put_in_compactor, level, path}, state) do
     :ok = Compactor.put(state.compactor, level, path)
@@ -154,6 +164,11 @@ defmodule SeaGoat.Store do
       end
     end)
     |> Enum.reduce(state, fn
+      {:logs, [{:compacting, paths, path} | logs], file_count, path}, acc ->
+        reuse_paths = Map.put(acc.reuse_paths, paths, path)
+        replays = [{path, logs} | acc.replays]
+        %{acc | replays: replays, file_count: file_count, reuse_paths: reuse_paths}
+
       {:logs, logs, file_count, path}, acc ->
         replays = [{path, logs} | acc.replays]
         %{acc | replays: replays, file_count: file_count}

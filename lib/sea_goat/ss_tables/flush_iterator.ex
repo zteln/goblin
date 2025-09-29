@@ -7,9 +7,10 @@ defmodule SeaGoat.SSTables.FlushIterator do
     end
 
     def next(%{data: []} = iterator), do: {:eod, iterator}
+
     def next(%{data: [next | data]} = iterator) do
       iterator = %{iterator | data: data}
-      {:next, next, iterator} 
+      {:next, next, iterator}
     end
 
     def deinit(_iterator), do: :ok

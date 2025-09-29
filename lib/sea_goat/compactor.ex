@@ -75,10 +75,10 @@ defmodule SeaGoat.Compactor do
   defp compact(paths, level, store, wal, rw_locks) do
     %{ref: ref} =
       Task.async(fn ->
-        path = Store.new_path(store)
+        path = Store.reuse_path(store, paths) || Store.new_path(store)
         tmp_path = Store.tmp_path(path)
         dump_path = Store.dump_path(path)
-        WAL.dump(wal, path, [{:del, [tmp_path]}])
+        WAL.dump(wal, path, [{:compacting, paths, path}, {:del, [tmp_path]}])
 
         with {:ok, bloom_filter, tmp_path, new_level} <-
                SSTables.write(
@@ -103,6 +103,7 @@ defmodule SeaGoat.Compactor do
   end
 
   defp lock_unlock_paths(_rw_locks, [], _lock_unlock), do: :ok
+
   defp lock_unlock_paths(rw_locks, [path | paths], lock_unlock) do
     with :ok <- lock_unlock.(rw_locks, path) do
       lock_unlock_paths(rw_locks, paths, lock_unlock)
