@@ -12,17 +12,23 @@ defmodule SeaGoat.Compactor do
     :store,
     :rw_locks,
     :level_limit,
-    level_paths: %{},
+    levels: %{},
     merging: %{}
   ]
+
+  defmacro compactor_tag do
+    quote do
+      :compactor
+    end
+  end
 
   def start_link(opts) do
     args = Keyword.take(opts, [:level_limit, :wal, :store, :rw_locks])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  def put(compactor, level, path) do
-    GenServer.call(compactor, {:put, level, path})
+  def put(compactor, level, count, path) do
+    GenServer.call(compactor, {:put, level, count, path})
   end
 
   @impl GenServer
@@ -39,16 +45,16 @@ defmodule SeaGoat.Compactor do
   end
 
   @impl GenServer
-  def handle_call({:put, level, path}, _from, state) do
-    {paths, new_merge} =
-      state.level_paths
+  def handle_call({:put, level, count, path}, _from, state) do
+    {entries, new_merge} =
+      state.levels
       |> Map.get(level, [])
-      |> put_in_level(path)
+      |> put_in_level(count, path)
       |> maybe_compact(level, state.level_limit, state.store, state.wal, state.rw_locks)
 
-    level_paths = Map.put(state.level_paths, level, paths)
+    levels = Map.put(state.levels, level, entries)
     merging = Map.merge(state.merging, new_merge)
-    state = %{state | level_paths: level_paths, merging: merging}
+    state = %{state | levels: levels, merging: merging}
     {:reply, :ok, state}
   end
 
@@ -61,14 +67,15 @@ defmodule SeaGoat.Compactor do
     {:noreply, state}
   end
 
-  defp put_in_level(queue, path), do: [path | queue]
+  defp put_in_level(level, count, path), do: [{count, path} | level] |> List.keysort(0)
 
-  defp maybe_compact(paths, level, level_limit, store, wal, rw_locks) do
-    if length(paths) >= level_limit do
+  defp maybe_compact(entries, level, level_limit, store, wal, rw_locks) do
+    if length(entries) >= level_limit do
+      paths = Enum.map(entries, &elem(&1, 1))
       ref = compact(paths, level, store, wal, rw_locks)
       {[], %{ref => {level, paths}}}
     else
-      {paths, %{}}
+      {entries, %{}}
     end
   end
 
@@ -78,7 +85,7 @@ defmodule SeaGoat.Compactor do
         path = Store.reuse_path(store, paths) || Store.new_path(store)
         tmp_path = Store.tmp_path(path)
         dump_path = Store.dump_path(path)
-        WAL.dump(wal, path, [{:compacting, paths, path}, {:del, [tmp_path]}])
+        WAL.dump(wal, path, [{@compactor_tag, paths}, {:del, [tmp_path, dump_path]}])
 
         with {:ok, bloom_filter, tmp_path, new_level} <-
                SSTables.write(
@@ -87,8 +94,7 @@ defmodule SeaGoat.Compactor do
                  tmp_path,
                  level + 1
                ),
-             :ok <-
-               WAL.dump(wal, dump_path, [{:del, paths}]),
+             :ok <- WAL.dump(wal, dump_path, [{:del, paths}]),
              :ok <- SSTables.switch(tmp_path, path),
              :ok <- Store.put(store, path, bloom_filter, new_level),
              :ok <- Store.remove(store, paths, level),

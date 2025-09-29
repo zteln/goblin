@@ -7,6 +7,9 @@ defmodule SeaGoat.Store do
   alias SeaGoat.RWLocks
   alias SeaGoat.BloomFilter
 
+  require SeaGoat.Writer
+  require SeaGoat.Compactor
+
   @file_suffix ".seagoat"
   @tmp_suffix ".tmp"
   @dump_suffix ".dump"
@@ -16,8 +19,9 @@ defmodule SeaGoat.Store do
     :wal,
     :compactor,
     :rw_locks,
-    reuse_paths: %{},
-    replays: [],
+    :latest_wal,
+    compacting_paths: %{},
+    writes: [],
     file_count: 0,
     levels: Levels.new()
   ]
@@ -107,13 +111,14 @@ defmodule SeaGoat.Store do
   end
 
   def handle_call({:reuse_path, paths}, _from, state) do
-    {path, reuse_paths} = Map.pop(state.reuse_paths, paths)
-    {:reply, path, %{state | reuse_paths: reuse_paths}}
+    {path, compacting_paths} = Map.pop(state.compacting_paths, paths)
+    {:reply, path, %{state | compacting_paths: compacting_paths}}
   end
 
   @impl GenServer
   def handle_continue({:put_in_compactor, level, path}, state) do
-    :ok = Compactor.put(state.compactor, level, path)
+    file_count = file_count(path)
+    :ok = Compactor.put(state.compactor, level, file_count, path)
     {:noreply, state}
   end
 
@@ -123,14 +128,14 @@ defmodule SeaGoat.Store do
         [] ->
           file_count = 0
           path = path(state.dir, file_count)
-          WAL.open(state.wal, path)
-          send(writer, {:replay, state.replays})
+          send(writer, {:store_ready, path, state.writes})
           %{state | file_count: file_count}
 
         files ->
           state = replay_files(state, Enum.map(files, &Path.join(state.dir, &1)))
-          send(writer, {:replay, state.replays})
-          %{state | replays: []}
+          path = path(state.dir, state.latest_wal)
+          send(writer, {:store_ready, path, Enum.reverse(state.writes)})
+          %{state | writes: [], latest_wal: nil}
       end
 
     {:noreply, state}
@@ -164,26 +169,39 @@ defmodule SeaGoat.Store do
       end
     end)
     |> Enum.reduce(state, fn
-      {:logs, [{:compacting, paths, path} | logs], file_count, path}, acc ->
-        reuse_paths = Map.put(acc.reuse_paths, paths, path)
-        replays = [{path, logs} | acc.replays]
-        %{acc | replays: replays, file_count: file_count, reuse_paths: reuse_paths}
+      {:logs, [SeaGoat.Writer.writer_tag() | logs], file_count, path}, acc ->
+        writes = [{path, logs} | acc.writes]
+        %{acc | writes: writes, file_count: file_count, latest_wal: file_count}
 
-      {:logs, logs, file_count, path}, acc ->
-        replays = [{path, logs} | acc.replays]
-        %{acc | replays: replays, file_count: file_count}
+      {:logs, [{SeaGoat.Compactor.compactor_tag(), paths} | logs], file_count, path}, acc ->
+        compacting_paths = Map.put(acc.compacting_paths, paths, path)
+        :ok = run_logs(logs)
+        %{acc | file_count: file_count, compacting_paths: compacting_paths}
+
+      {:logs, logs, file_count, _path}, acc ->
+        :ok = run_logs(logs)
+        %{acc | file_count: file_count}
 
       {:level, bloom_filter, level, file_count, path}, acc ->
         levels = Levels.insert(acc.levels, level, {path, bloom_filter})
-        :ok = Compactor.put(state.compactor, level, path)
+        :ok = Compactor.put(state.compactor, level, file_count, path)
         %{acc | levels: levels, file_count: file_count}
     end)
   end
 
+  defp run_logs([]), do: :ok
+
+  defp run_logs([{:del, paths} | logs]) do
+    with :ok <- SSTables.delete(paths) do
+      run_logs(logs)
+    end
+  end
+
+  defp run_logs([_ | logs]), do: run_logs(logs)
+
   defp wal_or_db(file, wal) do
     case WAL.get_logs(wal, file) do
       {:ok, logs} ->
-        WAL.open(wal, file)
         {:logs, logs}
 
       _ ->
@@ -195,6 +213,11 @@ defmodule SeaGoat.Store do
             {:error, :not_wal_or_db}
         end
     end
+  end
+
+  defp file_count(path) do
+    Path.basename(path, @file_suffix)
+    |> String.to_integer()
   end
 
   defp path(dir, count), do: Path.join(dir, to_string(count) <> @file_suffix)

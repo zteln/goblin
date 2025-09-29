@@ -6,6 +6,7 @@ defmodule SeaGoat.Writer do
   alias SeaGoat.SSTables
   alias SeaGoat.Store
 
+  @writer_tag :writer
   @flush_level 0
   @default_mem_limit 20000
 
@@ -18,6 +19,12 @@ defmodule SeaGoat.Writer do
     flushing: [],
     subscribers: %{}
   ]
+
+  defmacro writer_tag do
+    quote do
+      :writer
+    end
+  end
 
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -86,7 +93,7 @@ defmodule SeaGoat.Writer do
        store: opts[:store],
        mem_table: MemTable.new(),
        limit: opts[:limit] || @default_mem_limit
-     }, {:continue, :wait_for_replay}}
+     }, {:continue, :wait_for_store}}
   end
 
   @impl GenServer
@@ -147,10 +154,12 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_continue(:wait_for_replay, state) do
+  def handle_continue(:wait_for_store, state) do
     state =
       receive do
-        {:replay, commands} ->
+        {:store_ready, path, commands} ->
+          WAL.open(state.wal, path)
+          WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_path(path)]}])
           replay_commands(state, commands)
       end
 
@@ -170,28 +179,21 @@ defmodule SeaGoat.Writer do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp maybe_flush(state, path \\ nil) do
+  defp maybe_flush(state) do
     if MemTable.has_overflow(state.mem_table, state.limit) do
-      {path, tmp_path} = rotate_log(state, path)
+      path = WAL.current_file(state.wal)
+      tmp_path = Store.tmp_path(path)
+      new_path = Store.new_path(state.store)
+      WAL.append(state.wal, :flush)
+      WAL.rotate(state.wal, new_path)
+      WAL.append_batch(state.wal, [{:del, [Store.tmp_path(new_path)]}, @writer_tag])
+
       ref = flush(state.mem_table, path, tmp_path, state.store)
       flushing = [{ref, state.mem_table} | state.flushing]
       %{state | mem_table: MemTable.new(), flushing: flushing}
     else
       state
     end
-  end
-
-  defp rotate_log(state, nil) do
-    path = WAL.current_file(state.wal)
-    tmp_path = Store.tmp_path(path)
-    new_path = Store.new_path(state.store)
-    WAL.append(state.wal, {:del, [tmp_path]})
-    WAL.rotate(state.wal, new_path)
-    {path, tmp_path}
-  end
-
-  defp rotate_log(_state, path) do
-    {path, Store.tmp_path(path)}
   end
 
   defp flush(mem_table, path, tmp_path, store) do
@@ -225,27 +227,34 @@ defmodule SeaGoat.Writer do
     end
   end
 
-  def replay_commands(state, []), do: state
+  defp replay_commands(state, []), do: state
 
-  def replay_commands(state, [{path, batch} | commands]) do
+  defp replay_commands(state, [{path, batch} | commands]) do
     batch
-    |> Enum.reduce(state, &replay_command/2)
-    |> maybe_flush(path)
+    |> Enum.reduce(state, &replay_command(&2, &1, path))
     |> replay_commands(commands)
   end
 
-  def replay_command({:del, paths}, state) do
+  defp replay_command(state, :flush, path) do
+    ref = flush(state.mem_table, path, Store.tmp_path(path), state.store)
+    flushing = [{ref, state.mem_table} | state.flushing]
+    %{state | mem_table: MemTable.new(), flushing: flushing}
+  end
+
+  defp replay_command(state, {:del, paths}, _path) do
     SSTables.delete(paths)
     state
   end
 
-  def replay_command({:put, key, value}, state) do
+  defp replay_command(state, {:put, key, value}, _path) do
     mem_table = MemTable.upsert(state.mem_table, key, value)
     %{state | mem_table: mem_table}
   end
 
-  def replay_command({:remove, key}, state) do
+  defp replay_command(state, {:remove, key}, _path) do
     mem_table = MemTable.delete(state.mem_table, key)
     %{state | mem_table: mem_table}
   end
+
+  defp replay_command(state, _command, _path), do: state
 end

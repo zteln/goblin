@@ -8,8 +8,6 @@ defmodule SeaGoat.WAL do
 
   @default_sync_interval 200
   @wal_name :sea_goat_wal
-  # @tmp_wal_name :sea_goat_tmp_wal
-  # @dump_wal_name :dump_sea_goat_wal
 
   defstruct [
     :log,
@@ -81,15 +79,6 @@ defmodule SeaGoat.WAL do
       e ->
         {:stop, e, state}
     end
-
-    # case open_log(file, @wal_name) do
-    #   {:ok, log} ->
-    #     state = %{state | log: log, current_file: file} 
-    #     {:reply, :ok, state}
-    #
-    #   {:error, _reason} = e ->
-    #     {:reply, e, state}
-    # end
   end
 
   def handle_call(:sync_now, _from, state) do
