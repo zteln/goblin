@@ -1,7 +1,7 @@
 defmodule SeaGoat.SSTables.MergeIterator do
   defstruct [:ss_tables]
 
-  defimpl SeaGoat.SSTables.SSTableIterator, for: SeaGoat.SSTables.MergeIterator do
+  defimpl SeaGoat.SSTables.SSTableIterator do
     def init(iterator, paths) do
       with {:ok, ss_tables} <- open_ss_tables(paths) do
         {:ok, %{iterator | ss_tables: ss_tables}}
@@ -13,7 +13,7 @@ defmodule SeaGoat.SSTables.MergeIterator do
     def next(iterator) do
       {k, v} =
         iterator.ss_tables
-        |> Enum.map(&elem(&1, 2))
+        |> Enum.map(&elem(&1, 1))
         |> take_smallest_kv()
 
       {:ok, ss_tables} = advance(iterator.ss_tables, k)
@@ -28,18 +28,16 @@ defmodule SeaGoat.SSTables.MergeIterator do
     defp open_ss_tables([], acc), do: {:ok, acc}
 
     defp open_ss_tables([path | paths], acc) do
-      starting_offset = 0
-
-      with {:ok, io, ^starting_offset} <- SeaGoat.SSTables.Disk.open(path, start?: true),
-           {:ok, offset, kv} <- next_kv(io, starting_offset) do
-        open_ss_tables(paths, [{io, offset, kv, path} | acc])
+      with {:ok, disk} <- SeaGoat.SSTables.Disk.open(path, start?: true),
+           {:ok, disk, kv} <- next_kv(disk) do
+        open_ss_tables(paths, [{disk, kv, path} | acc])
       end
     end
 
     defp close_ss_tables([]), do: :ok
 
-    defp close_ss_tables([{io, _, _, _} | ss_tables]) do
-      with :ok <- SeaGoat.SSTables.Disk.close(io) do
+    defp close_ss_tables([{disk, _, _} | ss_tables]) do
+      with :ok <- SeaGoat.SSTables.Disk.close(disk) do
         close_ss_tables(ss_tables)
       end
     end
@@ -58,9 +56,9 @@ defmodule SeaGoat.SSTables.MergeIterator do
     defp advance(open_ss_tables, key, acc \\ [])
     defp advance([], _key, acc), do: {:ok, Enum.reverse(acc)}
 
-    defp advance([{io, offset, {key, _v}, ss_table} | open_ss_tables], key, acc) do
-      with {:ok, offset, kv} <- next_kv(io, offset) do
-        acc = if kv, do: [{io, offset, kv, ss_table} | acc], else: acc
+    defp advance([{disk, {key, _v}, ss_table} | open_ss_tables], key, acc) do
+      with {:ok, disk, kv} <- next_kv(disk) do
+        acc = if kv, do: [{disk, kv, ss_table} | acc], else: acc
         advance(open_ss_tables, key, acc)
       end
     end
@@ -69,17 +67,21 @@ defmodule SeaGoat.SSTables.MergeIterator do
       advance(open_ss_tables, key, [open_ss_table | acc])
     end
 
-    defp next_kv(io, offset) do
+    defp next_kv(disk) do
       with {:ok, encoded_block_header} <-
-             SeaGoat.SSTables.Disk.read(io, offset, SeaGoat.SSTables.SSTable.size(:block_header)),
+             SeaGoat.SSTables.Disk.read(disk, SeaGoat.SSTables.SSTable.size(:block_header)),
            {:ok, span} <- SeaGoat.SSTables.SSTable.block_span(encoded_block_header),
            {:ok, encoded_block} <-
-             SeaGoat.SSTables.Disk.read(io, offset, SeaGoat.SSTables.SSTable.size(:block) * span),
+             SeaGoat.SSTables.Disk.read(disk, SeaGoat.SSTables.SSTable.size(:block) * span),
            {:ok, pair} <- SeaGoat.SSTables.SSTable.decode_block(encoded_block) do
-        {:ok, offset + SeaGoat.SSTables.SSTable.size(:block) * span, pair}
+        {:ok,
+         SeaGoat.SSTables.Disk.advance_offset(
+           disk,
+           SeaGoat.SSTables.SSTable.size(:block) * span
+         ), pair}
       else
         {:error, :eod} ->
-          {:ok, offset, nil}
+          {:ok, disk.offset, nil}
 
         e ->
           e

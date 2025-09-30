@@ -91,7 +91,7 @@ defmodule SeaGoat.Compactor do
         with {:ok, bloom_filter, tmp_path, new_level} <-
                SSTables.write(
                  %SSTables.MergeIterator{},
-                 Enum.reverse(paths),
+                 paths,
                  tmp_path,
                  level + 1
                ),

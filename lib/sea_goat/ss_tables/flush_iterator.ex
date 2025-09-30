@@ -1,7 +1,7 @@
 defmodule SeaGoat.SSTables.FlushIterator do
   defstruct [:data]
 
-  defimpl SeaGoat.SSTables.SSTableIterator, for: SeaGoat.SSTables.FlushIterator do
+  defimpl SeaGoat.SSTables.SSTableIterator do
     def init(iterator, mem_table) do
       {:ok, %{iterator | data: Enum.sort(mem_table)}}
     end
