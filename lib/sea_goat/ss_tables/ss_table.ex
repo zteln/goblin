@@ -53,6 +53,15 @@ defmodule SeaGoat.SSTables.SSTable do
   ```
   """
 
+  alias SeaGoat.BloomFilter
+
+  @type range :: {term(), term()}
+  @type level :: non_neg_integer()
+  @type size :: non_neg_integer()
+  @type position :: non_neg_integer()
+  @type offset :: non_neg_integer()
+  @type no_of_blocks :: non_neg_integer()
+
   @magic "SEAGOATDBFILE000"
   @magic_size byte_size(@magic)
 
@@ -121,13 +130,13 @@ defmodule SeaGoat.SSTables.SSTable do
   The footer stores the Bloom filter, key range, metadata, and finally the magic number.
   """
   @spec encode_footer(
-          non_neg_integer(),
-          SeaGoat.BloomFilter.t(),
-          {term(), term()},
-          non_neg_integer(),
-          non_neg_integer()
+          level(),
+          BloomFilter.t(),
+          range(),
+          offset(),
+          no_of_blocks()
         ) :: binary()
-  def encode_footer(level, bloom_filter, range, offset, no_of_blocks) do
+  def encode_footer(level, %BloomFilter{} = bloom_filter, range, offset, no_of_blocks) do
     encoded_bf = encode({:bloom_filter, bloom_filter})
     bf_size = byte_size(encoded_bf)
     bf_pos = offset + byte_size(@separator)
@@ -155,13 +164,24 @@ defmodule SeaGoat.SSTables.SSTable do
     >>
   end
 
-  @spec decode_block(binary()) :: {:ok, {term(), term()}} | {:error, :not_a_block}
+  @doc """
+  Decodes a block, retrieving the key-value pair that it holds. 
+  Returns `{:ok, {key, value}}` if successful, `{:error, :invalid_block}` if it fails to decode.
+  """
+  @spec decode_block(binary()) :: {:ok, {term(), term()}} | {:error, :invalid_block}
   def decode_block(<<@block_id, _span::integer-16, pair::binary>>) do
     {:ok, decode(pair)}
   end
 
-  def decode_block(_), do: {:error, :not_a_block}
+  def decode_block(_), do: {:error, :invalid_block}
 
+  @doc """
+  Decodes the metadata part of the footer.
+  If successful, returns `{:ok, level, bloom_filter_size, bloom_filter_position, range_size, range_position, no_of_blocks, offset}`, otherwise `{:error, :invalid_metadata}`.
+  """
+  @spec decode_metadata(binary()) ::
+          {:ok, {level(), size(), position(), size(), position(), no_of_blocks(), offset()}}
+          | {:error, :invalid_metadata}
   def decode_metadata(<<
         level::integer-32,
         bf_size::integer-64,
@@ -176,16 +196,29 @@ defmodule SeaGoat.SSTables.SSTable do
 
   def decode_metadata(_), do: {:error, :invalid_metadata}
 
+  @doc """
+  Decodes the Bloom filter part from the footer.
+  Returns `{:ok, bloom_filter}` if successful, `{:error, :invalid_bloom_filter}` otherwise.
+  """
+  @spec decode_bloom_filter(binary()) ::
+          {:ok, BloomFilter.t()} | {:error, :invalid_bloom_filter}
   def decode_bloom_filter(encoded) do
     case decode(encoded) do
-      {:bloom_filter, bloom_filter} -> {:ok, bloom_filter}
+      {:bloom_filter, %BloomFilter{} = bloom_filter} -> {:ok, bloom_filter}
       _ -> {:error, :invalid_bloom_filter}
     end
   end
 
+  @doc """
+  Decodes the range part of the footer.
+  Returns `{:ok, range}` if successful, `{:error, :invalid_range}` otherwise.
+  """
+  @spec decode_range(binary()) ::
+          {:ok, range()}
+          | {:error, :invalid_range}
   def decode_range(encoded) do
     case decode(encoded) do
-      {:range, range} -> {:ok, range}
+      {:range, {_, _} = range} -> {:ok, range}
       _ -> {:error, :invalid_range}
     end
   end

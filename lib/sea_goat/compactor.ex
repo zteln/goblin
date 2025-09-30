@@ -5,6 +5,7 @@ defmodule SeaGoat.Compactor do
   alias SeaGoat.WAL
   alias SeaGoat.RWLocks
 
+  @compactor_tag :compactor
   @default_level_limit 10
 
   defstruct [
