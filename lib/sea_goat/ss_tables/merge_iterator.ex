@@ -1,4 +1,7 @@
 defmodule SeaGoat.SSTables.MergeIterator do
+  @moduledoc """
+  Iterates through on-disk SSTables where each iteration returns the smallest key stored.
+  """
   defstruct [:ss_tables]
 
   defimpl SeaGoat.SSTables.SSTableIterator do

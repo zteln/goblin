@@ -1,4 +1,7 @@
 defmodule SeaGoat.SSTables.FlushIterator do
+  @moduledoc """
+  Iterates through data in a sorted fashion until there is no data left.
+  """
   defstruct [:data]
 
   defimpl SeaGoat.SSTables.SSTableIterator do
