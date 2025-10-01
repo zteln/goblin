@@ -159,7 +159,7 @@ defmodule SeaGoat.SSTables do
   `{:ok, {:value, value}}` if key found, `:error` if not found, or 
   `{:error, reason}` on file/parsing errors.
   """
-  @spec read(SeaGoat.Store.file(), SeaGoat.key()) :: {:ok, term()} | :error | {:error, term()}
+  @spec read(SeaGoat.Store.file(), SeaGoat.db_key()) :: {:ok, term()} | :error | {:error, term()}
   def read(file, key) do
     disk = Disk.open!(file)
 
