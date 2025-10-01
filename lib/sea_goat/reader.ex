@@ -4,13 +4,40 @@ defmodule SeaGoat.Reader do
 
   @task_timeout :timer.minutes(1)
 
-  def get(writer, store, key) do
+  @doc """
+  Retrieves a value for the given key using a two-tier read strategy.
+
+  First attempts to read from the writer (fast path), which typically contains
+  recent writes and updates. If the key is not found in the writer, falls back
+  to reading from the store's SSTables (slower path) for persistent data.
+
+  ## Parameters
+
+  - `writer` - GenServer process handling writes and serving recent data
+  - `store` - GenServer process managing persistent storage (SS tables)  
+  - `key` - The database key to retrieve
+
+  ## Returns
+
+  - The value associated with the key if found
+  - `nil` if the key doesn't exist in either the writer or store
+
+  ## Examples
+
+      iex> SeaGoat.Reader.get(writer_pid, store_pid, "user:123")
+      %{name: "John", age: 30}
+      
+      iex> SeaGoat.Reader.get(writer_pid, store_pid, "nonexistent")
+      nil
+  """
+  @spec get(GenServer.server(), GenServer.server(), SeaGoat.db_key(), non_neg_integer()) :: SeaGoat.db_value() | nil
+  def get(writer, store, key, timeout \\ @task_timeout) do
     case try_writer(writer, key) do
       {:ok, value} ->
         value
 
       :error ->
-        try_store(store, key)
+        try_store(store, key, timeout)
     end
   end
 
@@ -18,16 +45,17 @@ defmodule SeaGoat.Reader do
     Writer.read(writer, key)
   end
 
-  defp try_store(store, key) do
+  defp try_store(store, key, timeout) do
     ss_tables = Store.get_ss_tables(store, key)
 
     result =
       ss_tables
       |> Stream.map(&elem(&1, 0))
-      |> Task.async_stream(& &1.(), timeout: @task_timeout)
+      |> Task.async_stream(& &1.(), timeout: timeout)
       |> Stream.map(fn {:ok, res} -> res end)
       |> Stream.map(fn res ->
         if match?({:error, _}, res) do
+          {_, reason} = res
           raise "Failed to read, reason: #{inspect(reason)}"
         else
           res
