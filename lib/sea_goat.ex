@@ -1,6 +1,9 @@
 defmodule SeaGoat do
   use Supervisor
 
+  @type db_key :: term()
+  @type db_value :: term()
+
   def put(db, key, value) do
     writer = name(db, :writer)
     SeaGoat.Writer.put(writer, key, value)

@@ -2,6 +2,10 @@ defmodule SeaGoat.Writer.MemTableTest do
   use ExUnit.Case, async: true
   alias SeaGoat.Writer.MemTable
 
+  test "new/0 creates empty mem table" do
+    assert %{} == MemTable.new()
+  end
+
   test "upsert/3 insert new key" do
     assert %{"key" => "value"} == MemTable.upsert(MemTable.new(), "key", "value")
   end
@@ -31,6 +35,15 @@ defmodule SeaGoat.Writer.MemTableTest do
 
   test "read/2 returns :not_found if no value set" do
     assert :not_found == MemTable.read(MemTable.new(), "key")
+  end
+
+  test "read/2 returns {:value, nil} for deleted key" do
+    mem_table =
+      MemTable.new()
+      |> MemTable.upsert("key", "value")
+      |> MemTable.delete("key")
+
+    assert {:value, nil} == MemTable.read(mem_table, "key")
   end
 
   test "has_overflow/2 returns boolean on overflow" do
@@ -92,6 +105,50 @@ defmodule SeaGoat.Writer.MemTableTest do
              "v4" => "k4",
              "v5" => "k5",
              "v6" => "k6"
+           } == MemTable.merge(mem_table1, mem_table2)
+  end
+
+  test "merge/2 with empty tables" do
+    mem_table = MemTable.new() |> MemTable.upsert("key", "value")
+
+    assert mem_table == MemTable.merge(MemTable.new(), mem_table)
+    assert mem_table == MemTable.merge(mem_table, MemTable.new())
+    assert %{} == MemTable.merge(MemTable.new(), MemTable.new())
+  end
+
+  test "merge/2 overwrites keys from first table" do
+    mem_table1 =
+      MemTable.new()
+      |> MemTable.upsert("key1", "old_value")
+      |> MemTable.upsert("key2", "value2")
+
+    mem_table2 =
+      MemTable.new()
+      |> MemTable.upsert("key1", "new_value")
+      |> MemTable.upsert("key3", "value3")
+
+    assert %{
+             "key1" => "new_value",
+             "key2" => "value2",
+             "key3" => "value3"
+           } == MemTable.merge(mem_table1, mem_table2)
+  end
+
+  test "merge/2 handles tombstones" do
+    mem_table1 =
+      MemTable.new()
+      |> MemTable.upsert("key1", "value1")
+      |> MemTable.delete("key2")
+
+    mem_table2 =
+      MemTable.new()
+      |> MemTable.upsert("key2", "value2")
+      |> MemTable.delete("key3")
+
+    assert %{
+             "key1" => "value1",
+             "key2" => "value2",
+             "key3" => :tombstone
            } == MemTable.merge(mem_table1, mem_table2)
   end
 end
