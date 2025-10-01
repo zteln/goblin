@@ -1,6 +1,6 @@
 defmodule SeaGoat.Store do
   use GenServer
-  alias SeaGoat.Store.Levels
+  alias __MODULE__.Levels
   alias SeaGoat.Compactor
   alias SeaGoat.SSTables
   alias SeaGoat.WAL
@@ -13,6 +13,8 @@ defmodule SeaGoat.Store do
   @file_suffix ".seagoat"
   @tmp_suffix ".tmp"
   @dump_suffix ".dump"
+
+  @type path :: String.t()
 
   defstruct [
     :dir,
@@ -95,7 +97,7 @@ defmodule SeaGoat.Store do
             fn {path, _bloom_filter} ->
               RWLocks.rlock(state.rw_locks, path, pid)
 
-              {fn -> SSTables.search_for_key(path, key) end,
+              {fn -> SSTables.read(path, key) end,
                fn -> RWLocks.unlock(state.rw_locks, path, pid) end}
             end
           )
@@ -205,8 +207,8 @@ defmodule SeaGoat.Store do
         {:logs, logs}
 
       _ ->
-        case SSTables.fetch_bloom_filter(file) do
-          {:ok, {bloom_filter, level}} ->
+        case SSTables.fetch_ss_table_info(file) do
+          {:ok, bloom_filter, level} ->
             {:level, bloom_filter, level}
 
           _ ->

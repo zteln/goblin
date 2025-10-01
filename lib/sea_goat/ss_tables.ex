@@ -1,64 +1,93 @@
 defmodule SeaGoat.SSTables do
+  @moduledoc """
+  Provides operations for managing SSTable files on disk.
+
+  SSTables (Sorted String Tables) are immutable, on-disk data structures used for 
+  efficient storage and retrieval of key-value pairs. This module handles the 
+  complete lifecycle of SSTable files including creation, reading, file management,
+  and key lookups.
+  """
   alias SeaGoat.BloomFilter
   alias SeaGoat.SSTables.Disk
   alias SeaGoat.SSTables.SSTable
   alias SeaGoat.SSTables.SSTableIterator
 
+  @doc """
+  Deletes multiple SSTable files from disk.
+
+  Attempts to delete each file in the provided list sequentially. If any 
+  deletion fails, returns the first error encountered and stops processing
+  remaining files.
+
+  ## Parameters
+
+  - `files` - List of files to delete
+
+  ## Returns
+
+  `:ok` if all files deleted successfully, or `{:error, reason}` on first failure.
+  """
+  @spec delete([SeaGoat.Store.path()]) :: :ok | {:error, term()}
   def delete([]), do: :ok
 
-  def delete([path | paths]) do
-    with :ok = Disk.rm(path) do
-      delete(paths)
+  def delete([file | files]) do
+    with :ok <- Disk.rm(file) do
+      delete(files)
     end
   end
 
+  @doc """
+  Renames an SSTable file from one file to another.
+
+  Atomically moves an SSTable file from the source file to the destination file.
+  Commonly used during compaction operations to replace old SSTable files.
+
+  ## Parameters
+
+  - `from` - Source file
+  - `to` - Destination file
+
+  ## Returns
+
+  `:ok` on success.
+  """
+  @spec switch(SeaGoat.Store.path(), SeaGoat.Store.path()) :: :ok
   def switch(from, to) do
-    :ok = Disk.rename(from, to)
+    Disk.rename(from, to)
   end
 
-  def write(iterator, data, path, level) do
-    with {:ok, bloom_filter} <- write_to_file(path, level, iterator, data) do
-      {:ok, bloom_filter, path, level}
+  @doc """
+  Writes key-value data to an SSTable file on disk.
+
+  Creates a new SSTable file at the specified file containing the data provided
+  through the iterator. The iterator determines how data is sourced and ordered:
+
+  - `MemTableIterator` - sorts in-memory data before writing
+  - `MergeIterator` - merges multiple existing SSTables in sorted order
+
+  Returns the bloom filter, file, and level upon successful completion.
+
+  ## Parameters
+
+  - `iterator` - Iterator struct that implements the SSTableIterator protocol
+  - `data` - Data source passed to the iterator (mem_table, files, etc.)
+  - `file` - File where the SSTable will be created
+  - `level` - SSTable level for LSM tree organization
+
+  ## Returns
+
+  `{:ok, bloom_filter, file, level}` on success, or `{:error, reason}` on failure.
+  """
+  @spec write(SSTableIterator.t(), Enumerable.t(), SeaGoat.Store.path(), non_neg_integer()) ::
+          {:ok, BloomFilter.t(), SeaGoat.Store.path(), non_neg_integer()}
+  def write(iterator, data, file, level) do
+    with {:ok, bloom_filter} <- write_to_file(file, level, iterator, data) do
+      {:ok, bloom_filter, file, level}
     end
   end
 
-  def fetch_bloom_filter(file) do
-    read_f = fn disk, metadata ->
-      {level, bf_size, bf_pos, _, _, _, _} = metadata
-
-      with {:ok, bf} <- fetch_part(disk, bf_pos, bf_size, &SSTable.decode_bloom_filter/1) do
-        {:ok, {bf, level}}
-      end
-    end
-
-    read = &fetch_metadata(&1, read_f)
-    read_file(file, read)
-  end
-
-  def search_for_key(file, key) do
-    read_f = fn disk, metadata ->
-      {_, _, _, range_size, range_pos, no_of_blocks, _} = metadata
-
-      case fetch_part(disk, range_pos, range_size, &SSTable.decode_range/1) do
-        {:ok, {smallest, largest}} when key >= smallest and key <= largest ->
-          {:ok, no_of_blocks}
-
-        _ ->
-          nil
-      end
-    end
-
-    read = fn disk ->
-      with {:ok, no_of_blocks} <- fetch_metadata(disk, read_f) do
-        fetch_key(disk, 0, no_of_blocks, key)
-      end
-    end
-
-    read_file(file, read)
-  end
-
-  defp write_to_file(path, level, iterator, data) do
-    with {:ok, disk} <- Disk.open(path, write?: true),
+  defp write_to_file(file, level, iterator, data) do
+    with {:ok, disk} <- Disk.open(file, write?: true),
          {:ok, disk, bloom_filter} <- write_ss_table(disk, level, iterator, data),
          :ok <- Disk.sync(disk),
          :ok <- Disk.close(disk) do
@@ -99,7 +128,7 @@ defmodule SeaGoat.SSTables do
           bloom_filter
         )
 
-      {:eod, iterator} ->
+      {:end_iter, iterator} ->
         bloom_filter = BloomFilter.generate(bloom_filter)
         {:ok, disk, no_of_blocks, {smallest, largest}, bloom_filter, iterator}
     end
@@ -113,56 +142,60 @@ defmodule SeaGoat.SSTables do
     end
   end
 
-  defp read_file(file, reader) do
+  @doc """
+  Searches for a specific key in an SSTable file.
+
+  Performs an efficient key lookup using the SSTable's range metadata and 
+  binary search through the sorted blocks. Returns the associated value if
+  the key is found.
+
+  ## Parameters
+
+  - `file` - Path to the SSTable file
+  - `key` - The key to search for
+
+  ## Returns
+
+  `{:ok, {:value, value}}` if key found, `:error` if not found, or 
+  `{:error, reason}` on file/parsing errors.
+  """
+  @spec read(SeaGoat.Store.path(), SeaGoat.key()) :: {:ok, term()} | :error | {:error, term()}
+  def read(file, key) do
     disk = Disk.open!(file)
 
-    with {:ok, magic} <- Disk.read_from_end(disk, SSTable.size(:magic), SSTable.size(:magic)),
-         true <- SSTable.is_ss_table(magic) do
-      result = reader.(disk)
-      Disk.close(disk)
-      result
-    else
-      _ ->
-        Disk.close(disk)
-        {:error, :not_an_ss_table}
-    end
+    result =
+      with :ok <- valid_ss_table(disk),
+           {:ok, {_, _, _, range_size, range_pos, no_of_blocks, _}} <- read_metadata(disk),
+           {:ok, range} <- read_range(disk, range_pos, range_size),
+           :ok <- key_in_range(range, key) do
+        binary_search(disk, key, 0, no_of_blocks)
+      end
+
+    Disk.close(disk)
+    result
   end
 
-  defp fetch_metadata(disk, f) do
-    with {:ok, encoded_metadata} <-
-           Disk.read_from_end(
-             disk,
-             SSTable.size(:magic) + SSTable.size(:metadata),
-             SSTable.size(:metadata)
-           ),
-         {:ok, metadata} <- SSTable.decode_metadata(encoded_metadata) do
-      f.(disk, metadata)
-    end
-  end
+  defp binary_search(_disk, _key, low, high) when high < low, do: :error
 
-  defp fetch_part(disk, position, size, decoder) do
-    with {:ok, encoded} <- Disk.read(disk, position, size),
-         {:ok, decoded} <- decoder.(encoded) do
-      {:ok, decoded}
-    end
-  end
-
-  defp fetch_key(_disk, low, high, _key) when high < low, do: :error
-
-  defp fetch_key(disk, low, high, key) do
+  defp binary_search(disk, key, low, high) do
     mid = div(low + high, 2)
     position = (mid - 1) * SSTable.size(:block)
 
-    with {:ok, k, v} <- get_block(disk, position) do
+    with {:ok, k, v} <- read_block(disk, position) do
       cond do
-        key < k -> fetch_key(disk, low, mid - 1, key)
-        key > k -> fetch_key(disk, mid + 1, high, key)
-        key == k -> {:ok, {:value, v}}
+        key == k ->
+          {:ok, {:value, v}}
+
+        key < k ->
+          binary_search(disk, key, low, mid - 1)
+
+        key > k ->
+          binary_search(disk, key, mid + 1, high)
       end
     end
   end
 
-  defp get_block(disk, position) do
+  defp read_block(disk, position) do
     position = max(0, position)
 
     with {:ok, encoded_header} <- Disk.read(disk, position, SSTable.size(:block_header)),
@@ -172,10 +205,77 @@ defmodule SeaGoat.SSTables do
       {:ok, key, value}
     else
       {:error, :not_block_start} ->
-        get_block(disk, position - SSTable.size(:block))
+        read_block(disk, position - SSTable.size(:block))
 
       e ->
         e
     end
   end
+
+  @doc """
+  Reads and returns the bloom filter from an SSTable file.
+
+  Extracts the bloom filter and level information from the SSTable's metadata
+  section. The bloom filter is used for efficient key existence checks before
+  performing expensive disk searches.
+
+  ## Parameters
+
+  - `file` - SSTable file name
+
+  ## Returns
+
+  `{:ok, bloom_filter, level}` on success, or `{:error, reason}` on failure.
+  """
+  @spec fetch_ss_table_info(SeaGoat.Store.path()) ::
+          {:ok, {SeaGoat.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
+  def fetch_ss_table_info(file) do
+    disk = Disk.open!(file)
+
+    result =
+      with :ok <- valid_ss_table(disk),
+           {:ok, {level, bf_size, bf_pos, _, _, _, _}} <- read_metadata(disk),
+           {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size) do
+        {:ok, bf, level}
+      end
+
+    Disk.close(disk)
+    result
+  end
+
+  defp valid_ss_table(disk) do
+    with {:ok, magic} <- Disk.read_from_end(disk, SSTable.size(:magic), SSTable.size(:magic)),
+         true <- SSTable.is_ss_table(magic) do
+      :ok
+    else
+      _ ->
+        {:error, :not_an_ss_table}
+    end
+  end
+
+  defp read_metadata(disk) do
+    with {:ok, encoded_metadata} <-
+           Disk.read_from_end(
+             disk,
+             SSTable.size(:magic) + SSTable.size(:metadata),
+             SSTable.size(:metadata)
+           ) do
+      SSTable.decode_metadata(encoded_metadata)
+    end
+  end
+
+  defp read_bloom_filter(disk, pos, size) do
+    with {:ok, encoded_bf} <- Disk.read(disk, pos, size) do
+      SSTable.decode_bloom_filter(encoded_bf)
+    end
+  end
+
+  defp read_range(disk, pos, size) do
+    with {:ok, encoded_range} <- Disk.read(disk, pos, size) do
+      SSTable.decode_range(encoded_range)
+    end
+  end
+
+  defp key_in_range({smallest, largest}, key) when key >= smallest and key <= largest, do: :ok
+  defp key_in_range(_, _), do: :error
 end

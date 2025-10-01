@@ -201,7 +201,7 @@ defmodule SeaGoat.Writer do
       Task.async(fn ->
         with {:ok, bloom_filter, tmp_path, level} <-
                SSTables.write(
-                 %SSTables.FlushIterator{},
+                 %SSTables.MemTableIterator{},
                  mem_table,
                  tmp_path,
                  @flush_level

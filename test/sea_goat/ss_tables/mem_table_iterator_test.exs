@@ -1,7 +1,7 @@
-defmodule SeaGoat.SSTables.FlushIteratorTest do
+defmodule SeaGoat.SSTables.MemTableIteratorTest do
   use ExUnit.Case, async: true
   alias SeaGoat.SSTables.SSTableIterator
-  alias SeaGoat.SSTables.FlushIterator
+  alias SeaGoat.SSTables.MemTableIterator
 
   test "iterates through data in a sorted manner" do
     data =
@@ -10,7 +10,7 @@ defmodule SeaGoat.SSTables.FlushIteratorTest do
       end
       |> Enum.shuffle()
 
-    assert {:ok, iterator} = SSTableIterator.init(%FlushIterator{}, data)
+    assert {:ok, iterator} = SSTableIterator.init(%MemTableIterator{}, data)
 
     assert :ok ==
              1..11
@@ -20,7 +20,7 @@ defmodule SeaGoat.SSTables.FlushIteratorTest do
                    assert {n, "v-#{n}"} == next
                    {:cont, iterator}
 
-                 {:eod, iterator} ->
+                 {:end_iter, iterator} ->
                    {:halt, SSTableIterator.deinit(iterator)}
                end
              end)

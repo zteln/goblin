@@ -1,4 +1,4 @@
-defmodule SeaGoat.SSTables.FlushIterator do
+defmodule SeaGoat.SSTables.MemTableIterator do
   @moduledoc """
   Iterates through data in a sorted fashion until there is no data left.
   """
@@ -9,7 +9,7 @@ defmodule SeaGoat.SSTables.FlushIterator do
       {:ok, %{iterator | data: Enum.sort(mem_table)}}
     end
 
-    def next(%{data: []} = iterator), do: {:eod, iterator}
+    def next(%{data: []} = iterator), do: {:end_iter, iterator}
 
     def next(%{data: [next | data]} = iterator) do
       iterator = %{iterator | data: data}

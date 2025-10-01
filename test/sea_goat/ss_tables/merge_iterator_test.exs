@@ -3,7 +3,7 @@ defmodule SeaGoat.SSTables.MergeIteratorTest do
   alias SeaGoat.SSTables
   alias SeaGoat.SSTables.SSTableIterator
   alias SeaGoat.SSTables.MergeIterator
-  alias SeaGoat.SSTables.FlushIterator
+  alias SeaGoat.SSTables.MemTableIterator
 
   @moduletag :tmp_dir
 
@@ -32,7 +32,7 @@ defmodule SeaGoat.SSTables.MergeIteratorTest do
         for n <- acc, do: assert(k >= n)
         iterate(iterator, [k | acc])
 
-      {:eod, iterator} ->
+      {:end_iter, iterator} ->
         {iterator, acc}
     end
   end
@@ -56,6 +56,6 @@ defmodule SeaGoat.SSTables.MergeIteratorTest do
   end
 
   defp write_ss_table(path, data) do
-    SSTables.write(%FlushIterator{}, data, path, 0)
+    SSTables.write(%MemTableIterator{}, data, path, 0)
   end
 end

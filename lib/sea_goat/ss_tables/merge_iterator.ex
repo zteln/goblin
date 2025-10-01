@@ -2,6 +2,9 @@ defmodule SeaGoat.SSTables.MergeIterator do
   @moduledoc """
   Iterates through on-disk SSTables where each iteration returns the smallest key stored.
   """
+  alias SeaGoat.SSTables.Disk
+  alias SeaGoat.SSTables.SSTable
+
   defstruct [:ss_tables]
 
   defimpl SeaGoat.SSTables.SSTableIterator do
@@ -11,7 +14,7 @@ defmodule SeaGoat.SSTables.MergeIterator do
       end
     end
 
-    def next(%{ss_tables: []} = iterator), do: {:eod, iterator}
+    def next(%{ss_tables: []} = iterator), do: {:end_iter, iterator}
 
     def next(iterator) do
       {k, v} =
@@ -31,7 +34,7 @@ defmodule SeaGoat.SSTables.MergeIterator do
     defp open_ss_tables([], acc), do: {:ok, acc}
 
     defp open_ss_tables([path | paths], acc) do
-      with {:ok, disk} <- SeaGoat.SSTables.Disk.open(path, start?: true),
+      with {:ok, disk} <- Disk.open(path, start?: true),
            {:ok, disk, kv} <- next_kv(disk) do
         open_ss_tables(paths, [{disk, kv, path} | acc])
       end
@@ -40,7 +43,7 @@ defmodule SeaGoat.SSTables.MergeIterator do
     defp close_ss_tables([]), do: :ok
 
     defp close_ss_tables([{disk, _, _} | ss_tables]) do
-      with :ok <- SeaGoat.SSTables.Disk.close(disk) do
+      with :ok <- Disk.close(disk) do
         close_ss_tables(ss_tables)
       end
     end
@@ -72,15 +75,15 @@ defmodule SeaGoat.SSTables.MergeIterator do
 
     defp next_kv(disk) do
       with {:ok, encoded_block_header} <-
-             SeaGoat.SSTables.Disk.read(disk, SeaGoat.SSTables.SSTable.size(:block_header)),
-           {:ok, span} <- SeaGoat.SSTables.SSTable.block_span(encoded_block_header),
+             Disk.read(disk, SSTable.size(:block_header)),
+           {:ok, span} <- SSTable.block_span(encoded_block_header),
            {:ok, encoded_block} <-
-             SeaGoat.SSTables.Disk.read(disk, SeaGoat.SSTables.SSTable.size(:block) * span),
-           {:ok, pair} <- SeaGoat.SSTables.SSTable.decode_block(encoded_block) do
+             Disk.read(disk, SSTable.size(:block) * span),
+           {:ok, pair} <- SSTable.decode_block(encoded_block) do
         {:ok,
-         SeaGoat.SSTables.Disk.advance_offset(
+         Disk.advance_offset(
            disk,
-           SeaGoat.SSTables.SSTable.size(:block) * span
+           SSTable.size(:block) * span
          ), pair}
       else
         {:error, :eod} ->
