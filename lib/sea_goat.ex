@@ -51,7 +51,7 @@ defmodule SeaGoat do
       }
     ]
 
-    Supervisor.init(children, strategy: :rest_for_one)
+    Supervisor.init(children, strategy: :one_for_all)
   end
 
   defp name(name, suffix) when is_pid(name) do
