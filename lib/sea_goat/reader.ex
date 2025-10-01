@@ -26,18 +26,23 @@ defmodule SeaGoat.Reader do
       |> Stream.map(&elem(&1, 0))
       |> Task.async_stream(& &1.(), timeout: @task_timeout)
       |> Stream.map(fn {:ok, res} -> res end)
-      |> Stream.filter(&(&1 != :error))
+      |> Stream.map(fn res ->
+        if match?({:error, _}, res) do
+          raise "Failed to read, reason: #{inspect(reason)}"
+        else
+          res
+        end
+      end)
+      |> Stream.filter(&match?({:ok, _}, &1))
       |> Stream.take(1)
       |> Enum.to_list()
 
     ss_tables
     |> Enum.each(&elem(&1, 1).())
 
-    # raise on error?
     case result do
       [] -> nil
       [ok: {:value, value}] -> value
-      [error: reason] -> {:error, reason}
     end
   end
 end
