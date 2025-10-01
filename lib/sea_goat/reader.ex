@@ -30,7 +30,8 @@ defmodule SeaGoat.Reader do
       iex> SeaGoat.Reader.get(writer_pid, store_pid, "nonexistent")
       nil
   """
-  @spec get(GenServer.server(), GenServer.server(), SeaGoat.db_key(), non_neg_integer()) :: SeaGoat.db_value() | nil
+  @spec get(GenServer.server(), GenServer.server(), SeaGoat.db_key(), non_neg_integer()) ::
+          SeaGoat.db_value() | nil
   def get(writer, store, key, timeout \\ @task_timeout) do
     case try_writer(writer, key) do
       {:ok, value} ->
@@ -53,13 +54,12 @@ defmodule SeaGoat.Reader do
       |> Stream.map(&elem(&1, 0))
       |> Task.async_stream(& &1.(), timeout: timeout)
       |> Stream.map(fn {:ok, res} -> res end)
-      |> Stream.map(fn res ->
-        if match?({:error, _}, res) do
-          {_, reason} = res
+      |> Stream.map(fn
+        {:error, reason} ->
           raise "Failed to read, reason: #{inspect(reason)}"
-        else
+
+        res ->
           res
-        end
       end)
       |> Stream.filter(&match?({:ok, _}, &1))
       |> Stream.take(1)
