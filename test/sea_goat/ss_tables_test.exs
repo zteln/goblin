@@ -2,7 +2,7 @@ defmodule SeaGoat.SSTablesTest do
   use ExUnit.Case, async: true
   alias SeaGoat.SSTables
   alias SeaGoat.SSTables.MemTableIterator
-  alias SeaGoat.SSTables.MergeIterator
+  alias SeaGoat.SSTables.SSTablesIterator
   alias SeaGoat.BloomFilter
 
   @moduletag :tmp_dir
@@ -58,7 +58,7 @@ defmodule SeaGoat.SSTablesTest do
     assert File.exists?(file)
   end
 
-  test "write/4 with MergeIterator writes an SSTable file on disk", c do
+  test "write/4 with SSTablesIterator writes an SSTable file on disk", c do
     file = Path.join(c.tmp_dir, "foo")
     level = 1
 
@@ -79,7 +79,7 @@ defmodule SeaGoat.SSTablesTest do
     refute File.exists?(file)
 
     assert {:ok, %BloomFilter{}, ^file, ^level} =
-             SSTables.write(%MergeIterator{}, data, file, level)
+             SSTables.write(%SSTablesIterator{}, data, file, level)
 
     for i <- 1..5, j <- 1..10 do
       assert {:ok, {:value, "v-#{i * j}"}} == SSTables.read(file, i * j)

@@ -1,6 +1,6 @@
 defmodule SeaGoat.SSTables.MemTableIteratorTest do
   use ExUnit.Case, async: true
-  alias SeaGoat.SSTables.SSTableIterator
+  alias SeaGoat.SSTables.Iterator
   alias SeaGoat.SSTables.MemTableIterator
 
   test "iterates through data in a sorted manner" do
@@ -10,18 +10,18 @@ defmodule SeaGoat.SSTables.MemTableIteratorTest do
       end
       |> Enum.shuffle()
 
-    assert {:ok, iterator} = SSTableIterator.init(%MemTableIterator{}, data)
+    assert {:ok, iterator} = Iterator.init(%MemTableIterator{}, data)
 
     assert :ok ==
              1..11
              |> Enum.reduce_while(iterator, fn n, iterator ->
-               case SSTableIterator.next(iterator) do
+               case Iterator.next(iterator) do
                  {:next, next, iterator} ->
                    assert {n, "v-#{n}"} == next
                    {:cont, iterator}
 
                  {:end_iter, iterator} ->
-                   {:halt, SSTableIterator.deinit(iterator)}
+                   {:halt, Iterator.deinit(iterator)}
                end
              end)
   end

@@ -28,8 +28,8 @@ defmodule SeaGoat.Compactor do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  def put(compactor, level, count, path) do
-    GenServer.call(compactor, {:put, level, count, path})
+  def put(compactor, level, count, file) do
+    GenServer.call(compactor, {:put, level, count, file})
   end
 
   @impl GenServer
@@ -46,11 +46,11 @@ defmodule SeaGoat.Compactor do
   end
 
   @impl GenServer
-  def handle_call({:put, level, count, path}, _from, state) do
+  def handle_call({:put, level, count, file}, _from, state) do
     {entries, new_merge} =
       state.levels
       |> Map.get(level, [])
-      |> put_in_level(count, path)
+      |> put_in_level(count, file)
       |> maybe_compact(level, state.level_limit, state.store, state.wal, state.rw_locks)
 
     levels = Map.put(state.levels, level, entries)
@@ -68,40 +68,40 @@ defmodule SeaGoat.Compactor do
     {:noreply, state}
   end
 
-  defp put_in_level(level, count, path), do: [{count, path} | level] |> List.keysort(0)
+  defp put_in_level(level, count, file), do: [{count, file} | level] |> List.keysort(0)
 
   defp maybe_compact(entries, level, level_limit, store, wal, rw_locks) do
     if length(entries) >= level_limit do
-      paths = Enum.map(entries, &elem(&1, 1))
-      ref = compact(paths, level, store, wal, rw_locks)
-      {[], %{ref => {level, paths}}}
+      files = Enum.map(entries, &elem(&1, 1))
+      ref = compact(files, level, store, wal, rw_locks)
+      {[], %{ref => {level, files}}}
     else
       {entries, %{}}
     end
   end
 
-  defp compact(paths, level, store, wal, rw_locks) do
+  defp compact(files, level, store, wal, rw_locks) do
     %{ref: ref} =
       Task.async(fn ->
-        path = Store.reuse_path(store, paths) || Store.new_path(store)
-        tmp_path = Store.tmp_path(path)
-        dump_path = Store.dump_path(path)
-        WAL.dump(wal, path, [{@compactor_tag, paths}, {:del, [tmp_path, dump_path]}])
+        file = Store.reuse_file(store, files) || Store.new_file(store)
+        tmp_file = Store.tmp_file(file)
+        dump_file = Store.dump_file(file)
+        WAL.dump(wal, file, [{@compactor_tag, files}, {:del, [tmp_file, dump_file]}])
 
-        with {:ok, bloom_filter, tmp_path, new_level} <-
+        with {:ok, bloom_filter, tmp_file, new_level} <-
                SSTables.write(
-                 %SSTables.MergeIterator{},
-                 paths,
-                 tmp_path,
+                 %SSTables.SSTablesIterator{},
+                 files,
+                 tmp_file,
                  level + 1
                ),
-             :ok <- WAL.dump(wal, dump_path, [{:del, paths}]),
-             :ok <- SSTables.switch(tmp_path, path),
-             :ok <- Store.put(store, path, bloom_filter, new_level),
-             :ok <- Store.remove(store, paths, level),
-             :ok <- lock_unlock_paths(rw_locks, paths, &RWLocks.wlock/2),
-             :ok <- SSTables.delete(paths ++ [dump_path]),
-             :ok <- lock_unlock_paths(rw_locks, paths, &RWLocks.unlock/2) do
+             :ok <- WAL.dump(wal, dump_file, [{:del, files}]),
+             :ok <- SSTables.switch(tmp_file, file),
+             :ok <- Store.put(store, file, bloom_filter, new_level),
+             :ok <- Store.remove(store, files, level),
+             :ok <- lock_unlock_files(rw_locks, files, &RWLocks.wlock/2),
+             :ok <- SSTables.delete(files ++ [dump_file]),
+             :ok <- lock_unlock_files(rw_locks, files, &RWLocks.unlock/2) do
           :merged
         end
       end)
@@ -109,11 +109,11 @@ defmodule SeaGoat.Compactor do
     ref
   end
 
-  defp lock_unlock_paths(_rw_locks, [], _lock_unlock), do: :ok
+  defp lock_unlock_files(_rw_locks, [], _lock_unlock), do: :ok
 
-  defp lock_unlock_paths(rw_locks, [path | paths], lock_unlock) do
-    with :ok <- lock_unlock.(rw_locks, path) do
-      lock_unlock_paths(rw_locks, paths, lock_unlock)
+  defp lock_unlock_files(rw_locks, [file | files], lock_unlock) do
+    with :ok <- lock_unlock.(rw_locks, file) do
+      lock_unlock_files(rw_locks, files, lock_unlock)
     end
   end
 end

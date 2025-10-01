@@ -19,11 +19,11 @@ defmodule SeaGoat.SSTables.Disk do
   Opens a file and raises if it fails.
   Check `open/2` for options.
   """
-  @spec open!(SeaGoat.Store.path(), opts()) :: t()
-  def open!(path, opts \\ []) do
-    case open(path, opts) do
+  @spec open!(SeaGoat.Store.file(), opts()) :: t()
+  def open!(file, opts \\ []) do
+    case open(file, opts) do
       {:ok, disk} -> disk
-      _ -> raise "failed to open file #{inspect(path)}."
+      _ -> raise "failed to open file #{inspect(file)}."
     end
   end
 
@@ -34,12 +34,12 @@ defmodule SeaGoat.SSTables.Disk do
   - `:write?`: a boolean indicating whether the file should be opened for writing (append only).
   - `:start?`: a boolean whether to set the offset on the start of the file or at the end.
   """
-  @spec open(SeaGoat.Store.path(), opts()) :: {:ok, t()} | {:error, term()}
-  def open(path, opts \\ []) do
+  @spec open(SeaGoat.Store.file(), opts()) :: {:ok, t()} | {:error, term()}
+  def open(file, opts \\ []) do
     open_opts = [:binary, :read, :raw] ++ if opts[:write?], do: [:append], else: []
     position = if opts[:start?], do: 0, else: :eof
 
-    with {:ok, io} <- :file.open(path, open_opts),
+    with {:ok, io} <- :file.open(file, open_opts),
          {:ok, offset} <- :file.position(io, position) do
       {:ok, %__MODULE__{io: io, offset: offset}}
     end
@@ -111,7 +111,7 @@ defmodule SeaGoat.SSTables.Disk do
   @doc """
   Renames `from` to `to`.
   """
-  @spec rename(SeaGoat.Store.path(), SeaGoat.Store.path()) :: :ok | {:error, term()}
+  @spec rename(SeaGoat.Store.file(), SeaGoat.Store.file()) :: :ok | {:error, term()}
   def rename(from, to) do
     case :file.rename(from, to) do
       :ok -> :ok
@@ -121,11 +121,11 @@ defmodule SeaGoat.SSTables.Disk do
   end
 
   @doc """
-  Deletes `path`.
+  Deletes `file`.
   """
-  @spec rm(SeaGoat.Store.path()) :: :ok | {:error, term()}
-  def rm(path) do
-    case :file.delete(path) do
+  @spec rm(SeaGoat.Store.file()) :: :ok | {:error, term()}
+  def rm(file) do
+    case :file.delete(file) do
       :ok -> :ok
       {:error, :enoent} -> :ok
       e -> e

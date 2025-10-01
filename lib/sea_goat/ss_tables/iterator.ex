@@ -1,4 +1,4 @@
-defprotocol SeaGoat.SSTables.SSTableIterator do
+defprotocol SeaGoat.SSTables.Iterator do
   @type t() :: t()
   def init(iterator, data)
   def next(iterator)

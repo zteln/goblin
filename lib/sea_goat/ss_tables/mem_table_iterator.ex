@@ -4,7 +4,7 @@ defmodule SeaGoat.SSTables.MemTableIterator do
   """
   defstruct [:data]
 
-  defimpl SeaGoat.SSTables.SSTableIterator do
+  defimpl SeaGoat.SSTables.Iterator do
     def init(iterator, mem_table) do
       {:ok, %{iterator | data: Enum.sort(mem_table)}}
     end

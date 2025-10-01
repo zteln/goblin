@@ -157,9 +157,9 @@ defmodule SeaGoat.Writer do
   def handle_continue(:wait_for_store, state) do
     state =
       receive do
-        {:store_ready, path, commands} ->
-          WAL.open(state.wal, path)
-          WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_path(path)]}])
+        {:store_ready, file, commands} ->
+          WAL.open(state.wal, file)
+          WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_file(file)]}])
           replay_commands(state, commands)
       end
 
@@ -181,14 +181,14 @@ defmodule SeaGoat.Writer do
 
   defp maybe_flush(state) do
     if MemTable.has_overflow(state.mem_table, state.limit) do
-      path = WAL.current_file(state.wal)
-      tmp_path = Store.tmp_path(path)
-      new_path = Store.new_path(state.store)
+      file = WAL.current_file(state.wal)
+      tmp_file = Store.tmp_file(file)
+      new_file = Store.new_file(state.store)
       WAL.append(state.wal, :flush)
-      WAL.rotate(state.wal, new_path)
-      WAL.append_batch(state.wal, [{:del, [Store.tmp_path(new_path)]}, @writer_tag])
+      WAL.rotate(state.wal, new_file)
+      WAL.append_batch(state.wal, [{:del, [Store.tmp_file(new_file)]}, @writer_tag])
 
-      ref = flush(state.mem_table, path, tmp_path, state.store)
+      ref = flush(state.mem_table, file, tmp_file, state.store)
       flushing = [{ref, state.mem_table} | state.flushing]
       %{state | mem_table: MemTable.new(), flushing: flushing}
     else
@@ -196,18 +196,18 @@ defmodule SeaGoat.Writer do
     end
   end
 
-  defp flush(mem_table, path, tmp_path, store) do
+  defp flush(mem_table, file, tmp_file, store) do
     %{ref: ref} =
       Task.async(fn ->
-        with {:ok, bloom_filter, tmp_path, level} <-
+        with {:ok, bloom_filter, tmp_file, level} <-
                SSTables.write(
                  %SSTables.MemTableIterator{},
                  mem_table,
-                 tmp_path,
+                 tmp_file,
                  @flush_level
                ),
-             :ok <- SSTables.switch(tmp_path, path),
-             :ok <- Store.put(store, path, bloom_filter, level) do
+             :ok <- SSTables.switch(tmp_file, file),
+             :ok <- Store.put(store, file, bloom_filter, level) do
           :flushed
         end
       end)
@@ -229,32 +229,32 @@ defmodule SeaGoat.Writer do
 
   defp replay_commands(state, []), do: state
 
-  defp replay_commands(state, [{path, batch} | commands]) do
+  defp replay_commands(state, [{file, batch} | commands]) do
     batch
-    |> Enum.reduce(state, &replay_command(&2, &1, path))
+    |> Enum.reduce(state, &replay_command(&2, &1, file))
     |> replay_commands(commands)
   end
 
-  defp replay_command(state, :flush, path) do
-    ref = flush(state.mem_table, path, Store.tmp_path(path), state.store)
+  defp replay_command(state, :flush, file) do
+    ref = flush(state.mem_table, file, Store.tmp_file(file), state.store)
     flushing = [{ref, state.mem_table} | state.flushing]
     %{state | mem_table: MemTable.new(), flushing: flushing}
   end
 
-  defp replay_command(state, {:del, paths}, _path) do
-    SSTables.delete(paths)
+  defp replay_command(state, {:del, files}, _file) do
+    SSTables.delete(files)
     state
   end
 
-  defp replay_command(state, {:put, key, value}, _path) do
+  defp replay_command(state, {:put, key, value}, _file) do
     mem_table = MemTable.upsert(state.mem_table, key, value)
     %{state | mem_table: mem_table}
   end
 
-  defp replay_command(state, {:remove, key}, _path) do
+  defp replay_command(state, {:remove, key}, _file) do
     mem_table = MemTable.delete(state.mem_table, key)
     %{state | mem_table: mem_table}
   end
 
-  defp replay_command(state, _command, _path), do: state
+  defp replay_command(state, _command, _file), do: state
 end

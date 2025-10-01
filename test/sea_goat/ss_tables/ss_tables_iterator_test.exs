@@ -1,33 +1,33 @@
-defmodule SeaGoat.SSTables.MergeIteratorTest do
+defmodule SeaGoat.SSTables.SSTablesIteratorTest do
   use ExUnit.Case, async: true
   alias SeaGoat.SSTables
-  alias SeaGoat.SSTables.SSTableIterator
-  alias SeaGoat.SSTables.MergeIterator
+  alias SeaGoat.SSTables.Iterator
+  alias SeaGoat.SSTables.SSTablesIterator
   alias SeaGoat.SSTables.MemTableIterator
 
   @moduletag :tmp_dir
 
   setup c do
-    {keys, paths} =
+    {keys, files} =
       for {name, data} <- generate_data(), reduce: {[], []} do
-        {keys, paths} ->
-          path = Path.join(c.tmp_dir, name)
-          write_ss_table(path, data)
-          {Map.keys(data) ++ keys, [path | paths]}
+        {keys, files} ->
+          file = Path.join(c.tmp_dir, name)
+          write_ss_table(file, data)
+          {Map.keys(data) ++ keys, [file | files]}
       end
 
-    %{paths: Enum.reverse(paths), keys: keys |> Enum.uniq() |> Enum.sort()}
+    %{files: Enum.reverse(files), keys: keys |> Enum.uniq() |> Enum.sort()}
   end
 
-  test "iterating iterates through the key-value pairs in the merging paths", c do
-    assert {:ok, iterator} = SSTableIterator.init(%MergeIterator{}, c.paths)
+  test "iterating iterates through the key-value pairs in the merging files", c do
+    assert {:ok, iterator} = Iterator.init(%SSTablesIterator{}, c.files)
     {iterator, acc} = iterate(iterator)
     assert Enum.reverse(acc) == c.keys
-    assert :ok == SSTableIterator.deinit(iterator)
+    assert :ok == Iterator.deinit(iterator)
   end
 
   defp iterate(iterator, acc \\ []) do
-    case SSTableIterator.next(iterator) do
+    case Iterator.next(iterator) do
       {:next, {k, _v}, iterator} ->
         for n <- acc, do: assert(k >= n)
         iterate(iterator, [k | acc])
@@ -55,7 +55,7 @@ defmodule SeaGoat.SSTables.MergeIteratorTest do
     end)
   end
 
-  defp write_ss_table(path, data) do
-    SSTables.write(%MemTableIterator{}, data, path, 0)
+  defp write_ss_table(file, data) do
+    SSTables.write(%MemTableIterator{}, data, file, 0)
   end
 end

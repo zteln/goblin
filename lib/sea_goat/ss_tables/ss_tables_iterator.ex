@@ -1,4 +1,4 @@
-defmodule SeaGoat.SSTables.MergeIterator do
+defmodule SeaGoat.SSTables.SSTablesIterator do
   @moduledoc """
   Iterates through on-disk SSTables where each iteration returns the smallest key stored.
   """
@@ -7,9 +7,9 @@ defmodule SeaGoat.SSTables.MergeIterator do
 
   defstruct [:ss_tables]
 
-  defimpl SeaGoat.SSTables.SSTableIterator do
-    def init(iterator, paths) do
-      with {:ok, ss_tables} <- open_ss_tables(paths) do
+  defimpl SeaGoat.SSTables.Iterator do
+    def init(iterator, files) do
+      with {:ok, ss_tables} <- open_ss_tables(files) do
         {:ok, %{iterator | ss_tables: ss_tables}}
       end
     end
@@ -30,13 +30,13 @@ defmodule SeaGoat.SSTables.MergeIterator do
       close_ss_tables(iterator.ss_tables)
     end
 
-    defp open_ss_tables(paths, acc \\ [])
+    defp open_ss_tables(files, acc \\ [])
     defp open_ss_tables([], acc), do: {:ok, acc}
 
-    defp open_ss_tables([path | paths], acc) do
-      with {:ok, disk} <- Disk.open(path, start?: true),
+    defp open_ss_tables([file | files], acc) do
+      with {:ok, disk} <- Disk.open(file, start?: true),
            {:ok, disk, kv} <- next_kv(disk) do
-        open_ss_tables(paths, [{disk, kv, path} | acc])
+        open_ss_tables(files, [{disk, kv, file} | acc])
       end
     end
 

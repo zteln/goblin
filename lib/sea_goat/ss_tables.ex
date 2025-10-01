@@ -10,7 +10,7 @@ defmodule SeaGoat.SSTables do
   alias SeaGoat.BloomFilter
   alias SeaGoat.SSTables.Disk
   alias SeaGoat.SSTables.SSTable
-  alias SeaGoat.SSTables.SSTableIterator
+  alias SeaGoat.SSTables.Iterator
 
   @doc """
   Deletes multiple SSTable files from disk.
@@ -27,7 +27,7 @@ defmodule SeaGoat.SSTables do
 
   `:ok` if all files deleted successfully, or `{:error, reason}` on first failure.
   """
-  @spec delete([SeaGoat.Store.path()]) :: :ok | {:error, term()}
+  @spec delete([SeaGoat.Store.file()]) :: :ok | {:error, term()}
   def delete([]), do: :ok
 
   def delete([file | files]) do
@@ -51,7 +51,7 @@ defmodule SeaGoat.SSTables do
 
   `:ok` on success.
   """
-  @spec switch(SeaGoat.Store.path(), SeaGoat.Store.path()) :: :ok
+  @spec switch(SeaGoat.Store.file(), SeaGoat.Store.file()) :: :ok
   def switch(from, to) do
     Disk.rename(from, to)
   end
@@ -59,17 +59,17 @@ defmodule SeaGoat.SSTables do
   @doc """
   Writes key-value data to an SSTable file on disk.
 
-  Creates a new SSTable file at the specified file containing the data provided
-  through the iterator. The iterator determines how data is sourced and ordered:
+  Creates a new SSTable file containing the data provided through the iterator. 
+  The iterator determines how data is sourced and ordered:
 
   - `MemTableIterator` - sorts in-memory data before writing
-  - `MergeIterator` - merges multiple existing SSTables in sorted order
+  - `SSTablesIterator` - merges multiple existing SSTables in sorted order
 
   Returns the bloom filter, file, and level upon successful completion.
 
   ## Parameters
 
-  - `iterator` - Iterator struct that implements the SSTableIterator protocol
+  - `iterator` - Iterator struct that implements the Iterator protocol
   - `data` - Data source passed to the iterator (mem_table, files, etc.)
   - `file` - File where the SSTable will be created
   - `level` - SSTable level for LSM tree organization
@@ -78,8 +78,8 @@ defmodule SeaGoat.SSTables do
 
   `{:ok, bloom_filter, file, level}` on success, or `{:error, reason}` on failure.
   """
-  @spec write(SSTableIterator.t(), Enumerable.t(), SeaGoat.Store.path(), non_neg_integer()) ::
-          {:ok, BloomFilter.t(), SeaGoat.Store.path(), non_neg_integer()}
+  @spec write(Iterator.t(), Enumerable.t(), SeaGoat.Store.file(), non_neg_integer()) ::
+          {:ok, BloomFilter.t(), SeaGoat.Store.file(), non_neg_integer()}
   def write(iterator, data, file, level) do
     with {:ok, bloom_filter} <- write_to_file(file, level, iterator, data) do
       {:ok, bloom_filter, file, level}
@@ -96,10 +96,10 @@ defmodule SeaGoat.SSTables do
   end
 
   defp write_ss_table(disk, level, iterator, data) do
-    with {:ok, iterator} <- SSTableIterator.init(iterator, data),
+    with {:ok, iterator} <- Iterator.init(iterator, data),
          {:ok, disk, no_of_blocks, range, bloom_filter, iterator} <-
            write_data(disk, iterator),
-         :ok <- SSTableIterator.deinit(iterator) do
+         :ok <- Iterator.deinit(iterator) do
       write_meta(disk, level, bloom_filter, range, no_of_blocks)
     end
   end
@@ -111,7 +111,7 @@ defmodule SeaGoat.SSTables do
          {smallest, largest} \\ {nil, nil},
          bloom_filter \\ BloomFilter.new()
        ) do
-    case SSTableIterator.next(iterator) do
+    case Iterator.next(iterator) do
       {:next, {k, v}, iterator} ->
         block = SSTable.encode_block(k, v)
         span = SSTable.span(byte_size(block))
@@ -159,7 +159,7 @@ defmodule SeaGoat.SSTables do
   `{:ok, {:value, value}}` if key found, `:error` if not found, or 
   `{:error, reason}` on file/parsing errors.
   """
-  @spec read(SeaGoat.Store.path(), SeaGoat.key()) :: {:ok, term()} | :error | {:error, term()}
+  @spec read(SeaGoat.Store.file(), SeaGoat.key()) :: {:ok, term()} | :error | {:error, term()}
   def read(file, key) do
     disk = Disk.open!(file)
 
@@ -227,7 +227,7 @@ defmodule SeaGoat.SSTables do
 
   `{:ok, bloom_filter, level}` on success, or `{:error, reason}` on failure.
   """
-  @spec fetch_ss_table_info(SeaGoat.Store.path()) ::
+  @spec fetch_ss_table_info(SeaGoat.Store.file()) ::
           {:ok, {SeaGoat.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
   def fetch_ss_table_info(file) do
     disk = Disk.open!(file)

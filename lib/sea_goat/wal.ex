@@ -43,16 +43,16 @@ defmodule SeaGoat.WAL do
     GenServer.call(wal, {:append_batch, batch})
   end
 
-  def rotate(wal, path) do
-    GenServer.call(wal, {:rotate, path})
+  def rotate(wal, file) do
+    GenServer.call(wal, {:rotate, file})
   end
 
   def get_logs(wal, file) do
     GenServer.call(wal, {:get_logs, file})
   end
 
-  def dump(wal, path, dump) do
-    GenServer.call(wal, {:dump, path, dump})
+  def dump(wal, file, dump) do
+    GenServer.call(wal, {:dump, file, dump})
   end
 
   def current_file(wal) do
@@ -112,9 +112,9 @@ defmodule SeaGoat.WAL do
     end
   end
 
-  def handle_call({:dump, path, dump}, _from, state) do
+  def handle_call({:dump, file, dump}, _from, state) do
     reply =
-      with {:ok, log} <- open_log(path, dump(state.wal_name)),
+      with {:ok, log} <- open_log(file, dump(state.wal_name)),
            :ok <- append_and_sync_log(log, dump) do
         close_log(log)
       end
