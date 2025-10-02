@@ -7,43 +7,12 @@ defmodule SeaGoat.StoreTest do
 
   @moduletag :tmp_dir
 
-  setup c do
-    rw_locks = start_supervised!({SeaGoat.RWLocks, name: :store_test_rw_locks})
-
-    wal =
-      start_supervised!(
-        {SeaGoat.WAL, name: :store_test_wal, wal_name: :store_test_wal_name, sync_interval: 50}
-      )
-
-    writer =
-      start_supervised!(
-        {Writer, name: :store_test_writer, wal: wal, store: :store_test, limit: 100}
-      )
-
-    compactor =
-      start_supervised!(
-        {SeaGoat.Compactor,
-         name: :store_test_compactor,
-         wal: wal,
-         rw_locks: rw_locks,
-         store: :store_test,
-         level_limit: 5}
-      )
-
-    store =
-      start_supervised!(
-        {SeaGoat.Store,
-         name: :store_test,
-         dir: c.tmp_dir,
-         writer: writer,
-         wal: wal,
-         rw_locks: rw_locks,
-         compactor: compactor},
-        id: :store_test_id
-      )
-
-    %{rw_locks: rw_locks, wal: wal, writer: writer, compactor: compactor, store: store}
-  end
+  setup_db(
+    id: :store_test_id,
+    name: :store_test,
+    wal_name: :store_test_wal,
+    sync_interval: 50
+  )
 
   test "put/4 puts new SSTable in store", c do
     file = Store.new_file(c.store)
@@ -379,17 +348,14 @@ defmodule SeaGoat.StoreTest do
 
     %{levels: levels} = :sys.get_state(c.store)
 
-    stop_supervised!(:store_test_id)
+    stop_supervised!(c.db_id)
 
-    store =
-      start_supervised!(
-        {SeaGoat.Store,
-         name: :store_test,
-         dir: c.tmp_dir,
-         writer: c.writer,
-         wal: c.wal,
-         rw_locks: c.rw_locks,
-         compactor: c.compactor}
+    %{store: store} =
+      start_db(c.tmp_dir,
+        id: :store_test_id,
+        name: :store_test,
+        wal_name: :store_test_wal,
+        sync_interval: 50
       )
 
     assert %{levels: ^levels} = :sys.get_state(store)
