@@ -27,7 +27,7 @@ defmodule SeaGoat.SSTables do
 
   `:ok` if all files deleted successfully, or `{:error, reason}` on first failure.
   """
-  @spec delete([SeaGoat.Store.file()]) :: :ok | {:error, term()}
+  @spec delete([SeaGoat.db_file()]) :: :ok | {:error, term()}
   def delete([]), do: :ok
 
   def delete([file | files]) do
@@ -51,7 +51,7 @@ defmodule SeaGoat.SSTables do
 
   `:ok` on success.
   """
-  @spec switch(SeaGoat.Store.file(), SeaGoat.Store.file()) :: :ok
+  @spec switch(SeaGoat.db_file(), SeaGoat.db_file()) :: :ok
   def switch(from, to) do
     Disk.rename(from, to)
   end
@@ -78,8 +78,8 @@ defmodule SeaGoat.SSTables do
 
   `{:ok, bloom_filter, file, level}` on success, or `{:error, reason}` on failure.
   """
-  @spec write(Iterator.t(), Enumerable.t(), SeaGoat.Store.file(), non_neg_integer()) ::
-          {:ok, BloomFilter.t(), SeaGoat.Store.file(), non_neg_integer()}
+  @spec write(Iterator.t(), Enumerable.t(), SeaGoat.db_file(), non_neg_integer()) ::
+          {:ok, BloomFilter.t(), SeaGoat.db_file(), non_neg_integer()}
   def write(iterator, data, file, level) do
     with {:ok, bloom_filter} <- write_to_file(file, level, iterator, data) do
       {:ok, bloom_filter, file, level}
@@ -159,7 +159,7 @@ defmodule SeaGoat.SSTables do
   `{:ok, {:value, value}}` if key found, `:error` if not found, or 
   `{:error, reason}` on file/parsing errors.
   """
-  @spec read(SeaGoat.Store.file(), SeaGoat.db_key()) :: {:ok, term()} | :error | {:error, term()}
+  @spec read(SeaGoat.db_file(), SeaGoat.db_key()) :: {:ok, term()} | :error | {:error, term()}
   def read(file, key) do
     disk = Disk.open!(file)
 
@@ -227,7 +227,7 @@ defmodule SeaGoat.SSTables do
 
   `{:ok, bloom_filter, level}` on success, or `{:error, reason}` on failure.
   """
-  @spec fetch_ss_table_info(SeaGoat.Store.file()) ::
+  @spec fetch_ss_table_info(SeaGoat.db_file()) ::
           {:ok, {SeaGoat.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
   def fetch_ss_table_info(file) do
     disk = Disk.open!(file)

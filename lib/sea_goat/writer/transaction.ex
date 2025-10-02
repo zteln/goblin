@@ -35,7 +35,7 @@ defmodule SeaGoat.Writer.Transaction do
   @doc """
   Puts the key-value pair in the transactions MemTable, overriding `key` if it exists.
   """
-  @spec put(t(), term(), term()) :: t()
+  @spec put(t(), SeaGoat.db_key(), SeaGoat.db_value()) :: t()
   def put(tx, key, value) do
     write = {:put, key, value}
     mem_table = MemTable.upsert(tx.mem_table, key, value)
@@ -45,7 +45,7 @@ defmodule SeaGoat.Writer.Transaction do
   @doc """
   Removes `key` and corresponding value in the transactions MemTable.
   """
-  @spec remove(t(), term()) :: t()
+  @spec remove(t(), SeaGoat.db_key()) :: t()
   def remove(tx, key) do
     write = {:remove, key}
     mem_table = MemTable.delete(tx.mem_table, key)
@@ -90,7 +90,7 @@ defmodule SeaGoat.Writer.Transaction do
   @doc """
   Reads `key` from either its own MemTable or via its `fallback_read` function if `:not_found` is returned from its own MemTable..
   """
-  @spec read(t(), term()) :: term | nil
+  @spec read(t(), SeaGoat.db_key()) :: term | nil
   def read(tx, key) do
     read =
       case MemTable.read(tx.mem_table, key) do

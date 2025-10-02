@@ -2,8 +2,12 @@ defmodule SeaGoat do
   use Supervisor
 
   @type db_key :: term()
-  @type db_value :: term()
+  @type db_value :: term() | nil
+  @type db_level :: non_neg_integer()
+  @type db_file :: String.t()
+  @type db_server :: GenServer.server()
 
+  @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
     writer = name(db, :writer)
     SeaGoat.Writer.put(writer, key, value)
