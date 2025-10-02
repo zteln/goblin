@@ -124,7 +124,7 @@ defmodule SeaGoat.RWLocks do
       |> Enum.into(%{})
 
     %{state | locks: locks}
-    {:reply, :ok, state}
+    {:noreply, state}
   end
 
   defp do_unlock(lock, on_match) do
