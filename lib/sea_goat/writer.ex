@@ -93,7 +93,7 @@ defmodule SeaGoat.Writer do
        store: opts[:store],
        mem_table: MemTable.new(),
        limit: opts[:limit] || @default_mem_limit
-     }, {:continue, :wait_for_store}}
+     }, {:continue, :get_previous_writes}}
   end
 
   @impl GenServer
@@ -154,15 +154,11 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_continue(:wait_for_store, state) do
-    state =
-      receive do
-        {:store_ready, file, commands} ->
-          WAL.open(state.wal, file)
-          WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_file(file)]}])
-          replay_commands(state, commands)
-      end
-
+  def handle_continue(:get_previous_writes, state) do
+    {previous_writes, file} = Store.get_write_replays(state.store)
+    WAL.open(state.wal, file)
+    WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_file(file)]}])
+    state = replay_previous_writes(state, previous_writes)
     {:noreply, state}
   end
 
@@ -227,34 +223,34 @@ defmodule SeaGoat.Writer do
     end
   end
 
-  defp replay_commands(state, []), do: state
+  defp replay_previous_writes(state, []), do: state
 
-  defp replay_commands(state, [{file, batch} | commands]) do
+  defp replay_previous_writes(state, [{file, batch} | commands]) do
     batch
-    |> Enum.reduce(state, &replay_command(&2, &1, file))
-    |> replay_commands(commands)
+    |> Enum.reduce(state, &replay_previous_write(&2, &1, file))
+    |> replay_previous_writes(commands)
   end
 
-  defp replay_command(state, :flush, file) do
+  defp replay_previous_write(state, :flush, file) do
     ref = flush(state.mem_table, file, Store.tmp_file(file), state.store)
     flushing = [{ref, state.mem_table} | state.flushing]
     %{state | mem_table: MemTable.new(), flushing: flushing}
   end
 
-  defp replay_command(state, {:del, files}, _file) do
+  defp replay_previous_write(state, {:del, files}, _file) do
     SSTables.delete(files)
     state
   end
 
-  defp replay_command(state, {:put, key, value}, _file) do
+  defp replay_previous_write(state, {:put, key, value}, _file) do
     mem_table = MemTable.upsert(state.mem_table, key, value)
     %{state | mem_table: mem_table}
   end
 
-  defp replay_command(state, {:remove, key}, _file) do
+  defp replay_previous_write(state, {:remove, key}, _file) do
     mem_table = MemTable.delete(state.mem_table, key)
     %{state | mem_table: mem_table}
   end
 
-  defp replay_command(state, _command, _file), do: state
+  defp replay_previous_write(state, _command, _file), do: state
 end

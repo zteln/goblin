@@ -61,7 +61,7 @@ defmodule SeaGoat.Store do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:dir, :wal, :compactor, :rw_locks, :writer])
+    args = Keyword.take(opts, [:dir, :wal, :compactor, :rw_locks])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
@@ -190,6 +190,10 @@ defmodule SeaGoat.Store do
     GenServer.call(store, {:get_ss_tables, key})
   end
 
+  def get_write_replays(store) do
+    GenServer.call(store, :get_write_replays)
+  end
+
   @doc """
   Returns a temporary filename by appending the `.tmp` suffix.
 
@@ -238,7 +242,7 @@ defmodule SeaGoat.Store do
        wal: args[:wal],
        rw_locks: args[:rw_locks],
        compactor: args[:compactor]
-     }, {:continue, {:replay, args[:writer]}}}
+     }, {:continue, :get_previous_state}}
   end
 
   @impl GenServer
@@ -280,6 +284,11 @@ defmodule SeaGoat.Store do
     {:reply, ss_tables, state}
   end
 
+  def handle_call(:get_write_replays, _from, state) do
+    file = file(state.dir, state.latest_wal)
+    {:reply, {state.writes, file}, %{state | writes: [], latest_wal: nil}}
+  end
+
   def handle_call(:new_file, _from, state) do
     new_file_count = state.file_count + 1
     new_file = file(state.dir, new_file_count)
@@ -298,71 +307,77 @@ defmodule SeaGoat.Store do
     {:noreply, state}
   end
 
-  def handle_continue({:replay, writer}, state) do
+  def handle_continue(:get_previous_state, state) do
     state =
-      case File.ls!(state.dir) do
-        [] ->
-          file_count = 0
-          file = file(state.dir, file_count)
-          send(writer, {:store_ready, file, state.writes})
-          %{state | file_count: file_count}
-
-        files ->
-          state = replay_files(state, Enum.map(files, &Path.join(state.dir, &1)))
-          file = file(state.dir, state.latest_wal)
-          send(writer, {:store_ready, file, Enum.reverse(state.writes)})
-          %{state | writes: [], latest_wal: nil}
-      end
+      state.dir
+      |> File.ls!()
+      |> read_previous_state(state)
 
     {:noreply, state}
   end
 
-  defp replay_files(state, files) do
+  defp read_previous_state([], state), do: %{state | file_count: 0, latest_wal: 0}
+
+  defp read_previous_state(files, state) do
     files
-    |> Enum.filter(&String.ends_with?(&1, [@file_suffix, @dump_suffix]))
-    |> Enum.flat_map(fn file ->
-      [block_count, _ext] =
-        file
-        |> Path.basename()
-        |> String.split(".", parts: 2)
+    |> Enum.map(&Path.join(state.dir, &1))
+    |> Enum.filter(&valid_db_file?/1)
+    |> Enum.flat_map(&tag_file(&1, state.wal))
+    |> Enum.sort_by(& &1.file_count)
+    |> Enum.reduce(state, &process_file/2)
+  end
 
-      case Integer.parse(block_count) do
-        {int, _} -> [{int, file}]
-        _ -> []
-      end
-    end)
-    |> List.keysort(0)
-    |> Enum.flat_map(fn {block, file} ->
-      case wal_or_db(file, state.wal) do
-        {:logs, logs} ->
-          [{:logs, logs, block, file}]
+  defp valid_db_file?(file), do: String.ends_with?(file, [@file_suffix, @dump_suffix])
 
-        {:level, bloom_filter, level} ->
-          [{:level, bloom_filter, level, block, file}]
+  defp tag_file(file, wal) do
+    [file_count, _ext] =
+      file
+      |> Path.basename()
+      |> String.split(".", parts: 2)
 
-        _ ->
-          []
-      end
-    end)
-    |> Enum.reduce(state, fn
-      {:logs, [SeaGoat.Writer.writer_tag() | logs], file_count, file}, acc ->
-        writes = [{file, logs} | acc.writes]
-        %{acc | writes: writes, file_count: file_count, latest_wal: file_count}
+    file_count = String.to_integer(file_count)
 
-      {:logs, [{SeaGoat.Compactor.compactor_tag(), files} | logs], file_count, file}, acc ->
-        compacting_files = Map.put(acc.compacting_files, files, file)
+    case wal_or_ss_table(file, wal) do
+      {:logs, logs} ->
+        [%{type: :log, logs: logs, file: file, file_count: file_count}]
+
+      {:ss_table, bloom_filter, level} ->
+        [
+          %{
+            type: :ss_table,
+            bloom_filter: bloom_filter,
+            level: level,
+            file: file,
+            file_count: file_count
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  defp process_file(%{type: :log} = file, state) do
+    case file.logs do
+      [SeaGoat.Writer.writer_tag() | _logs] ->
+        writes = [{file.file, file.logs} | state.writes]
+        %{state | writes: writes, file_count: file.file_count, latest_wal: file.file_count}
+
+      [{SeaGoat.Compactor.compactor_tag(), files} | logs] ->
+        compacting_files = Map.put(state.compacting_files, files, file.file)
         :ok = run_logs(logs)
-        %{acc | file_count: file_count, compacting_files: compacting_files}
+        %{state | file_count: file.file_count, compacting_files: compacting_files}
 
-      {:logs, logs, file_count, _file}, acc ->
+      logs ->
         :ok = run_logs(logs)
-        %{acc | file_count: file_count}
+        %{state | file_count: file.file_count}
+    end
+  end
 
-      {:level, bloom_filter, level, file_count, file}, acc ->
-        levels = Levels.insert(acc.levels, level, {file, bloom_filter})
-        :ok = Compactor.put(state.compactor, level, file_count, file)
-        %{acc | levels: levels, file_count: file_count}
-    end)
+  defp process_file(%{type: :ss_table} = file, state) do
+    levels = Levels.insert(state.levels, file.level, {file.file, file.bloom_filter})
+    :ok = Compactor.put(state.compactor, file.level, file.file_count, file.file)
+    %{state | levels: levels, file_count: file.file_count}
   end
 
   defp run_logs([]), do: :ok
@@ -375,7 +390,7 @@ defmodule SeaGoat.Store do
 
   defp run_logs([_ | logs]), do: run_logs(logs)
 
-  defp wal_or_db(file, wal) do
+  defp wal_or_ss_table(file, wal) do
     case WAL.get_logs(wal, file) do
       {:ok, logs} ->
         {:logs, logs}
@@ -383,7 +398,7 @@ defmodule SeaGoat.Store do
       _ ->
         case SSTables.fetch_ss_table_info(file) do
           {:ok, bloom_filter, level} ->
-            {:level, bloom_filter, level}
+            {:ss_table, bloom_filter, level}
 
           _ ->
             {:error, :not_wal_or_db}
