@@ -21,8 +21,10 @@ defmodule SeaGoat.Writer do
   ]
 
   defmacro writer_tag do
+    tag = Macro.expand(@writer_tag, __CALLER__)
+
     quote do
-      :writer
+      unquote(tag)
     end
   end
 
@@ -72,8 +74,11 @@ defmodule SeaGoat.Writer do
         :ok = commit_transaction(writer, tx, self())
         reply
 
-      _ ->
+      :cancel ->
         cancel_transaction(writer, self())
+
+      _ ->
+        raise "Invalid return type from transaction."
     end
   end
 
@@ -93,7 +98,7 @@ defmodule SeaGoat.Writer do
        store: opts[:store],
        mem_table: MemTable.new(),
        limit: opts[:limit] || @default_mem_limit
-     }, {:continue, :get_previous_writes}}
+     }, {:continue, :get_recovered_writes}}
   end
 
   @impl GenServer
@@ -154,11 +159,11 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_continue(:get_previous_writes, state) do
-    {previous_writes, file} = Store.get_write_replays(state.store)
+  def handle_continue(:get_recovered_writes, state) do
+    {recovered_writes, file} = Store.get_recovered_writes(state.store)
     WAL.open(state.wal, file)
     WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_file(file)]}])
-    state = replay_previous_writes(state, previous_writes)
+    state = recover_writes(state, recovered_writes)
     {:noreply, state}
   end
 
@@ -223,34 +228,34 @@ defmodule SeaGoat.Writer do
     end
   end
 
-  defp replay_previous_writes(state, []), do: state
+  defp recover_writes(state, []), do: state
 
-  defp replay_previous_writes(state, [{file, batch} | commands]) do
+  defp recover_writes(state, [{file, batch} | commands]) do
     batch
-    |> Enum.reduce(state, &replay_previous_write(&2, &1, file))
-    |> replay_previous_writes(commands)
+    |> Enum.reduce(state, &recover_write(&2, &1, file))
+    |> recover_writes(commands)
   end
 
-  defp replay_previous_write(state, :flush, file) do
+  defp recover_write(state, :flush, file) do
     ref = flush(state.mem_table, file, Store.tmp_file(file), state.store)
     flushing = [{ref, state.mem_table} | state.flushing]
     %{state | mem_table: MemTable.new(), flushing: flushing}
   end
 
-  defp replay_previous_write(state, {:del, files}, _file) do
+  defp recover_write(state, {:del, files}, _file) do
     SSTables.delete(files)
     state
   end
 
-  defp replay_previous_write(state, {:put, key, value}, _file) do
+  defp recover_write(state, {:put, key, value}, _file) do
     mem_table = MemTable.upsert(state.mem_table, key, value)
     %{state | mem_table: mem_table}
   end
 
-  defp replay_previous_write(state, {:remove, key}, _file) do
+  defp recover_write(state, {:remove, key}, _file) do
     mem_table = MemTable.delete(state.mem_table, key)
     %{state | mem_table: mem_table}
   end
 
-  defp replay_previous_write(state, _command, _file), do: state
+  defp recover_write(state, _command, _file), do: state
 end

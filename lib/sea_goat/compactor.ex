@@ -18,16 +18,20 @@ defmodule SeaGoat.Compactor do
   ]
 
   defmacro compactor_tag do
+    tag = Macro.expand(@compactor_tag, __CALLER__)
+
     quote do
-      :compactor
+      unquote(tag)
     end
   end
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     args = Keyword.take(opts, [:level_limit, :wal, :store, :rw_locks])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
+  @spec put(GenServer.server(), SeaGoat.level(), non_neg_integer(), SeaGoat.db_file()) :: :ok
   def put(compactor, level, count, file) do
     GenServer.call(compactor, {:put, level, count, file})
   end
@@ -98,7 +102,7 @@ defmodule SeaGoat.Compactor do
              :ok <- WAL.dump(wal, dump_file, [{:del, files}]),
              :ok <- SSTables.switch(tmp_file, file),
              :ok <- Store.put(store, file, bloom_filter, new_level),
-             :ok <- Store.remove(store, files, level),
+             :ok <- Store.remove(store, files),
              :ok <- lock_unlock_files(rw_locks, files, &RWLocks.wlock/2),
              :ok <- SSTables.delete(files ++ [dump_file]),
              :ok <- lock_unlock_files(rw_locks, files, &RWLocks.unlock/2) do

@@ -30,19 +30,10 @@ defmodule SeaGoat.Store do
   - `SeaGoat.RWLocks` for coordinated file access
   """
   use GenServer
-  alias __MODULE__.Levels
+  alias __MODULE__.FileManager
+  alias __MODULE__.Files
+  alias __MODULE__.Recovery
   alias SeaGoat.Compactor
-  alias SeaGoat.SSTables
-  alias SeaGoat.WAL
-  alias SeaGoat.RWLocks
-  alias SeaGoat.BloomFilter
-
-  require SeaGoat.Writer
-  require SeaGoat.Compactor
-
-  @file_suffix ".seagoat"
-  @tmp_suffix ".tmp"
-  @dump_suffix ".dump"
 
   @type file :: String.t()
   @type level :: non_neg_integer()
@@ -53,10 +44,11 @@ defmodule SeaGoat.Store do
     :compactor,
     :rw_locks,
     :latest_wal,
-    compacting_files: %{},
-    writes: [],
-    file_count: 0,
-    levels: Levels.new()
+    recovered_compacting_files: %{},
+    recovered_writes: [],
+    max_file_count: 0,
+    max_wal_count: 0,
+    files: %{}
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -82,7 +74,8 @@ defmodule SeaGoat.Store do
       iex> Store.put(store, "/data/1.seagoat", bloom_filter, 0)
       :ok
   """
-  @spec put(GenServer.server(), SeaGoat.db_file(), BloomFilter.t(), SeaGoat.db_level()) :: :ok
+  @spec put(GenServer.server(), SeaGoat.db_file(), SeaGoat.BloomFilter.t(), SeaGoat.db_level()) ::
+          :ok
   def put(store, file, bloom_filter, level) do
     GenServer.call(store, {:put, file, bloom_filter, level})
   end
@@ -103,9 +96,9 @@ defmodule SeaGoat.Store do
       iex> Store.remove(store, ["/data/1.seagoat", "/data/2.seagoat"], 0)
       :ok
   """
-  @spec remove(GenServer.server(), [SeaGoat.db_file()], SeaGoat.db_level()) :: :ok
-  def remove(store, files, level) do
-    GenServer.call(store, {:remove, files, level})
+  @spec remove(GenServer.server(), [SeaGoat.db_file()]) :: :ok
+  def remove(store, files) do
+    GenServer.call(store, {:remove, files})
   end
 
   @doc """
@@ -190,8 +183,8 @@ defmodule SeaGoat.Store do
     GenServer.call(store, {:get_ss_tables, key})
   end
 
-  def get_write_replays(store) do
-    GenServer.call(store, :get_write_replays)
+  def get_recovered_writes(store) do
+    GenServer.call(store, :get_recovered_writes)
   end
 
   @doc """
@@ -212,7 +205,7 @@ defmodule SeaGoat.Store do
       "data.seagoat.tmp"
   """
   @spec tmp_file(SeaGoat.db_file()) :: SeaGoat.db_file()
-  def tmp_file(file), do: file <> @tmp_suffix
+  def tmp_file(file), do: FileManager.tmp_file(file)
 
   @doc """
   Returns a dump filename by appending the `.dump` suffix.
@@ -232,7 +225,7 @@ defmodule SeaGoat.Store do
       "data.seagoat.dump"
   """
   @spec dump_file(SeaGoat.db_file()) :: SeaGoat.db_file()
-  def dump_file(file), do: file <> @dump_suffix
+  def dump_file(file), do: FileManager.dump_file(file)
 
   @impl GenServer
   def init(args) do
@@ -242,174 +235,66 @@ defmodule SeaGoat.Store do
        wal: args[:wal],
        rw_locks: args[:rw_locks],
        compactor: args[:compactor]
-     }, {:continue, :get_previous_state}}
+     }, {:continue, :recover_state}}
   end
 
   @impl GenServer
   def handle_call({:put, file, bloom_filter, level}, _from, state) do
-    levels = Levels.insert(state.levels, level, {file, bloom_filter})
-    {:reply, :ok, %{state | levels: levels}, {:continue, {:put_in_compactor, level, file}}}
+    files = Files.insert(state.files, file, bloom_filter)
+    {:reply, :ok, %{state | files: files}, {:continue, {:put_in_compactor, level, file}}}
   end
 
-  def handle_call({:remove, files, level}, _from, state) do
-    levels =
-      Levels.remove(state.levels, level, fn {file, _} ->
-        file in files
-      end)
-
-    {:reply, :ok, %{state | levels: levels}}
+  def handle_call({:remove, files}, _from, state) do
+    files = Enum.reduce(files, state.files, &Files.remove(&2, &1))
+    {:reply, :ok, %{state | files: files}}
   end
 
   def handle_call({:get_ss_tables, key}, {pid, _ref}, state) do
-    ss_tables =
-      state.levels
-      |> Levels.levels()
-      |> Enum.reduce([], fn level, acc ->
-        acc ++
-          Levels.get_all_entries(
-            state.levels,
-            level,
-            fn {_file, bloom_filter} ->
-              BloomFilter.is_member(bloom_filter, key)
-            end,
-            fn {file, _bloom_filter} ->
-              RWLocks.rlock(state.rw_locks, file, pid)
-
-              {fn -> SSTables.read(file, key) end,
-               fn -> RWLocks.unlock(state.rw_locks, file, pid) end}
-            end
-          )
-      end)
-
+    ss_tables = Files.get_all(state.files, key, pid, state.rw_locks)
     {:reply, ss_tables, state}
   end
 
-  def handle_call(:get_write_replays, _from, state) do
-    file = file(state.dir, state.latest_wal)
-    {:reply, {state.writes, file}, %{state | writes: [], latest_wal: nil}}
+  def handle_call(:get_recovered_writes, _from, state) do
+    file = FileManager.file_path(state.dir, state.max_wal_count)
+    {:reply, {state.recovered_writes, file}, %{state | recovered_writes: [], max_wal_count: nil}}
   end
 
   def handle_call(:new_file, _from, state) do
-    new_file_count = state.file_count + 1
-    new_file = file(state.dir, new_file_count)
-    {:reply, new_file, %{state | file_count: new_file_count}}
+    new_file_count = state.max_file_count + 1
+    new_file = FileManager.file_path(state.dir, new_file_count)
+    {:reply, new_file, %{state | max_file_count: new_file_count}}
   end
 
   def handle_call({:reuse_file, files}, _from, state) do
-    {file, compacting_files} = Map.pop(state.compacting_files, files)
-    {:reply, file, %{state | compacting_files: compacting_files}}
+    {file, recovered_compacting_files} = Map.pop(state.recovered_compacting_files, files)
+    {:reply, file, %{state | recovered_compacting_files: recovered_compacting_files}}
   end
 
   @impl GenServer
   def handle_continue({:put_in_compactor, level, file}, state) do
-    file_count = file_count(file)
+    file_count = FileManager.file_count_from_path(file)
     :ok = Compactor.put(state.compactor, level, file_count, file)
     {:noreply, state}
   end
 
-  def handle_continue(:get_previous_state, state) do
-    state =
-      state.dir
-      |> File.ls!()
-      |> read_previous_state(state)
+  def handle_continue(:recover_state, state) do
+    %{
+      files: files,
+      recovered_writes: recovered_writes,
+      recovered_compacting_files: recovered_compacting_files,
+      max_file_count: max_file_count,
+      max_wal_count: max_wal_count
+    } = Recovery.recover_state(state.dir, state.wal, state.compactor)
+
+    state = %{
+      state
+      | recovered_writes: recovered_writes,
+        recovered_compacting_files: recovered_compacting_files,
+        files: files,
+        max_file_count: max_file_count,
+        max_wal_count: max_wal_count
+    }
 
     {:noreply, state}
   end
-
-  defp read_previous_state([], state), do: %{state | file_count: 0, latest_wal: 0}
-
-  defp read_previous_state(files, state) do
-    files
-    |> Enum.map(&Path.join(state.dir, &1))
-    |> Enum.filter(&valid_db_file?/1)
-    |> Enum.flat_map(&tag_file(&1, state.wal))
-    |> Enum.sort_by(& &1.file_count)
-    |> Enum.reduce(state, &process_file/2)
-  end
-
-  defp valid_db_file?(file), do: String.ends_with?(file, [@file_suffix, @dump_suffix])
-
-  defp tag_file(file, wal) do
-    [file_count, _ext] =
-      file
-      |> Path.basename()
-      |> String.split(".", parts: 2)
-
-    file_count = String.to_integer(file_count)
-
-    case wal_or_ss_table(file, wal) do
-      {:logs, logs} ->
-        [%{type: :log, logs: logs, file: file, file_count: file_count}]
-
-      {:ss_table, bloom_filter, level} ->
-        [
-          %{
-            type: :ss_table,
-            bloom_filter: bloom_filter,
-            level: level,
-            file: file,
-            file_count: file_count
-          }
-        ]
-
-      _ ->
-        []
-    end
-  end
-
-  defp process_file(%{type: :log} = file, state) do
-    case file.logs do
-      [SeaGoat.Writer.writer_tag() | _logs] ->
-        writes = [{file.file, file.logs} | state.writes]
-        %{state | writes: writes, file_count: file.file_count, latest_wal: file.file_count}
-
-      [{SeaGoat.Compactor.compactor_tag(), files} | logs] ->
-        compacting_files = Map.put(state.compacting_files, files, file.file)
-        :ok = run_logs(logs)
-        %{state | file_count: file.file_count, compacting_files: compacting_files}
-
-      logs ->
-        :ok = run_logs(logs)
-        %{state | file_count: file.file_count}
-    end
-  end
-
-  defp process_file(%{type: :ss_table} = file, state) do
-    levels = Levels.insert(state.levels, file.level, {file.file, file.bloom_filter})
-    :ok = Compactor.put(state.compactor, file.level, file.file_count, file.file)
-    %{state | levels: levels, file_count: file.file_count}
-  end
-
-  defp run_logs([]), do: :ok
-
-  defp run_logs([{:del, files} | logs]) do
-    with :ok <- SSTables.delete(files) do
-      run_logs(logs)
-    end
-  end
-
-  defp run_logs([_ | logs]), do: run_logs(logs)
-
-  defp wal_or_ss_table(file, wal) do
-    case WAL.get_logs(wal, file) do
-      {:ok, logs} ->
-        {:logs, logs}
-
-      _ ->
-        case SSTables.fetch_ss_table_info(file) do
-          {:ok, bloom_filter, level} ->
-            {:ss_table, bloom_filter, level}
-
-          _ ->
-            {:error, :not_wal_or_db}
-        end
-    end
-  end
-
-  defp file_count(file) do
-    Path.basename(file, @file_suffix)
-    |> String.to_integer()
-  end
-
-  defp file(dir, count), do: Path.join(dir, to_string(count) <> @file_suffix)
 end
