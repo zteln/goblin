@@ -39,8 +39,8 @@ defmodule SeaGoat do
 
     children = [
       {SeaGoat.RWLocks, name: rw_locks_name},
-      {SeaGoat.WAL, name: wal_name, sync_interval: opts[:sync_interval]},
-      {SeaGoat.Writer, name: writer_name, wal: wal_name, store: store_name, limit: opts[:limit]},
+      {SeaGoat.WAL,
+       name: wal_name, wal_name: opts[:wal_name], sync_interval: opts[:sync_interval]},
       {SeaGoat.Compactor,
        name: compactor_name,
        wal: wal_name,
@@ -55,7 +55,8 @@ defmodule SeaGoat do
         wal: wal_name,
         rw_locks: rw_locks_name,
         compactor: compactor_name
-      }
+      },
+      {SeaGoat.Writer, name: writer_name, wal: wal_name, store: store_name, limit: opts[:limit]}
     ]
 
     Supervisor.init(children, strategy: :one_for_all)
