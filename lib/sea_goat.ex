@@ -32,6 +32,7 @@ defmodule SeaGoat do
   @impl true
   def init(opts) do
     rw_locks_name = name(opts[:name], :rw_locks)
+    manifest_name = name(opts[:name], :manifest)
     wal_name = name(opts[:name], :wal)
     writer_name = name(opts[:name], :writer)
     compactor_name = name(opts[:name], :compactor)
@@ -39,11 +40,15 @@ defmodule SeaGoat do
 
     children = [
       {SeaGoat.RWLocks, name: rw_locks_name},
+      {SeaGoat.Manifest, name: manifest_name, dir: opts[:dir]},
       {SeaGoat.WAL,
-       name: wal_name, wal_name: opts[:wal_name], sync_interval: opts[:sync_interval]},
+       name: wal_name,
+       wal_name: opts[:wal_name],
+       sync_interval: opts[:sync_interval],
+       dir: opts[:dir]},
       {SeaGoat.Compactor,
        name: compactor_name,
-       wal: wal_name,
+       manifest: manifest_name,
        store: store_name,
        rw_locks: rw_locks_name,
        level_limit: opts[:level_limit]},
@@ -52,11 +57,16 @@ defmodule SeaGoat do
         name: store_name,
         dir: opts[:dir],
         writer: writer_name,
-        wal: wal_name,
+        manifest: manifest_name,
         rw_locks: rw_locks_name,
         compactor: compactor_name
       },
-      {SeaGoat.Writer, name: writer_name, wal: wal_name, store: store_name, limit: opts[:limit]}
+      {SeaGoat.Writer,
+       name: writer_name,
+       wal: wal_name,
+       store: store_name,
+       manifest: manifest_name,
+       limit: opts[:limit]}
     ]
 
     Supervisor.init(children, strategy: :one_for_all)
