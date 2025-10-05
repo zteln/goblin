@@ -46,11 +46,8 @@ defmodule SeaGoat.Store do
     :dir,
     :compactor,
     :rw_locks,
-    :latest_wal,
     :ss_tables,
     :manifest,
-    recovered_compacting_files: %{},
-    recovered_writes: [],
     max_file_count: 0
   ]
 

@@ -84,8 +84,8 @@ defmodule SeaGoat.Compactor do
 
   defp compact(entries, level, store, rw_locks, manifest) do
     files = Enum.map(entries, &elem(&1, 0))
-    min_seq = entries |> Enum.map(fn {_, {min_seq, _}} -> min_seq end) |> Enum.min()
-    max_seq = entries |> Enum.map(fn {_, {_, max_seq}} -> max_seq end) |> Enum.max()
+    {_, {min_seq, _}} = Enum.min_by(entries, fn {_, {min_seq, _}} -> min_seq end) 
+    {_, {_, max_seq}} = Enum.max_by(entries, fn {_, {_, max_seq}} -> max_seq end) 
 
     %{ref: ref} =
       Task.async(fn ->

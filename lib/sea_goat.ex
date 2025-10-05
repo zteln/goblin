@@ -46,6 +46,7 @@ defmodule SeaGoat do
        wal_name: opts[:wal_name],
        sync_interval: opts[:sync_interval],
        dir: opts[:dir]},
+      {SeaGoat.Recovery, dir: opts[:dir], manifest: manifest_name},
       {SeaGoat.Compactor,
        name: compactor_name,
        manifest: manifest_name,
