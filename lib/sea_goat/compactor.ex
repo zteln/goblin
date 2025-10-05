@@ -2,38 +2,37 @@ defmodule SeaGoat.Compactor do
   use GenServer
   alias SeaGoat.Store
   alias SeaGoat.SSTables
-  alias SeaGoat.WAL
   alias SeaGoat.RWLocks
+  alias SeaGoat.Manifest
 
-  @compactor_tag :compactor
   @default_level_limit 10
 
   defstruct [
-    :wal,
     :store,
     :rw_locks,
+    :manifest,
     :level_limit,
+    is_compacting: false,
+    compaction_queue: :queue.new(),
     levels: %{},
     merging: %{}
   ]
 
-  defmacro compactor_tag do
-    tag = Macro.expand(@compactor_tag, __CALLER__)
-
-    quote do
-      unquote(tag)
-    end
-  end
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:level_limit, :wal, :store, :rw_locks])
+    args = Keyword.take(opts, [:level_limit, :store, :rw_locks, :manifest])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec put(GenServer.server(), SeaGoat.level(), non_neg_integer(), SeaGoat.db_file()) :: :ok
-  def put(compactor, level, count, file) do
-    GenServer.call(compactor, {:put, level, count, file})
+  @spec put(
+          GenServer.server(),
+          SeaGoat.db_file(),
+          SeaGoat.level(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) :: :ok
+  def put(compactor, file, level, min_seq, max_seq) do
+    GenServer.call(compactor, {:put, file, level, {min_seq, max_seq}})
   end
 
   @impl GenServer
@@ -43,19 +42,19 @@ defmodule SeaGoat.Compactor do
     {:ok,
      %__MODULE__{
        level_limit: level_limit,
-       wal: args[:wal],
        store: args[:store],
-       rw_locks: args[:rw_locks]
+       rw_locks: args[:rw_locks],
+       manifest: args[:manifest]
      }}
   end
 
   @impl GenServer
-  def handle_call({:put, level, count, file}, _from, state) do
+  def handle_call({:put, file, level, seq_range}, _from, state) do
     {entries, new_merge} =
       state.levels
       |> Map.get(level, [])
-      |> put_in_level(count, file)
-      |> maybe_compact(level, state.level_limit, state.store, state.wal, state.rw_locks)
+      |> put_in_level(file, seq_range)
+      |> maybe_compact(level, state.level_limit, state.store, state.rw_locks, state.manifest)
 
     levels = Map.put(state.levels, level, entries)
     merging = Map.merge(state.merging, new_merge)
@@ -72,40 +71,38 @@ defmodule SeaGoat.Compactor do
     {:noreply, state}
   end
 
-  defp put_in_level(level, count, file), do: [{count, file} | level] |> List.keysort(0)
+  defp put_in_level(level, file, seq_range), do: [{file, seq_range} | level] |> List.keysort(1)
 
-  defp maybe_compact(entries, level, level_limit, store, wal, rw_locks) do
+  defp maybe_compact(entries, level, level_limit, store, rw_locks, manifest) do
     if length(entries) >= level_limit do
-      files = Enum.map(entries, &elem(&1, 1))
-      ref = compact(files, level, store, wal, rw_locks)
-      {[], %{ref => {level, files}}}
+      ref = compact(entries, level, store, rw_locks, manifest)
+      {[], %{ref => {level, entries}}}
     else
       {entries, %{}}
     end
   end
 
-  defp compact(files, level, store, wal, rw_locks) do
+  defp compact(entries, level, store, rw_locks, manifest) do
+    files = Enum.map(entries, &elem(&1, 0))
+    min_seq = entries |> Enum.map(fn {_, {min_seq, _}} -> min_seq end) |> Enum.min()
+    max_seq = entries |> Enum.map(fn {_, {_, max_seq}} -> max_seq end) |> Enum.max()
+
     %{ref: ref} =
       Task.async(fn ->
-        file = Store.reuse_file(store, files) || Store.new_file(store)
+        file = Store.new_file(store)
         tmp_file = Store.tmp_file(file)
-        dump_file = Store.dump_file(file)
-        WAL.dump(wal, file, [{@compactor_tag, files}, {:del, [tmp_file, dump_file]}])
 
-        with {:ok, bloom_filter, tmp_file, new_level} <-
+        with {:ok, bloom_filter} <-
                SSTables.write(
-                 %SSTables.SSTablesIterator{},
-                 files,
+                 %SSTables.SSTablesIterator{files: files, min_seq: min_seq, max_seq: max_seq},
                  tmp_file,
                  level + 1
                ),
-             :ok <- WAL.dump(wal, dump_file, [{:del, files}]),
              :ok <- SSTables.switch(tmp_file, file),
-             :ok <- Store.put(store, file, bloom_filter, new_level),
+             :ok <- Manifest.log_compaction(manifest, files, file),
+             :ok <- Store.put(store, file, bloom_filter, level + 1, min_seq, max_seq),
              :ok <- Store.remove(store, files),
-             :ok <- lock_unlock_files(rw_locks, files, &RWLocks.wlock/2),
-             :ok <- SSTables.delete(files ++ [dump_file]),
-             :ok <- lock_unlock_files(rw_locks, files, &RWLocks.unlock/2) do
+             :ok <- delete_files(files, rw_locks) do
           :merged
         end
       end)
@@ -113,11 +110,13 @@ defmodule SeaGoat.Compactor do
     ref
   end
 
-  defp lock_unlock_files(_rw_locks, [], _lock_unlock), do: :ok
+  defp delete_files([], _rw_locks), do: :ok
 
-  defp lock_unlock_files(rw_locks, [file | files], lock_unlock) do
-    with :ok <- lock_unlock.(rw_locks, file) do
-      lock_unlock_files(rw_locks, files, lock_unlock)
+  defp delete_files([file | files], rw_locks) do
+    with :ok <- RWLocks.wlock(rw_locks, file),
+         :ok <- SSTables.delete(file),
+         :ok <- RWLocks.unlock(rw_locks, file) do
+      delete_files(files, rw_locks)
     end
   end
 end
