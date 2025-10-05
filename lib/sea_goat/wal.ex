@@ -8,134 +8,104 @@ defmodule SeaGoat.WAL do
 
   @default_sync_interval 200
   @wal_name :sea_goat_wal
+  @wal_ro_name :sea_goat_wal_ro
+  @wal_file "wal.seagoat"
+  @old_wal_file_suffix ".old"
 
   defstruct [
     :log,
     :sync_interval,
     :last_sync,
-    :current_file,
-    :wal_name,
+    :file,
+    :name,
+    :old_file,
+    watermarks: %{},
     batch: [],
     waiting_for_sync?: false
   ]
 
   def start_link(opts) do
-    GenServer.start_link(
-      __MODULE__,
-      Keyword.take(opts, [:sync_interval, :wal_name]),
-      name: opts[:name]
-    )
-  end
-
-  def open(wal, file) do
-    GenServer.call(wal, {:open, file})
+    args = Keyword.take(opts, [:sync_interval, :wal_name, :wal_file, :dir])
+    GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
   def sync(wal) do
     GenServer.call(wal, :sync_now)
   end
 
-  def append(wal, term) do
-    GenServer.call(wal, {:append, term})
+  def append(wal, batch) do
+    GenServer.call(wal, {:append, batch})
   end
 
-  def append_batch(wal, batch) do
-    GenServer.call(wal, {:append_batch, batch})
+  def rotate(wal, seq) do
+    GenServer.call(wal, {:rotate, seq})
   end
 
-  def rotate(wal, file) do
-    GenServer.call(wal, {:rotate, file})
+  def clean(wal) do
+    GenServer.call(wal, :clean)
   end
 
-  def get_logs(wal, file) do
-    GenServer.call(wal, {:get_logs, file})
-  end
-
-  def dump(wal, file, dump) do
-    GenServer.call(wal, {:dump, file, dump})
-  end
-
-  def current_file(wal) do
-    GenServer.call(wal, :current_file)
+  def recover(wal) do
+    GenServer.call(wal, :recover)
   end
 
   @impl GenServer
-  def init(opts) do
-    {:ok,
-     %__MODULE__{
-       wal_name: opts[:wal_name] || @wal_name,
-       sync_interval: opts[:sync_interval] || @default_sync_interval,
-       last_sync: now()
-     }}
-  end
+  def init(args) do
+    name = args[:wal_name] || @wal_name
+    file = Path.join(args[:dir], args[:wal_file] || @wal_file)
 
-  @impl GenServer
-  def handle_call({:open, file}, _from, state) do
-    with :ok <- close_log(state.log),
-         {:ok, log} <- open_log(file, state.wal_name) do
-      state = %{state | log: log, current_file: file}
-      {:reply, :ok, state}
-    else
-      e ->
-        {:stop, e, state}
+    case open_log(file, name) do
+      {:ok, log} ->
+        {:ok,
+         %__MODULE__{
+           name: name,
+           file: file,
+           log: log,
+           sync_interval: args[:sync_interval] || @default_sync_interval,
+           last_sync: now()
+         }}
+
+      {:error, _} = error ->
+        {:stop, error}
     end
   end
 
+  @impl GenServer
   def handle_call(:sync_now, _from, state) do
     append_and_sync_log(state.log, Enum.reverse(state.batch))
     {:reply, :ok, %{state | last_sync: now(), batch: []}}
   end
 
-  def handle_call({:append, term}, _from, state) do
-    {:reply, :ok, %{state | batch: [term | state.batch]}, {:continue, :sync}}
+  def handle_call({:append, batch}, _from, state) do
+    batch = batch ++ state.batch
+    state = %{state | batch: batch}
+    {:reply, :ok, state, {:continue, :sync}}
   end
 
-  def handle_call({:append_batch, batch}, _from, state) do
-    {:reply, :ok, %{state | batch: batch ++ state.batch}, {:continue, :sync}}
-  end
+  def handle_call({:rotate, seq}, _from, state) do
+    case rotate_log(state.name, state.file, state.log, state.batch, seq) do
+      {:ok, log, old_file} ->
+        state = %{state | log: log, old_file: old_file, batch: [], last_sync: now()}
+        {:reply, :ok, state}
 
-  def handle_call({:rotate, new_file}, _from, state) do
-    with :ok <- append_and_sync_log(state.log, Enum.reverse(state.batch)),
-         :ok <- close_log(state.log),
-         {:ok, log} <- open_log(new_file, state.wal_name) do
-      {:reply, :ok,
-       %{
-         state
-         | log: log,
-           batch: [],
-           current_file: new_file,
-           last_sync: now()
-       }}
-    else
-      {:error, _reason} = e ->
-        {:stop, e, state}
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
-  def handle_call({:dump, file, dump}, _from, state) do
-    reply =
-      with {:ok, log} <- open_log(file, dump(state.wal_name)),
-           :ok <- append_and_sync_log(log, dump) do
-        close_log(log)
-      end
+  def handle_call(:clean, _from, state) do
+    case rm_log(state.old_file) do
+      :ok ->
+        state = %{state | old_file: nil}
+        {:reply, :ok, state}
 
-    {:reply, reply, state}
-  end
-
-  def handle_call({:get_logs, file}, _from, state) do
-    case open_log(file, tmp(state.wal_name), mode: :read_only) do
-      {:ok, log} ->
-        logs = collect_logs(log)
-        close_log(log)
-        {:reply, {:ok, logs}, state}
-
-      {:error, _reason} ->
-        {:reply, {:error, :not_a_log}, state}
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
-  def handle_call(:current_file, _from, state) do
-    {:reply, state.current_file, state}
+  def handle_call(:recover, _from, state) do
+    {:reply, recover_writes(state.log, state.file), state}
   end
 
   @impl GenServer
@@ -156,6 +126,16 @@ defmodule SeaGoat.WAL do
     {:noreply, %{state | waiting_for_sync?: false}, {:continue, :sync}}
   end
 
+  defp rotate_log(name, file, log, batch, seq) do
+    with :ok <- append_and_sync_log(log, Enum.reverse(batch)),
+         :ok <- close_log(log),
+         {:ok, old_file} <- mv_log(file),
+         {:ok, log} <- open_log(file, name),
+         :ok <- append_and_sync_log(log, [{:starting_seq, seq}]) do
+      {:ok, log, old_file}
+    end
+  end
+
   defp open_log(file, name, opts \\ []) do
     opts = [name: name, file: ~c"#{file}"] |> Keyword.merge(opts)
 
@@ -166,13 +146,24 @@ defmodule SeaGoat.WAL do
     end
   end
 
+  defp close_log(log), do: :disk_log.close(log)
+
+  defp mv_log(file) do
+    old_file = old_file(file)
+
+    with :ok <- File.rename(file, old_file) do
+      {:ok, old_file}
+    end
+  end
+
+  defp rm_log(file) do
+    File.rm(file)
+  end
+
   defp append_and_sync_log(log, batch) do
     :disk_log.log_terms(log, batch)
     :disk_log.sync(log)
   end
-
-  defp close_log(nil), do: :ok
-  defp close_log(log), do: :disk_log.close(log)
 
   defp send_sync(state) do
     if state.waiting_for_sync? do
@@ -183,17 +174,39 @@ defmodule SeaGoat.WAL do
     end
   end
 
-  defp collect_logs(log, acc \\ [], continuation \\ :start) do
+  defp recover_writes(log, file) do
+    with {:ok, old_writes} <- recover_old_writes(file),
+         {:ok, writes} <- recover_logs(log) do
+      {:ok, old_writes ++ writes}
+    end
+  end
+
+  defp recover_old_writes(file) do
+    if File.exists?(old_file(file)) do
+      with {:ok, log} <- open_log(old_file(file), @wal_ro_name, mode: :read_only),
+           {:ok, writes} <- recover_logs(log),
+           :ok <- close_log(log) do
+        {:ok, writes}
+      end
+    else
+      {:ok, []}
+    end
+  end
+
+  defp recover_logs(log, continuation \\ :start, acc \\ []) do
     case :disk_log.chunk(log, continuation) do
       :eof ->
-        acc
+        {:ok, acc}
 
       {continuation, chunk} ->
-        collect_logs(log, acc ++ chunk, continuation)
+        acc = acc ++ chunk
+        recover_logs(log, continuation, acc)
+
+      _ ->
+        {:error, :failed_to_recover}
     end
   end
 
   defp now, do: System.monotonic_time(:millisecond)
-  defp tmp(name), do: :"tmp_#{name}"
-  defp dump(name), do: :"dump_#{name}"
+  defp old_file(file), do: file <> @old_wal_file_suffix
 end
