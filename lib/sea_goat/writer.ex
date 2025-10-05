@@ -3,35 +3,31 @@ defmodule SeaGoat.Writer do
   alias SeaGoat.Writer.MemTable
   alias SeaGoat.Writer.Transaction
   alias SeaGoat.WAL
+  alias SeaGoat.Manifest
   alias SeaGoat.SSTables
   alias SeaGoat.Store
 
-  @writer_tag :writer
   @flush_level 0
   @default_mem_limit 20000
 
   defstruct [
     :wal,
     :store,
+    :manifest,
     :limit,
+    :flushing,
+    min_seq: 0,
+    max_seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
-    flushing: [],
+    flush_queue: :queue.new(),
     subscribers: %{}
   ]
-
-  defmacro writer_tag do
-    tag = Macro.expand(@writer_tag, __CALLER__)
-
-    quote do
-      unquote(tag)
-    end
-  end
 
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
     args =
-      Keyword.take(opts, [:wal, :store, :limit])
+      Keyword.take(opts, [:wal, :store, :manifest, :limit])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
@@ -91,19 +87,27 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def init(opts) do
+  def init(args) do
     {:ok,
      %__MODULE__{
-       wal: opts[:wal],
-       store: opts[:store],
+       wal: args[:wal],
+       store: args[:store],
+       manifest: args[:manifest],
        mem_table: MemTable.new(),
-       limit: opts[:limit] || @default_mem_limit
-     }, {:continue, :get_recovered_writes}}
+       limit: args[:limit] || @default_mem_limit
+     }, {:continue, :recover_state}}
   end
 
   @impl GenServer
   def handle_call({:read, key}, _from, state) do
-    mem_tables = [state.mem_table | Enum.map(state.flushing, &elem(&1, 1))]
+    flushing_mem_table = if state.flushing, do: [elem(state.flushing, 1)], else: []
+
+    flush_queue_mem_tables =
+      state.flush_queue
+      |> :queue.to_list()
+      |> Enum.map(&elem(&1, 2))
+
+    mem_tables = [state.mem_table | flush_queue_mem_tables ++ flushing_mem_table]
 
     case search_for_key(mem_tables, key) do
       {:ok, value} ->
@@ -140,9 +144,16 @@ defmodule SeaGoat.Writer do
               {pid, [tx.mem_table | commits]}
             end)
 
-          WAL.append_batch(state.wal, tx.writes)
+          WAL.append(state.wal, tx.writes)
           mem_table = MemTable.merge(state.mem_table, tx.mem_table)
-          state = %{state | transactions: transactions, mem_table: mem_table}
+
+          state = %{
+            state
+            | transactions: transactions,
+              mem_table: mem_table,
+              max_seq: state.max_seq + length(tx.writes)
+          }
+
           {:reply, :ok, state, {:continue, :flush}}
         else
           transactions = Map.delete(state.transactions, pid)
@@ -159,12 +170,14 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_continue(:get_recovered_writes, state) do
-    {recovered_writes, file} = Store.get_recovered_writes(state.store)
-    WAL.open(state.wal, file)
-    WAL.append_batch(state.wal, [@writer_tag, {:del, [Store.tmp_file(file)]}])
-    state = recover_writes(state, recovered_writes)
-    {:noreply, state}
+  def handle_continue(:recover_state, state) do
+    case recover_writes(state) do
+      {:ok, state} ->
+        {:noreply, state}
+
+      {:error, _reason} = error ->
+        {:stop, error, state}
+    end
   end
 
   def handle_continue(:flush, state) do
@@ -172,43 +185,101 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_info({ref, :flushed}, state) do
-    flushing = Enum.reject(state.flushing, &(elem(&1, 0) == ref))
-    state = %{state | flushing: flushing}
-    {:noreply, state}
+  def handle_info({_ref, :flushed}, state) do
+    {:noreply, %{state | flushing: nil}, {:continue, :flush}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp maybe_flush(state) do
-    if MemTable.has_overflow(state.mem_table, state.limit) do
-      file = WAL.current_file(state.wal)
-      tmp_file = Store.tmp_file(file)
-      new_file = Store.new_file(state.store)
-      WAL.append(state.wal, :flush)
-      WAL.rotate(state.wal, new_file)
-      WAL.append_batch(state.wal, [{:del, [Store.tmp_file(new_file)]}, @writer_tag])
+    has_overflow = MemTable.has_overflow(state.mem_table, state.limit)
+    is_flush_queue_empty = :queue.len(state.flush_queue) == 0
+    is_flushing = not is_nil(state.flushing)
 
-      ref = flush(state.mem_table, file, tmp_file, state.store)
-      flushing = [{ref, state.mem_table} | state.flushing]
-      %{state | mem_table: MemTable.new(), flushing: flushing}
-    else
-      state
+    cond do
+      has_overflow and is_flushing ->
+        flush_queue =
+          :queue.in({state.min_seq, state.max_seq, state.mem_table}, state.flush_queue)
+
+        %{state | mem_table: MemTable.new(), flush_queue: flush_queue, min_seq: state.max_seq}
+
+      has_overflow and is_flush_queue_empty ->
+        ref =
+          flush(
+            state.mem_table,
+            state.min_seq,
+            state.max_seq,
+            state.store,
+            state.wal,
+            state.manifest
+          )
+
+        flushing = {ref, state.mem_table}
+
+        %{
+          state
+          | mem_table: MemTable.new(),
+            flushing: flushing,
+            min_seq: state.max_seq
+        }
+
+      has_overflow ->
+        ref =
+          flush(
+            state.mem_table,
+            state.min_seq,
+            state.max_seq,
+            state.store,
+            state.wal,
+            state.manifest
+          )
+
+        flushing = {ref, state.mem_table}
+
+        %{
+          state
+          | mem_table: MemTable.new(),
+            flushing: flushing,
+            min_seq: state.max_seq
+        }
+
+      not is_flushing and not is_flush_queue_empty ->
+        {{:value, {min_seq, max_seq, mem_table}}, flush_queue} = :queue.out(state.flush_queue)
+        ref = flush(mem_table, min_seq, max_seq, state.store, state.wal, state.manifest)
+        flushing = {ref, mem_table}
+
+        %{
+          state
+          | flushing: flushing,
+            flush_queue: flush_queue
+        }
+
+      true ->
+        state
     end
   end
 
-  defp flush(mem_table, file, tmp_file, store) do
+  defp flush(mem_table, min_seq, max_seq, store, wal, manifest) do
+    WAL.rotate(wal, max_seq)
+    file = Store.new_file(store)
+    tmp_file = Store.tmp_file(file)
+
     %{ref: ref} =
       Task.async(fn ->
-        with {:ok, bloom_filter, tmp_file, level} <-
+        with {:ok, bloom_filter} <-
                SSTables.write(
-                 %SSTables.MemTableIterator{},
-                 mem_table,
+                 %SSTables.MemTableIterator{
+                   data: Enum.sort(mem_table),
+                   min_seq: min_seq,
+                   max_seq: max_seq
+                 },
                  tmp_file,
                  @flush_level
                ),
              :ok <- SSTables.switch(tmp_file, file),
-             :ok <- Store.put(store, file, bloom_filter, level) do
+             :ok <- Manifest.log_file_added(manifest, file),
+             :ok <- WAL.clean(wal),
+             :ok <- Store.put(store, file, bloom_filter, @flush_level, min_seq, max_seq) do
           :flushed
         end
       end)
@@ -228,34 +299,28 @@ defmodule SeaGoat.Writer do
     end
   end
 
-  defp recover_writes(state, []), do: state
-
-  defp recover_writes(state, [{file, batch} | commands]) do
-    batch
-    |> Enum.reduce(state, &recover_write(&2, &1, file))
-    |> recover_writes(commands)
+  defp recover_writes(state) do
+    with {:ok, writes} <- WAL.recover(state.wal) do
+      state = Enum.reduce(writes, state, &recover_state/2)
+      {:ok, state}
+    end
   end
 
-  defp recover_write(state, :flush, file) do
-    ref = flush(state.mem_table, file, Store.tmp_file(file), state.store)
-    flushing = [{ref, state.mem_table} | state.flushing]
-    %{state | mem_table: MemTable.new(), flushing: flushing}
+  defp recover_state({:starting_seq, seq}, state) do
+    %{state | min_seq: seq, max_seq: seq}
   end
 
-  defp recover_write(state, {:del, files}, _file) do
-    SSTables.delete(files)
-    state
+  defp recover_state({:put, k, v}, state) do
+    mem_table = MemTable.upsert(state.mem_table, k, v)
+
+    %{state | mem_table: mem_table, max_seq: state.max_seq + 1}
+    |> maybe_flush()
   end
 
-  defp recover_write(state, {:put, key, value}, _file) do
-    mem_table = MemTable.upsert(state.mem_table, key, value)
-    %{state | mem_table: mem_table}
-  end
+  defp recover_state({:remove, k}, state) do
+    mem_table = MemTable.delete(state.mem_table, k)
 
-  defp recover_write(state, {:remove, key}, _file) do
-    mem_table = MemTable.delete(state.mem_table, key)
-    %{state | mem_table: mem_table}
+    %{state | mem_table: mem_table, max_seq: state.max_seq + 1}
+    |> maybe_flush()
   end
-
-  defp recover_write(state, _command, _file), do: state
 end
