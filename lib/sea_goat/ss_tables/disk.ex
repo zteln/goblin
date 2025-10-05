@@ -1,10 +1,4 @@
 defmodule SeaGoat.SSTables.Disk do
-  @moduledoc """
-  Interface to on-disk files. 
-  Relies on erlangs `:file` module for accessing files.
-  All files are opened in `:raw` mode.
-  """
-
   defstruct [
     :io,
     :offset

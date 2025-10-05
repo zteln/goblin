@@ -33,8 +33,10 @@ defmodule SeaGoat.SSTables.SSTable do
   1. **Separator** (16 bytes): `"SEAGOATDBSEP0000"`
   2. **Bloom Filter** (variable size): Encoded bloom filter binary
   3. **Range** (variable size): Encoded key range information
-  4. **Metadata** (56 bytes): File metadata
-  5. **Magic** (16 bytes): `"SEAGOATDBFILE000"`
+  4. **Min sequence** (variable size): Encoded minimum sequence
+  5. **Max sequence** (variable size): Encoded maximum sequence
+  6. **Metadata** (56 bytes): File metadata
+  7. **Magic** (16 bytes): `"SEAGOATDBFILE000"`
 
   ### Metadata Format
 
@@ -47,6 +49,10 @@ defmodule SeaGoat.SSTables.SSTable do
     bf_pos::integer-64,           # Bloom filter position from file start
     range_size::integer-64,       # Range data size in bytes
     range_pos::integer-64,        # Range data position from file start
+    min_seq_size::integer-64,    # Minimum sequence number
+    min_seq_pos::integer-64,     # Minimum sequence number
+    max_seq_size::integer-64,    # Maximum sequence number
+    max_seq_pos::integer-64,     # Maximum sequence number
     amount_of_blocks::integer-64, # Total number of data blocks
     data_span::integer-64         # Total size of data section
   >>
@@ -67,6 +73,10 @@ defmodule SeaGoat.SSTables.SSTable do
 
   @metadata_size byte_size(<<
                    0::integer-32,
+                   0::integer-64,
+                   0::integer-64,
+                   0::integer-64,
+                   0::integer-64,
                    0::integer-64,
                    0::integer-64,
                    0::integer-64,
@@ -133,16 +143,32 @@ defmodule SeaGoat.SSTables.SSTable do
           level(),
           BloomFilter.t(),
           range(),
+          non_neg_integer(),
+          non_neg_integer(),
           offset(),
           no_of_blocks()
         ) :: binary()
-  def encode_footer(level, %BloomFilter{} = bloom_filter, range, offset, no_of_blocks) do
+  def encode_footer(
+        level,
+        %BloomFilter{} = bloom_filter,
+        range,
+        min_seq,
+        max_seq,
+        offset,
+        no_of_blocks
+      ) do
     encoded_bf = encode({:bloom_filter, bloom_filter})
     bf_size = byte_size(encoded_bf)
     bf_pos = offset + byte_size(@separator)
     encoded_range = encode({:range, range})
     range_size = byte_size(encoded_range)
     range_pos = bf_pos + bf_size
+    encoded_min_seq = encode({:min_seq, min_seq})
+    min_seq_size = byte_size(encoded_min_seq)
+    min_seq_pos = range_pos + range_size
+    encoded_max_seq = encode({:max_seq, max_seq})
+    max_seq_size = byte_size(encoded_max_seq)
+    max_seq_pos = min_seq_pos + min_seq_size
 
     metadata =
       <<
@@ -151,6 +177,10 @@ defmodule SeaGoat.SSTables.SSTable do
         bf_pos::integer-64,
         range_size::integer-64,
         range_pos::integer-64,
+        min_seq_size::integer-64,
+        min_seq_pos::integer-64,
+        max_seq_size::integer-64,
+        max_seq_pos::integer-64,
         no_of_blocks::integer-64,
         offset::integer-64
       >>
@@ -159,6 +189,8 @@ defmodule SeaGoat.SSTables.SSTable do
       @separator::binary,
       encoded_bf::binary,
       encoded_range::binary,
+      encoded_min_seq::binary,
+      encoded_max_seq::binary,
       metadata::binary,
       @magic::binary
     >>
@@ -188,10 +220,16 @@ defmodule SeaGoat.SSTables.SSTable do
         bf_pos::integer-64,
         range_size::integer-64,
         range_pos::integer-64,
+        min_seq_size::integer-64,
+        min_seq_pos::integer-64,
+        max_seq_size::integer-64,
+        max_seq_pos::integer-64,
         no_of_blocks::integer-64,
         offset::integer-64
       >>) do
-    {:ok, {level, bf_size, bf_pos, range_size, range_pos, no_of_blocks, offset}}
+    {:ok,
+     {level, bf_size, bf_pos, range_size, range_pos, min_seq_size, min_seq_pos, max_seq_size,
+      max_seq_pos, no_of_blocks, offset}}
   end
 
   def decode_metadata(_), do: {:error, :invalid_metadata}
@@ -220,6 +258,14 @@ defmodule SeaGoat.SSTables.SSTable do
     case decode(encoded) do
       {:range, {_, _} = range} -> {:ok, range}
       _ -> {:error, :invalid_range}
+    end
+  end
+
+  def decode_sequence(encoded) do
+    case decode(encoded) do
+      {:min_seq, min_seq} -> {:ok, min_seq}
+      {:max_seq, max_seq} -> {:ok, max_seq}
+      _ -> {:error, :invalid_sequence}
     end
   end
 

@@ -2,14 +2,15 @@ defmodule SeaGoat.SSTables.MemTableIterator do
   @moduledoc """
   Iterates through data in a sorted fashion until there is no data left.
   """
-  defstruct [:data]
+  defstruct [:data, :min_seq, :max_seq]
 
   defimpl SeaGoat.SSTables.Iterator do
-    def init(iterator, mem_table) do
-      {:ok, %{iterator | data: Enum.sort(mem_table)}}
+    def init(iterator) do
+      {:ok, iterator}
     end
 
-    def next(%{data: []} = iterator), do: {:end_iter, iterator}
+    def next(%{data: []} = iterator),
+      do: {:end_iter, iterator.min_seq, iterator.max_seq, iterator}
 
     def next(%{data: [next | data]} = iterator) do
       iterator = %{iterator | data: data}
