@@ -20,7 +20,7 @@ defmodule SeaGoat.Recovery do
   end
 
   defp rm_orphaned_files(dir, manifest) do
-    {files, _} = Manifest.get_version(manifest)
+    %{files: files} = Manifest.get_version(manifest, [:files])
 
     dir_listing(dir)
     |> Enum.reject(&String.starts_with?(Path.basename(&1), ["wal", "manifest"]))

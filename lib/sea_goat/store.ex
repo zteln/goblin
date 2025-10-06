@@ -251,6 +251,7 @@ defmodule SeaGoat.Store do
           fn -> RWLocks.unlock(rw_locks, ss_table.file, pid) end
         }
       end)
+
     {:reply, ss_tables, state}
   end
 
@@ -266,7 +267,7 @@ defmodule SeaGoat.Store do
   end
 
   def handle_continue(:recover_state, state) do
-    {files, file_count} = Manifest.get_version(state.manifest)
+    %{files: files, count: file_count} = Manifest.get_version(state.manifest, [:files, :count])
 
     case recover_ss_tables(files, state.compactor) do
       {:ok, ss_tables} ->

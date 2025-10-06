@@ -29,11 +29,15 @@ defmodule SeaGoat.Manifest do
   end
 
   def log_compaction(manifest, files, file) do
-    GenServer.call(manifest, {:compaction, files, file})
+    GenServer.call(manifest, {:log_compaction, files, file})
   end
 
-  def get_version(manifest) do
-    GenServer.call(manifest, :get_version)
+  def log_sequence(manifest, sequence) do
+    GenServer.call(manifest, {:log_edit, {:sequence, sequence}})
+  end
+
+  def get_version(manifest, keys \\ []) do
+    GenServer.call(manifest, {:get_version, keys})
   end
 
   @impl GenServer
@@ -68,7 +72,7 @@ defmodule SeaGoat.Manifest do
     end
   end
 
-  def handle_call({:compaction, files, file}, _from, state) do
+  def handle_call({:log_compaction, files, file}, _from, state) do
     edits = [{:file_added, file} | Enum.map(files, &{:file_removed, &1})]
 
     case append_to_manifest(state.log, edits) do
@@ -81,8 +85,23 @@ defmodule SeaGoat.Manifest do
     end
   end
 
-  def handle_call(:get_version, _from, state) do
-    reply = {MapSet.to_list(state.version.files), state.version.count}
+  def handle_call({:get_version, keys}, _from, state) do
+    reply =
+      case keys do
+        [] ->
+          state.version
+          |> Map.replace(:files, MapSet.to_list(state.version.files))
+
+        keys ->
+            if :files in keys do
+              state.version
+              |> Map.take(keys)
+              |> Map.replace(:files, MapSet.to_list(state.version.files))
+            else
+              Map.take(state.version, keys)
+            end
+      end
+
     {:reply, reply, state}
   end
 
@@ -151,8 +170,8 @@ defmodule SeaGoat.Manifest do
   defp fetch_version(log) do
     case :disk_log.chunk(log, :start, 1) do
       :eof ->
-        # New log, append new version
-        version = %{files: MapSet.new(), count: 0}
+        # New manifest, append new version
+        version = %{files: MapSet.new(), count: 0, sequence: 0}
         append_to_manifest(log, {:snapshot, version})
         {:ok, version}
 
@@ -188,6 +207,10 @@ defmodule SeaGoat.Manifest do
   defp apply_edit(version, {:file_removed, file}) do
     files = MapSet.delete(version.files, file)
     %{version | files: files}
+  end
+
+  defp apply_edit(version, {:sequence, sequence}) do
+    %{version | sequence: sequence}
   end
 
   defp old_file(file), do: file <> @old_manifest_suffix

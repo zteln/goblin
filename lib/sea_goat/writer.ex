@@ -260,7 +260,8 @@ defmodule SeaGoat.Writer do
   end
 
   defp flush(mem_table, min_seq, max_seq, store, wal, manifest) do
-    WAL.rotate(wal, max_seq)
+    Manifest.log_sequence(manifest, max_seq)
+    WAL.rotate(wal)
     file = Store.new_file(store)
     tmp_file = Store.tmp_file(file)
 
@@ -301,13 +302,10 @@ defmodule SeaGoat.Writer do
 
   defp recover_writes(state) do
     with {:ok, writes} <- WAL.recover(state.wal) do
-      state = Enum.reduce(writes, state, &recover_state/2)
+      %{sequence: seq} = Manifest.get_version(state.manifest, [:sequence])
+      state = Enum.reduce(writes, %{state | min_seq: seq, max_seq: seq}, &recover_state/2)
       {:ok, state}
     end
-  end
-
-  defp recover_state({:starting_seq, seq}, state) do
-    %{state | min_seq: seq, max_seq: seq}
   end
 
   defp recover_state({:put, k, v}, state) do

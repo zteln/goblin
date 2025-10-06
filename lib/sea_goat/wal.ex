@@ -37,8 +37,8 @@ defmodule SeaGoat.WAL do
     GenServer.call(wal, {:append, batch})
   end
 
-  def rotate(wal, seq) do
-    GenServer.call(wal, {:rotate, seq})
+  def rotate(wal) do
+    GenServer.call(wal, :rotate)
   end
 
   def clean(wal) do
@@ -82,8 +82,8 @@ defmodule SeaGoat.WAL do
     {:reply, :ok, state, {:continue, :sync}}
   end
 
-  def handle_call({:rotate, seq}, _from, state) do
-    case rotate_log(state.name, state.file, state.log, state.batch, seq) do
+  def handle_call(:rotate, _from, state) do
+    case rotate_log(state.name, state.file, state.log, state.batch) do
       {:ok, log, old_file} ->
         state = %{state | log: log, old_file: old_file, batch: [], last_sync: now()}
         {:reply, :ok, state}
@@ -126,12 +126,11 @@ defmodule SeaGoat.WAL do
     {:noreply, %{state | waiting_for_sync?: false}, {:continue, :sync}}
   end
 
-  defp rotate_log(name, file, log, batch, seq) do
+  defp rotate_log(name, file, log, batch) do
     with :ok <- append_and_sync_log(log, Enum.reverse(batch)),
          :ok <- close_log(log),
          {:ok, old_file} <- mv_log(file),
-         {:ok, log} <- open_log(file, name),
-         :ok <- append_and_sync_log(log, [{:starting_seq, seq}]) do
+         {:ok, log} <- open_log(file, name) do
       {:ok, log, old_file}
     end
   end
