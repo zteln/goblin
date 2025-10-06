@@ -54,8 +54,6 @@ defmodule SeaGoat.SSTables do
 
   `{:ok, bloom_filter, file, level}` on success, or `{:error, reason}` on failure.
   """
-  # Make sure to write over any existing files...
-  # add :exclusive as option to open, if exists, remove and reopen
   @spec write(Iterator.t(), SeaGoat.db_file(), non_neg_integer()) ::
           {:ok, BloomFilter.t(), SeaGoat.db_file(), non_neg_integer()}
   def write(iterator, file, level) do

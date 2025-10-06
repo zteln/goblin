@@ -6,7 +6,7 @@ defmodule SeaGoat.SSTables.Disk do
 
   @type io :: :file.io_device()
   @type offset :: non_neg_integer()
-  @type opts :: keyword()
+  @type opts :: [write?: boolean(), start?: boolean()]
   @type t :: %__MODULE__{io: io(), offset: offset()}
 
   @doc """

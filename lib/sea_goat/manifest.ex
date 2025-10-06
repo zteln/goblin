@@ -93,13 +93,13 @@ defmodule SeaGoat.Manifest do
           |> Map.replace(:files, MapSet.to_list(state.version.files))
 
         keys ->
-            if :files in keys do
-              state.version
-              |> Map.take(keys)
-              |> Map.replace(:files, MapSet.to_list(state.version.files))
-            else
-              Map.take(state.version, keys)
-            end
+          if :files in keys do
+            state.version
+            |> Map.take(keys)
+            |> Map.replace(:files, MapSet.to_list(state.version.files))
+          else
+            Map.take(state.version, keys)
+          end
       end
 
     {:reply, reply, state}

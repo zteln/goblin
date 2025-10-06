@@ -49,10 +49,10 @@ defmodule SeaGoat.SSTables.SSTable do
     bf_pos::integer-64,           # Bloom filter position from file start
     range_size::integer-64,       # Range data size in bytes
     range_pos::integer-64,        # Range data position from file start
-    min_seq_size::integer-64,    # Minimum sequence number
-    min_seq_pos::integer-64,     # Minimum sequence number
-    max_seq_size::integer-64,    # Maximum sequence number
-    max_seq_pos::integer-64,     # Maximum sequence number
+    min_seq_size::integer-64,     # Minimum sequence number
+    min_seq_pos::integer-64,      # Minimum sequence number
+    max_seq_size::integer-64,     # Maximum sequence number
+    max_seq_pos::integer-64,      # Maximum sequence number
     amount_of_blocks::integer-64, # Total number of data blocks
     data_span::integer-64         # Total size of data section
   >>

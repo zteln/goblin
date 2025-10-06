@@ -10,12 +10,6 @@ defmodule SeaGoat.SSTables.SSTablesIterator do
   defimpl SeaGoat.SSTables.Iterator do
     def init(iterator) do
       with {:ok, ss_tables} <- open_ss_tables(iterator.files) do
-        # min_seq = Enum.min_by(ss_tables, &elem(&1, 2))
-        # max_seq = Enum.max_by(ss_tables, &elem(&1, 3))
-        #
-        # ss_tables =
-        #   Enum.map(ss_tables, fn {disk, kv, _min_seq, _max_seq, file} -> {disk, kv, file} end)
-
         {:ok, %{iterator | ss_tables: ss_tables}}
       end
     end

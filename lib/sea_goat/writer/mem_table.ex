@@ -1,7 +1,7 @@
 defmodule SeaGoat.Writer.MemTable do
   @moduledoc """
   MemTables are the in-memory data structure that writes are buffered to before being flushed to disk.
-  
+
   MemTables store key-value pairs as a simple map, with special handling for deleted keys
   using tombstone markers to prevent resurrection from on-disk data.
   """
@@ -9,9 +9,9 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Returns a new empty MemTable.
-  
+
   ## Examples
-  
+
       iex> MemTable.new()
       %{}
   """
@@ -20,13 +20,13 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Updates or inserts a key-value pair into the MemTable.
-  
+
   If the `key` already exists, it is overwritten with `value`.
   The special value `:tombstone` cannot be inserted and will return 
   the unchanged MemTable if attempted.
-  
+
   ## Examples
-  
+
       iex> MemTable.upsert(%{}, "key", "value")
       %{"key" => "value"}
       
@@ -47,13 +47,13 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Marks a key as deleted by setting its value to `:tombstone`.
-  
+
   The key-value pair is not removed entirely. Instead, the value is set to `:tombstone`
   to prevent the key from being resurrected by on-disk SSTables that might contain 
   a value for this key.
-  
+
   ## Examples
-  
+
       iex> MemTable.delete(%{}, "key")
       %{"key" => :tombstone}
       
@@ -67,14 +67,14 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Reads the value for a key in the MemTable.
-  
+
   Returns:
   - `{:value, value}` if the key exists with a regular value
   - `{:value, nil}` if the key has been deleted (tombstoned)
   - `:not_found` if the key does not exist in the MemTable
-  
+
   ## Examples
-  
+
       iex> MemTable.read(%{"key" => "value"}, "key")
       {:value, "value"}
       
@@ -95,11 +95,11 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Checks whether the MemTable has exceeded the specified size limit.
-  
+
   Returns `true` if the number of keys is greater than or equal to the limit.
-  
+
   ## Examples
-  
+
       iex> MemTable.has_overflow(%{}, 10)
       false
       
@@ -111,11 +111,11 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Checks whether two MemTables have completely different key sets.
-  
+
   Returns `true` if the MemTables share no common keys, `false` otherwise.
-  
+
   ## Examples
-  
+
       iex> MemTable.is_disjoint(%{"a" => 1}, %{"b" => 2})
       true
       
@@ -131,9 +131,9 @@ defmodule SeaGoat.Writer.MemTable do
 
   @doc """
   Merges two MemTables into a single MemTable.
-  
+
   ## Examples
-  
+
       iex> MemTable.merge(%{"a" => 1}, %{"b" => 2})
       %{"a" => 1, "b" => 2}
   """

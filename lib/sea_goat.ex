@@ -4,6 +4,7 @@ defmodule SeaGoat do
   @type db_key :: term()
   @type db_value :: term() | nil
   @type db_level :: non_neg_integer()
+  @type db_sequence :: non_neg_integer()
   @type db_file :: String.t()
   @type db_server :: GenServer.server()
 
@@ -13,17 +14,20 @@ defmodule SeaGoat do
     SeaGoat.Writer.put(writer, key, value)
   end
 
+  @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
     writer = name(db, :writer)
     SeaGoat.Writer.remove(writer, key)
   end
 
+  @spec get(db_server(), db_key()) :: db_value() | nil
   def get(db, key) do
     writer = name(db, :writer)
     store = name(db, :store)
     SeaGoat.Reader.get(writer, store, key)
   end
 
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     opts[:dir] || raise "no dir provided."
     Supervisor.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
