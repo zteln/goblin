@@ -155,17 +155,17 @@ defmodule SeaGoat.SSTables.SSTable do
         no_of_blocks
       ) do
     encoded_bf = encode({:bloom_filter, bloom_filter})
-    bf_size = byte_size(encoded_bf)
     bf_pos = offset + @separator_size
+    bf_size = byte_size(encoded_bf)
     encoded_range = encode({:range, range})
-    range_size = byte_size(encoded_range)
     range_pos = bf_pos + bf_size
+    range_size = byte_size(encoded_range)
     encoded_min_seq = encode({:min_seq, min_seq})
-    min_seq_size = byte_size(encoded_min_seq)
     min_seq_pos = range_pos + range_size
+    min_seq_size = byte_size(encoded_min_seq)
     encoded_max_seq = encode({:max_seq, max_seq})
-    max_seq_size = byte_size(encoded_max_seq)
     max_seq_pos = min_seq_pos + min_seq_size
+    max_seq_size = byte_size(encoded_max_seq)
 
     metadata =
       <<
