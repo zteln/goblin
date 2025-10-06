@@ -85,7 +85,7 @@ defmodule SeaGoat.SSTables do
 
     result =
       with :ok <- Util.valid_ss_table(disk),
-           {:ok, {_, _, _, range_size, range_pos, _, _, _, _, no_of_blocks, _}} <-
+           {:ok, {_, _, _, range_pos, range_size, _, _, _, _, no_of_blocks, _}} <-
              Util.read_metadata(disk),
            {:ok, range} <- Util.read_range(disk, range_pos, range_size),
            :ok <- Util.key_in_range(range, key) do
@@ -119,8 +119,19 @@ defmodule SeaGoat.SSTables do
     result =
       with :ok <- Util.valid_ss_table(disk),
            {:ok,
-            {level, bf_size, bf_pos, _, _, min_seq_size, min_seq_pos, max_seq_size, max_seq_pos,
-             _, _}} <- Util.read_metadata(disk),
+            {
+              level,
+              bf_pos,
+              bf_size,
+              _,
+              _,
+              min_seq_pos,
+              min_seq_size,
+              max_seq_pos,
+              max_seq_size,
+              _,
+              _
+            }} <- Util.read_metadata(disk),
            {:ok, bf} <- Util.read_bloom_filter(disk, bf_pos, bf_size),
            {:ok, min_seq} <- Util.read_sequence(disk, min_seq_pos, min_seq_size),
            {:ok, max_seq} <- Util.read_sequence(disk, max_seq_pos, max_seq_size) do

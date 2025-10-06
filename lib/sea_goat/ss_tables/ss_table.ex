@@ -71,6 +71,9 @@ defmodule SeaGoat.SSTables.SSTable do
   @magic "SEAGOATDBFILE000"
   @magic_size byte_size(@magic)
 
+  @separator "SEAGOATDBSEP0000"
+  @separator_size byte_size(@separator)
+
   @metadata_size byte_size(<<
                    0::integer-32,
                    0::integer-64,
@@ -85,7 +88,6 @@ defmodule SeaGoat.SSTables.SSTable do
                    0::integer-64
                  >>)
 
-  @separator "SEAGOATDBSEP0000"
   @block_id "SEAGOATDBBLOCK00"
   @block_size 512
 
@@ -108,24 +110,19 @@ defmodule SeaGoat.SSTables.SSTable do
   def block_span(<<@separator, _rest::binary>>), do: {:error, :eod}
   def block_span(_), do: {:error, :not_block_start}
 
-  @doc """
-  Returns how many 512-bytes blocks are needed for `size`.
-  """
+  @doc "Returns how many 512-bytes blocks are needed for `size`."
   @spec span(non_neg_integer()) :: non_neg_integer()
   def span(size), do: div(size + @block_size - 1, @block_size)
 
-  @doc """
-  Returns the sizes of a block, magic number, metadata table, and block header.
-  """
+  @doc "Returns the sizes of a block, magic number, metadata table, and block header."
   @spec size(:block | :magic | :metadata | :block_header) :: non_neg_integer()
   def size(:block), do: @block_size
   def size(:magic), do: @magic_size
+  def size(:separator), do: @separator_size
   def size(:metadata), do: @metadata_size
   def size(:block_header), do: @block_header_size
 
-  @doc """
-  Encodes `key` and `value` into a block which has a byte size of `n * 512`, `n` a positive integer. It prepends a block header.
-  """
+  @doc "Encodes `key` and `value` into a block which has a byte size of `n * 512`, `n` a positive integer. It prepends a block header."
   @spec encode_block(term(), term()) :: binary()
   def encode_block(key, value) do
     encoded = encode({key, value})
@@ -159,7 +156,7 @@ defmodule SeaGoat.SSTables.SSTable do
       ) do
     encoded_bf = encode({:bloom_filter, bloom_filter})
     bf_size = byte_size(encoded_bf)
-    bf_pos = offset + byte_size(@separator)
+    bf_pos = offset + @separator_size
     encoded_range = encode({:range, range})
     range_size = byte_size(encoded_range)
     range_pos = bf_pos + bf_size
@@ -173,14 +170,14 @@ defmodule SeaGoat.SSTables.SSTable do
     metadata =
       <<
         level::integer-32,
-        bf_size::integer-64,
         bf_pos::integer-64,
-        range_size::integer-64,
+        bf_size::integer-64,
         range_pos::integer-64,
-        min_seq_size::integer-64,
+        range_size::integer-64,
         min_seq_pos::integer-64,
-        max_seq_size::integer-64,
+        min_seq_size::integer-64,
         max_seq_pos::integer-64,
+        max_seq_size::integer-64,
         no_of_blocks::integer-64,
         offset::integer-64
       >>
@@ -216,20 +213,31 @@ defmodule SeaGoat.SSTables.SSTable do
           | {:error, :invalid_metadata}
   def decode_metadata(<<
         level::integer-32,
-        bf_size::integer-64,
         bf_pos::integer-64,
-        range_size::integer-64,
+        bf_size::integer-64,
         range_pos::integer-64,
-        min_seq_size::integer-64,
+        range_size::integer-64,
         min_seq_pos::integer-64,
-        max_seq_size::integer-64,
+        min_seq_size::integer-64,
         max_seq_pos::integer-64,
+        max_seq_size::integer-64,
         no_of_blocks::integer-64,
         offset::integer-64
       >>) do
     {:ok,
-     {level, bf_size, bf_pos, range_size, range_pos, min_seq_size, min_seq_pos, max_seq_size,
-      max_seq_pos, no_of_blocks, offset}}
+     {
+       level,
+       bf_pos,
+       bf_size,
+       range_pos,
+       range_size,
+       min_seq_pos,
+       min_seq_size,
+       max_seq_pos,
+       max_seq_size,
+       no_of_blocks,
+       offset
+     }}
   end
 
   def decode_metadata(_), do: {:error, :invalid_metadata}
