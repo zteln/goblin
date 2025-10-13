@@ -1,10 +1,30 @@
 defmodule SeaGoat.Manifest do
+  @moduledoc """
+  The manifest is the source-of-truth of DB changes.
+  This module tracks the files added and removed from the database repo.
+  Other modules get the database files from the manifest on start.
+
+  The manifest is rotated when it becomes too large (1024 * 1024 bytes).
+  On rotation, it appends the accumulated version (a snapshot) to the log file.
+  Once this is done, then the previous log file is deleted and it starts logging to the new file.
+
+  By default, it logs to a file called `manifest.seagoat`.
+
+  All edits that are appended are synced immediately.
+  """
   use GenServer
 
   @manifest_name :sea_goat_manifest
   @manifest_file "manifest.seagoat"
   @old_manifest_suffix ".old"
   @manifest_max_size 1024 * 1024
+
+  @type manifest :: GenServer.server()
+  @type version :: %{
+          files: MapSet.t(SeaGoat.db_file()),
+          count: non_neg_integer(),
+          seq: SeaGoat.db_sequence()
+        }
 
   defstruct [
     :log,
@@ -15,27 +35,48 @@ defmodule SeaGoat.Manifest do
     size: 0
   ]
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:manifest_file, :dir])
+    args =
+      Keyword.take(opts, [
+        :db_dir,
+        :manifest_file,
+        :manifest_log_name,
+        :manifest_max_size
+      ])
+
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
+  @doc "Logs a file added in the DB repo to the manifest."
+  @spec log_file_added(manifest(), SeaGoat.db_file()) :: :ok | {:error, term()}
   def log_file_added(manifest, file) do
     GenServer.call(manifest, {:log_edit, {:file_added, file}})
   end
 
+  @doc "Logs a file removed in the DB repo to the manifest."
+  @spec log_file_removed(manifest(), SeaGoat.db_file()) :: :ok | {:error, term()}
   def log_file_removed(manifest, file) do
     GenServer.call(manifest, {:log_edit, {:file_removed, file}})
   end
 
-  def log_compaction(manifest, files, file) do
-    GenServer.call(manifest, {:log_compaction, files, file})
+  @doc "Logs a new sequence number to the manifest."
+  @spec log_sequence(manifest(), SeaGoat.db_sequence()) :: :ok | {:error, term()}
+  def log_sequence(manifest, seq) do
+    GenServer.call(manifest, {:log_edit, {:seq, seq}})
   end
 
-  def log_sequence(manifest, sequence) do
-    GenServer.call(manifest, {:log_edit, {:sequence, sequence}})
+  @doc "Logs a compaction to the manifest."
+  @spec log_compaction(manifest(), [SeaGoat.db_file()], [SeaGoat.db_file()]) ::
+          :ok | {:error, term()}
+  def log_compaction(manifest, old_files, new_files) do
+    added_edits = Enum.map(new_files, &{:file_added, &1})
+    removed_edits = Enum.map(old_files, &{:file_removed, &1})
+    GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
+  @doc "Returns a snapshot of the DB repo."
+  @spec get_version(manifest(), [atom()]) :: map()
   def get_version(manifest, keys \\ []) do
     GenServer.call(manifest, {:get_version, keys})
   end
@@ -43,7 +84,7 @@ defmodule SeaGoat.Manifest do
   @impl GenServer
   def init(args) do
     name = args[:manifest_name] || @manifest_name
-    file = Path.join(args[:dir], args[:manifest_file] || @manifest_file)
+    file = Path.join(args[:db_dir], args[:manifest_file] || @manifest_file)
     max_size = args[:manifest_max_size] || @manifest_max_size
 
     if File.exists?(old_file(file)) do
@@ -67,42 +108,26 @@ defmodule SeaGoat.Manifest do
         version = apply_edit(state.version, edit)
         {:reply, :ok, %{state | size: state.size + size, version: version}, {:continue, :rotate}}
 
-      error ->
-        {:reply, error, state}
-    end
-  end
-
-  def handle_call({:log_compaction, files, file}, _from, state) do
-    edits = [{:file_added, file} | Enum.map(files, &{:file_removed, &1})]
-
-    case append_to_manifest(state.log, edits) do
-      {:ok, size} ->
-        version = apply_edits(state.version, edits)
-        {:reply, :ok, %{state | size: state.size + size, version: version}, {:continue, :rotate}}
-
-      error ->
+      {:error, _reason} = error ->
         {:reply, error, state}
     end
   end
 
   def handle_call({:get_version, keys}, _from, state) do
-    reply =
-      case keys do
-        [] ->
-          state.version
-          |> Map.replace(:files, MapSet.to_list(state.version.files))
+    keys = if keys == [], do: Map.keys(state.version), else: keys
 
-        keys ->
-          if :files in keys do
-            state.version
-            |> Map.take(keys)
-            |> Map.replace(:files, MapSet.to_list(state.version.files))
-          else
-            Map.take(state.version, keys)
-          end
-      end
+    version =
+      state.version
+      |> then(fn version ->
+        if :files in keys do
+          Map.replace(version, :files, MapSet.to_list(state.version.files))
+        else
+          version
+        end
+      end)
+      |> Map.take(keys)
 
-    {:reply, reply, state}
+    {:reply, version, state}
   end
 
   @impl GenServer
@@ -148,14 +173,6 @@ defmodule SeaGoat.Manifest do
     end
   end
 
-  defp close_manifest(log) do
-    :disk_log.close(log)
-  end
-
-  defp recover_old_manifest(file) do
-    File.rename(old_file(file), file)
-  end
-
   defp append_to_manifest(log, edits) when is_list(edits) do
     edits = Enum.map(edits, &:erlang.term_to_binary/1)
 
@@ -167,11 +184,21 @@ defmodule SeaGoat.Manifest do
 
   defp append_to_manifest(log, edit), do: append_to_manifest(log, [edit])
 
+  defp close_manifest(log) do
+    :disk_log.close(log)
+  end
+
+  defp recover_old_manifest(file) do
+    File.rename(old_file(file), file)
+  end
+
   defp fetch_version(log) do
     case :disk_log.chunk(log, :start, 1) do
+      {:error, _reason} = error ->
+        error
+
       :eof ->
-        # New manifest, append new version
-        version = %{files: MapSet.new(), count: 0, sequence: 0}
+        version = new_version()
         append_to_manifest(log, {:snapshot, version})
         {:ok, version}
 
@@ -191,12 +218,12 @@ defmodule SeaGoat.Manifest do
     end
   end
 
-  defp apply_edits(version, []), do: version
+  defp apply_edit(version, []), do: version
 
-  defp apply_edits(version, [edit | edits]) do
+  defp apply_edit(version, [edit | edits]) do
     version
     |> apply_edit(edit)
-    |> apply_edits(edits)
+    |> apply_edit(edits)
   end
 
   defp apply_edit(version, {:file_added, file}) do
@@ -209,9 +236,10 @@ defmodule SeaGoat.Manifest do
     %{version | files: files}
   end
 
-  defp apply_edit(version, {:sequence, sequence}) do
-    %{version | sequence: sequence}
+  defp apply_edit(version, {:seq, seq}) do
+    %{version | seq: seq}
   end
 
+  defp new_version, do: %{files: MapSet.new(), count: 0, seq: 0}
   defp old_file(file), do: file <> @old_manifest_suffix
 end
