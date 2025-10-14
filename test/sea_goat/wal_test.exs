@@ -1,54 +1,118 @@
 defmodule SeaGoat.WALTest do
   use ExUnit.Case, async: true
+  use TestHelper
   alias SeaGoat.WAL
 
+  @wal_id :wal_test_id
+  @sync_interval 200
+  @wal_name :wal_test
+  @wal_file "wal.seagoat"
   @moduletag :tmp_dir
 
   setup c do
-    pid = start_supervised!({WAL, name: :wal_test, wal_name: :wal_test})
-    log1 = Path.join(c.tmp_dir, "log1")
-    log2 = Path.join(c.tmp_dir, "log2")
-    %{wal: pid, log1: log1, log2: log2}
+    wal = start_wal(c.tmp_dir)
+    %{wal: wal, wal_file: Path.join(c.tmp_dir, @wal_file)}
   end
 
-  test "open/2 opens a log", c do
-    assert :ok == WAL.open(c.wal, c.log1)
+  test "WAL starts with empty file", c do
+    assert {:ok, [nil: []]} == WAL.recover(c.wal)
   end
 
-  test "append/2 appends to current log", c do
-    assert :ok == WAL.open(c.wal, c.log1)
-    assert :ok == WAL.append(c.wal, "term1")
-    assert :ok == WAL.append(c.wal, "term2")
+  test "WAL recovers writes after restart", c do
+    assert {:ok, [nil: []]} == WAL.recover(c.wal)
+    assert :ok == WAL.append(c.wal, [{0, :put, :k, :v}])
+
+    assert_eventually do
+      assert {:ok, [nil: [{0, :put, :k, :v}]]} == WAL.recover(c.wal)
+    end
+
+    stop_wal()
+    wal = start_wal(c.tmp_dir)
+    assert {:ok, [nil: [{0, :put, :k, :v}]]} == WAL.recover(wal)
+  end
+
+  test "WAL creates a new WAL file on rotate", c do
+    assert :ok == WAL.append(c.wal, [{0, :put, :k, :v}])
+    assert {:ok, rotated_file} = WAL.rotate(c.wal)
+    assert File.exists?(rotated_file)
+    assert File.exists?(c.wal_file)
+    refute rotated_file == c.wal_file
+    assert {:ok, [{^rotated_file, [{0, :put, :k, :v}]}, {nil, []}]} = WAL.recover(c.wal)
+  end
+
+  test "WAL recovers writes from rotated files", c do
+    assert :ok == WAL.append(c.wal, [{0, :put, :k, :v}])
+    assert {:ok, rotated_file} = WAL.rotate(c.wal)
+    assert :ok == WAL.append(c.wal, [{1, :put, :k, :v}])
+
+    assert_eventually do
+      assert {:ok, [{^rotated_file, [{0, :put, :k, :v}]}, {nil, [{1, :put, :k, :v}]}]} =
+               WAL.recover(c.wal)
+    end
+  end
+
+  test "WAL finds previously rotated files on start", c do
+    assert :ok == WAL.append(c.wal, [{0, :put, :k, :v}])
+    assert {:ok, rotated_file} = WAL.rotate(c.wal)
+
+    stop_wal()
+    wal = start_wal(c.tmp_dir)
+
+    assert %{rotated_files: [^rotated_file]} = :sys.get_state(wal)
+  end
+
+  test "append/2 appends writes sequentially", c do
+    assert :ok == WAL.append(c.wal, [{0, :put, :k1, :v1}])
+    assert :ok == WAL.append(c.wal, [{1, :put, :k2, :v2}])
+    assert :ok == WAL.append(c.wal, [{2, :put, :k3, :v3}])
+
+    assert_eventually do
+      assert {:ok,
+              [
+                {nil,
+                 [
+                   {0, :put, :k1, :v1},
+                   {1, :put, :k2, :v2},
+                   {2, :put, :k3, :v3}
+                 ]}
+              ]} = WAL.recover(c.wal)
+    end
+  end
+
+  test "append/2 appends batch writes in reverse order", c do
+    assert :ok == WAL.append(c.wal, [{1, :put, :k2, :v2}, {0, :put, :k1, :v1}])
+
+    assert_eventually do
+      assert {:ok,
+              [
+                {nil,
+                 [
+                   {0, :put, :k1, :v1},
+                   {1, :put, :k2, :v2}
+                 ]}
+              ]} = WAL.recover(c.wal)
+    end
+  end
+
+  test "sync/1 syncs the WAL file", c do
+    assert :ok == WAL.append(c.wal, [{0, :put, :k, :v}])
+    assert {:ok, [{nil, []}]} = WAL.recover(c.wal)
     assert :ok == WAL.sync(c.wal)
-    assert {:ok, ["term1", "term2"]} == WAL.get_logs(c.wal, c.log1)
+
+    assert {:ok,
+            [
+              {nil,
+               [
+                 {0, :put, :k, :v}
+               ]}
+            ]} = WAL.recover(c.wal)
   end
 
-  test "rotate/4 closes current log and opens new log", c do
-    assert :ok == WAL.open(c.wal, c.log1)
-    assert :ok == WAL.append(c.wal, "term1")
-    assert :ok == WAL.append(c.wal, "term2")
-    assert :ok == WAL.rotate(c.wal, c.log2)
-    assert {:ok, ["term1", "term2"]} == WAL.get_logs(c.wal, c.log1)
-    assert :ok == WAL.append(c.wal, "term3")
-    assert :ok == WAL.append(c.wal, "term4")
-    assert :ok == WAL.sync(c.wal)
-    assert {:ok, ["term3", "term4"]} == WAL.get_logs(c.wal, c.log2)
+  defp start_wal(dir) do
+    start_link_supervised!({WAL, db_dir: dir, wal_name: @wal_name, sync_interval: @sync_interval},
+      id: @wal_id
+    )
   end
 
-  test "dump/3 dumps into separate log than current log", c do
-    assert :ok == WAL.open(c.wal, c.log1)
-    assert :ok == WAL.append(c.wal, "term1")
-    assert :ok == WAL.append(c.wal, "term2")
-    assert :ok == WAL.sync(c.wal)
-    assert {:ok, ["term1", "term2"]} == WAL.get_logs(c.wal, c.log1)
-    assert :ok == WAL.dump(c.wal, c.log2, ["term3", "term4"])
-    assert {:ok, ["term3", "term4"]} == WAL.get_logs(c.wal, c.log2)
-  end
-
-  test "current_file/1 returns path to current log", c do
-    assert :ok == WAL.open(c.wal, c.log1)
-    assert c.log1 == WAL.current_file(c.wal)
-    assert :ok == WAL.rotate(c.wal, c.log2)
-    assert c.log2 == WAL.current_file(c.wal)
-  end
+  defp stop_wal, do: stop_supervised(@wal_id)
 end

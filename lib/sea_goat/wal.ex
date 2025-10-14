@@ -1,10 +1,19 @@
 defmodule SeaGoat.WAL do
   @moduledoc """
-  Write-ahead log.
-  Batches write operations within an interval.
-  Default sync interval: 200.
+  A Write-Ahead Log. 
+  All writes are appended to the WAL before being committed to the database repo.
+  WAL files are rotated after every flush, and the previous WAL file is cleaned once the flush is completed.
+  On start, the previous WAL files can be read to regain the previous state.
+
+  Writes are buffered and periodically written and synced to the WAL file.
   """
   use GenServer
+
+  @type wal :: GenServer.server()
+  @type write ::
+          {SeaGoat.db_sequence(), :put, SeaGoat.db_key(), SeaGoat.db_value()}
+          | {SeaGoat.db_sequence(), :remove, SeaGoat.db_key()}
+  @type rotated_file :: String.t()
 
   @default_sync_interval 200
   @wal_name :sea_goat_wal
@@ -18,33 +27,43 @@ defmodule SeaGoat.WAL do
     :last_sync,
     :file,
     :name,
-    :old_file,
-    watermarks: %{},
-    batch: [],
+    rotated_files: [],
+    buffer: [],
     waiting_for_sync?: false
   ]
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:sync_interval, :wal_name, :wal_file, :dir])
+    args = Keyword.take(opts, [:sync_interval, :wal_name, :db_dir])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
+  @doc "Syncs the WAL file, appending anything in the buffer first."
+  @spec sync(wal()) :: :ok | {:error, term()}
   def sync(wal) do
     GenServer.call(wal, :sync_now)
   end
 
-  def append(wal, batch) do
-    GenServer.call(wal, {:append, batch})
+  @doc "Append a list of writes to the WAL buffer."
+  @spec append(wal(), [write()]) :: :ok | {:error, term()}
+  def append(wal, buffer) do
+    GenServer.call(wal, {:append, buffer})
   end
 
+  @doc "Rotates the WAL file."
+  @spec rotate(wal()) :: {:ok, rotated_file()} | {:error, term()}
   def rotate(wal) do
     GenServer.call(wal, :rotate)
   end
 
-  def clean(wal) do
-    GenServer.call(wal, :clean)
+  @doc "Removes a rotated file."
+  @spec clean(wal(), rotated_file()) :: :ok | {:error, term()}
+  def clean(wal, rotated_file) do
+    GenServer.call(wal, {:clean, rotated_file})
   end
 
+  @doc "Returns the logs from the available WAL files, current and previously rotated."
+  @spec recover(wal()) :: {:ok, [{rotated_file(), [write()]}]} | {:error, term()}
   def recover(wal) do
     GenServer.call(wal, :recover)
   end
@@ -52,7 +71,7 @@ defmodule SeaGoat.WAL do
   @impl GenServer
   def init(args) do
     name = args[:wal_name] || @wal_name
-    file = Path.join(args[:dir], args[:wal_file] || @wal_file)
+    file = Path.join(args[:db_dir], @wal_file)
 
     case open_log(file, name) do
       {:ok, log} ->
@@ -63,7 +82,7 @@ defmodule SeaGoat.WAL do
            log: log,
            sync_interval: args[:sync_interval] || @default_sync_interval,
            last_sync: now()
-         }}
+         }, {:continue, :get_rotated_files}}
 
       {:error, _} = error ->
         {:stop, error}
@@ -72,31 +91,39 @@ defmodule SeaGoat.WAL do
 
   @impl GenServer
   def handle_call(:sync_now, _from, state) do
-    append_and_sync_log(state.log, Enum.reverse(state.batch))
-    {:reply, :ok, %{state | last_sync: now(), batch: []}}
+    append_and_sync_log(state.log, Enum.reverse(state.buffer))
+    {:reply, :ok, %{state | last_sync: now(), buffer: []}}
   end
 
-  def handle_call({:append, batch}, _from, state) do
-    batch = batch ++ state.batch
-    state = %{state | batch: batch}
+  def handle_call({:append, buffer}, _from, state) do
+    buffer = buffer ++ state.buffer
+    state = %{state | buffer: buffer}
     {:reply, :ok, state, {:continue, :sync}}
   end
 
   def handle_call(:rotate, _from, state) do
-    case rotate_log(state.name, state.file, state.log, state.batch) do
-      {:ok, log, old_file} ->
-        state = %{state | log: log, old_file: old_file, batch: [], last_sync: now()}
-        {:reply, :ok, state}
+    case rotate_log(state.name, state.file, state.log, state.buffer) do
+      {:ok, log, rotated_file} ->
+        state = %{
+          state
+          | log: log,
+            rotated_files: [rotated_file | state.rotated_files],
+            buffer: [],
+            last_sync: now()
+        }
+
+        {:reply, {:ok, rotated_file}, state}
 
       {:error, _reason} = error ->
         {:reply, error, state}
     end
   end
 
-  def handle_call(:clean, _from, state) do
-    case rm_log(state.old_file) do
+  def handle_call({:clean, rotated_file}, _from, state) do
+    case rm_log(rotated_file) do
       :ok ->
-        state = %{state | old_file: nil}
+        rotated_files = Enum.reject(state.rotated_files, &(&1 == rotated_file))
+        state = %{state | rotated_files: rotated_files}
         {:reply, :ok, state}
 
       {:error, _reason} = error ->
@@ -109,12 +136,16 @@ defmodule SeaGoat.WAL do
   end
 
   @impl GenServer
+  def handle_continue(:get_rotated_files, state) do
+    state = %{state | rotated_files: rotated_files(state.file)}
+    {:noreply, state}
+  end
   def handle_continue(:sync, state) do
     now = now()
 
     if now - state.last_sync >= state.sync_interval do
-      append_and_sync_log(state.log, Enum.reverse(state.batch))
-      {:noreply, %{state | last_sync: now, batch: []}}
+      append_and_sync_log(state.log, Enum.reverse(state.buffer))
+      {:noreply, %{state | last_sync: now, buffer: []}}
     else
       state = send_sync(state)
       {:noreply, state}
@@ -126,12 +157,12 @@ defmodule SeaGoat.WAL do
     {:noreply, %{state | waiting_for_sync?: false}, {:continue, :sync}}
   end
 
-  defp rotate_log(name, file, log, batch) do
-    with :ok <- append_and_sync_log(log, Enum.reverse(batch)),
+  defp rotate_log(name, file, log, buffer) do
+    with :ok <- append_and_sync_log(log, Enum.reverse(buffer)),
          :ok <- close_log(log),
-         {:ok, old_file} <- mv_log(file),
+         {:ok, rotated_file} <- mv_log(file),
          {:ok, log} <- open_log(file, name) do
-      {:ok, log, old_file}
+      {:ok, log, rotated_file}
     end
   end
 
@@ -148,10 +179,10 @@ defmodule SeaGoat.WAL do
   defp close_log(log), do: :disk_log.close(log)
 
   defp mv_log(file) do
-    old_file = old_file(file)
+    rotated_file = rotated_file(file)
 
-    with :ok <- File.rename(file, old_file) do
-      {:ok, old_file}
+    with :ok <- File.rename(file, rotated_file) do
+      {:ok, rotated_file}
     end
   end
 
@@ -159,9 +190,10 @@ defmodule SeaGoat.WAL do
     File.rm(file)
   end
 
-  defp append_and_sync_log(log, batch) do
-    :disk_log.log_terms(log, batch)
-    :disk_log.sync(log)
+  defp append_and_sync_log(log, buffer) do
+    with :ok <- :disk_log.log_terms(log, buffer) do
+      :disk_log.sync(log)
+    end
   end
 
   defp send_sync(state) do
@@ -176,36 +208,60 @@ defmodule SeaGoat.WAL do
   defp recover_writes(log, file) do
     with {:ok, old_writes} <- recover_old_writes(file),
          {:ok, writes} <- recover_logs(log) do
-      {:ok, old_writes ++ writes}
+      {:ok, old_writes ++ [{nil, writes}]}
     end
   end
 
   defp recover_old_writes(file) do
-    if File.exists?(old_file(file)) do
-      with {:ok, log} <- open_log(old_file(file), @wal_ro_name, mode: :read_only),
-           {:ok, writes} <- recover_logs(log),
-           :ok <- close_log(log) do
-        {:ok, writes}
+    file
+    |> rotated_files()
+    |> Enum.reduce_while({:ok, []}, fn rotated_file, {:ok, acc} ->
+      case get_writes(rotated_file) do
+        {:ok, writes} -> {:cont, {:ok, [{rotated_file, writes} | acc]}}
+        {:error, _reason} = error -> {:halt, error}
       end
-    else
-      {:ok, []}
+    end)
+  end
+
+  defp get_writes(file) do
+    with {:ok, log} <- open_log(file, @wal_ro_name, mode: :read_only),
+         {:ok, writes} <- recover_logs(log),
+         :ok <- close_log(log) do
+      {:ok, writes}
     end
   end
 
   defp recover_logs(log, continuation \\ :start, acc \\ []) do
     case :disk_log.chunk(log, continuation) do
+      {:error, _reason} ->
+        {:error, :failed_to_recover}
+
       :eof ->
         {:ok, acc}
 
       {continuation, chunk} ->
         acc = acc ++ chunk
         recover_logs(log, continuation, acc)
-
-      _ ->
-        {:error, :failed_to_recover}
     end
   end
 
   defp now, do: System.monotonic_time(:millisecond)
-  defp old_file(file), do: file <> @old_wal_file_suffix
+  defp rotated_file(file), do: "#{file}#{@old_wal_file_suffix}.#{abs(now())}"
+
+  defp rotated_files(file) do
+    filename = Path.basename(file)
+    dir = Path.dirname(file)
+
+    dir
+    |> File.ls!()
+    |> Enum.filter(&String.starts_with?(&1, filename <> @old_wal_file_suffix <> "."))
+    |> Enum.flat_map(fn file ->
+      case String.split(Path.basename(file), ".") do
+        [_, _, _, time] -> [{time, Path.join(dir, file)}]
+        _ -> []
+      end
+    end)
+    |> List.keysort(0, :asc)
+    |> Enum.map(&elem(&1, 1))
+  end
 end
