@@ -14,6 +14,7 @@ defmodule SeaGoat.Writer.Transaction do
   defstruct [
     :owner,
     :fallback_read,
+    seq: 0,
     mem_table: MemTable.new(),
     writes: [],
     reads: %{}
@@ -37,9 +38,9 @@ defmodule SeaGoat.Writer.Transaction do
   """
   @spec put(t(), SeaGoat.db_key(), SeaGoat.db_value()) :: t()
   def put(tx, key, value) do
-    write = {:put, key, value}
-    mem_table = MemTable.upsert(tx.mem_table, key, value)
-    %{tx | mem_table: mem_table, writes: [write | tx.writes]}
+    write = {tx.seq, :put, key, value}
+    mem_table = MemTable.upsert(tx.mem_table, tx.seq, key, value)
+    %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
   end
 
   @doc """
@@ -47,9 +48,9 @@ defmodule SeaGoat.Writer.Transaction do
   """
   @spec remove(t(), SeaGoat.db_key()) :: t()
   def remove(tx, key) do
-    write = {:remove, key}
-    mem_table = MemTable.delete(tx.mem_table, key)
-    %{tx | mem_table: mem_table, writes: [write | tx.writes]}
+    write = {tx.seq, :remove, key}
+    mem_table = MemTable.delete(tx.mem_table, tx.seq, key)
+    %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
   end
 
   @doc """
@@ -67,11 +68,18 @@ defmodule SeaGoat.Writer.Transaction do
 
   defp has_read_conflict(reads, [mem_table | mem_tables]) do
     read_conflict? =
-      Enum.any?(reads, fn {key, read} ->
-        case MemTable.read(mem_table, key) do
-          :not_found -> false
-          {:value, value} -> value != read
-        end
+      Enum.any?(reads, fn
+        {key, nil} ->
+          case MemTable.read(mem_table, key) do
+            :not_found -> false
+            {:value, _read_seq, _read_value} -> true
+          end
+
+        {key, seq, value} ->
+          case MemTable.read(mem_table, key) do
+            :not_found -> false
+            {:value, read_seq, read_value} -> read_seq != seq and read_value != value
+          end
       end)
 
     if read_conflict?, do: true, else: has_read_conflict(reads, mem_tables)
@@ -90,11 +98,11 @@ defmodule SeaGoat.Writer.Transaction do
   @doc """
   Reads `key` from either its own MemTable or via its `fallback_read` function if `:not_found` is returned from its own MemTable..
   """
-  @spec read(t(), SeaGoat.db_key()) :: term | nil
+  @spec read(t(), SeaGoat.db_key()) :: {{SeaGoat.db_sequence(), SeaGoat.db_value()} | nil, t()}
   def read(tx, key) do
     read =
       case MemTable.read(tx.mem_table, key) do
-        {:value, value} -> value
+        {:value, seq, value} -> {seq, value}
         :not_found -> tx.fallback_read.(key)
       end
 

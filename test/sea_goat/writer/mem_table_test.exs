@@ -7,43 +7,43 @@ defmodule SeaGoat.Writer.MemTableTest do
   end
 
   test "upsert/3 insert new key" do
-    assert %{"key" => "value"} == MemTable.upsert(MemTable.new(), "key", "value")
+    assert %{"key" => {0, "value"}} == MemTable.upsert(MemTable.new(), 0, "key", "value")
   end
 
   test "upsert/3 updates existing key" do
-    assert %{"key" => "value"} = mem_table = MemTable.upsert(MemTable.new(), "key", "value")
-    assert %{"key" => "value1"} = MemTable.upsert(mem_table, "key", "value1")
+    assert %{"key" => {0, "value"}} = mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+    assert %{"key" => {1, "value1"}} = MemTable.upsert(mem_table, 1, "key", "value1")
   end
 
   test "upsert/3 does not upsert :tombstone" do
-    assert %{} == MemTable.upsert(MemTable.new(), "key", :tombstone)
+    assert %{} == MemTable.upsert(MemTable.new(), 0, "key", :tombstone)
   end
 
   test "delete/2 puts value with :tombstone" do
-    assert %{"key" => :tombstone} == MemTable.delete(MemTable.new(), "key")
+    assert %{"key" => {0, :tombstone}} == MemTable.delete(MemTable.new(), 0, "key")
   end
 
   test "delete/2 replaces value with :tombstone" do
-    assert %{"key" => "value"} = mem_table = MemTable.upsert(MemTable.new(), "key", "value")
-    assert %{"key" => :tombstone} == MemTable.delete(mem_table, "key")
+    assert %{"key" => {0, "value"}} = mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+    assert %{"key" => {1, :tombstone}} == MemTable.delete(mem_table, 1, "key")
   end
 
   test "read/2 returns value" do
-    assert %{"key" => "value"} = mem_table = MemTable.upsert(MemTable.new(), "key", "value")
-    assert {:value, "value"} == MemTable.read(mem_table, "key")
+    assert %{"key" => {0, "value"}} = mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+    assert {:value, 0, "value"} == MemTable.read(mem_table, "key")
   end
 
   test "read/2 returns :not_found if no value set" do
     assert :not_found == MemTable.read(MemTable.new(), "key")
   end
 
-  test "read/2 returns {:value, nil} for deleted key" do
+  test "read/2 returns {:value, seq, nil} for deleted key" do
     mem_table =
       MemTable.new()
-      |> MemTable.upsert("key", "value")
-      |> MemTable.delete("key")
+      |> MemTable.upsert(0, "key", "value")
+      |> MemTable.delete(1, "key")
 
-    assert {:value, nil} == MemTable.read(mem_table, "key")
+    assert {:value, 1, nil} == MemTable.read(mem_table, "key")
   end
 
   test "has_overflow/2 returns boolean on overflow" do
@@ -51,9 +51,9 @@ defmodule SeaGoat.Writer.MemTableTest do
 
     mem_table =
       MemTable.new()
-      |> MemTable.upsert("v1", "k1")
-      |> MemTable.upsert("v2", "k2")
-      |> MemTable.upsert("v3", "k3")
+      |> MemTable.upsert(0, "v1", "k1")
+      |> MemTable.upsert(1, "v2", "k2")
+      |> MemTable.upsert(2, "v3", "k3")
 
     assert true == MemTable.has_overflow(mem_table, 2)
   end
@@ -63,21 +63,21 @@ defmodule SeaGoat.Writer.MemTableTest do
 
     mem_table1 =
       MemTable.new()
-      |> MemTable.upsert("v1", "k1")
-      |> MemTable.upsert("v2", "k2")
-      |> MemTable.upsert("v3", "k3")
+      |> MemTable.upsert(0, "k1", "v1")
+      |> MemTable.upsert(1, "k2", "v2")
+      |> MemTable.upsert(2, "k3", "v3")
 
     mem_table2 =
       MemTable.new()
-      |> MemTable.upsert("v2", "k2")
-      |> MemTable.upsert("v3", "k3")
-      |> MemTable.upsert("v4", "k4")
+      |> MemTable.upsert(3, "k2", "v2")
+      |> MemTable.upsert(4, "k3", "v3")
+      |> MemTable.upsert(5, "k4", "v4")
 
     mem_table3 =
       MemTable.new()
-      |> MemTable.upsert("v4", "k4")
-      |> MemTable.upsert("v5", "k5")
-      |> MemTable.upsert("v6", "k6")
+      |> MemTable.upsert(6, "k4", "v4")
+      |> MemTable.upsert(7, "k5", "v5")
+      |> MemTable.upsert(8, "k6", "v6")
 
     assert false == MemTable.is_disjoint(mem_table1, mem_table1)
     assert true == MemTable.is_disjoint(mem_table1, mem_table3)
@@ -88,28 +88,28 @@ defmodule SeaGoat.Writer.MemTableTest do
   test "merge/2 merges to mem_tables" do
     mem_table1 =
       MemTable.new()
-      |> MemTable.upsert("v1", "k1")
-      |> MemTable.upsert("v2", "k2")
-      |> MemTable.upsert("v3", "k3")
+      |> MemTable.upsert(0, "k1", "v1")
+      |> MemTable.upsert(1, "k2", "v2")
+      |> MemTable.upsert(2, "k3", "v3")
 
     mem_table2 =
       MemTable.new()
-      |> MemTable.upsert("v4", "k4")
-      |> MemTable.upsert("v5", "k5")
-      |> MemTable.upsert("v6", "k6")
+      |> MemTable.upsert(3, "k4", "v4")
+      |> MemTable.upsert(4, "k5", "v5")
+      |> MemTable.upsert(5, "k6", "v6")
 
     assert %{
-             "v1" => "k1",
-             "v2" => "k2",
-             "v3" => "k3",
-             "v4" => "k4",
-             "v5" => "k5",
-             "v6" => "k6"
+             "k1" => {0, "v1"},
+             "k2" => {1, "v2"},
+             "k3" => {2, "v3"},
+             "k4" => {3, "v4"},
+             "k5" => {4, "v5"},
+             "k6" => {5, "v6"}
            } == MemTable.merge(mem_table1, mem_table2)
   end
 
   test "merge/2 with empty tables" do
-    mem_table = MemTable.new() |> MemTable.upsert("key", "value")
+    mem_table = MemTable.new() |> MemTable.upsert(0, "key", "value")
 
     assert mem_table == MemTable.merge(MemTable.new(), mem_table)
     assert mem_table == MemTable.merge(mem_table, MemTable.new())
@@ -119,36 +119,36 @@ defmodule SeaGoat.Writer.MemTableTest do
   test "merge/2 overwrites keys from first table" do
     mem_table1 =
       MemTable.new()
-      |> MemTable.upsert("key1", "old_value")
-      |> MemTable.upsert("key2", "value2")
+      |> MemTable.upsert(0, "key1", "old_value")
+      |> MemTable.upsert(1, "key2", "value2")
 
     mem_table2 =
       MemTable.new()
-      |> MemTable.upsert("key1", "new_value")
-      |> MemTable.upsert("key3", "value3")
+      |> MemTable.upsert(2, "key1", "new_value")
+      |> MemTable.upsert(3, "key3", "value3")
 
     assert %{
-             "key1" => "new_value",
-             "key2" => "value2",
-             "key3" => "value3"
+             "key1" => {2, "new_value"},
+             "key2" => {1, "value2"},
+             "key3" => {3, "value3"}
            } == MemTable.merge(mem_table1, mem_table2)
   end
 
   test "merge/2 handles tombstones" do
     mem_table1 =
       MemTable.new()
-      |> MemTable.upsert("key1", "value1")
-      |> MemTable.delete("key2")
+      |> MemTable.upsert(0, "key1", "value1")
+      |> MemTable.delete(1, "key2")
 
     mem_table2 =
       MemTable.new()
-      |> MemTable.upsert("key2", "value2")
-      |> MemTable.delete("key3")
+      |> MemTable.upsert(2, "key2", "value2")
+      |> MemTable.delete(3, "key3")
 
     assert %{
-             "key1" => "value1",
-             "key2" => "value2",
-             "key3" => :tombstone
+             "key1" => {0, "value1"},
+             "key2" => {2, "value2"},
+             "key3" => {3, :tombstone}
            } == MemTable.merge(mem_table1, mem_table2)
   end
 end

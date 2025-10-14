@@ -36,13 +36,13 @@ defmodule SeaGoat.Writer.MemTable do
       iex> MemTable.upsert(%{}, "key", :tombstone)
       %{}
   """
-  @spec upsert(t(), SeaGoat.db_key(), SeaGoat.db_value()) :: t()
-  def upsert(mem_table, _key, :tombstone) do
+  # @spec upsert(t(), SeaGoat.db_key(), SeaGoat.db_value()) :: t()
+  def upsert(mem_table, _seq, _key, :tombstone) do
     mem_table
   end
 
-  def upsert(mem_table, key, value) do
-    Map.put(mem_table, key, value)
+  def upsert(mem_table, seq, key, value) do
+    Map.put(mem_table, key, {seq, value})
   end
 
   @doc """
@@ -60,9 +60,9 @@ defmodule SeaGoat.Writer.MemTable do
       iex> MemTable.delete(%{"key" => "value"}, "key")  
       %{"key" => :tombstone}
   """
-  @spec delete(t(), SeaGoat.db_key()) :: t()
-  def delete(mem_table, key) do
-    Map.put(mem_table, key, :tombstone)
+  # @spec delete(t(), SeaGoat.db_key()) :: t()
+  def delete(mem_table, seq, key) do
+    Map.put(mem_table, key, {seq, :tombstone})
   end
 
   @doc """
@@ -88,8 +88,8 @@ defmodule SeaGoat.Writer.MemTable do
   def read(mem_table, key) do
     case Map.get(mem_table, key) do
       nil -> :not_found
-      :tombstone -> {:value, nil}
-      value -> {:value, value}
+      {seq, :tombstone} -> {:value, seq, nil}
+      {seq, value} -> {:value, seq, value}
     end
   end
 

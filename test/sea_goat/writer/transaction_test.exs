@@ -15,25 +15,28 @@ defmodule SeaGoat.Writer.TransactionTest do
   test "put/3 writes to MemTable and inserts a write command" do
     tx = Transaction.new(:owner)
 
-    assert %Transaction{writes: [{:put, :k, :v}], mem_table: %{k: :v}} =
+    assert %Transaction{writes: [{0, :put, :k, :v}], mem_table: %{k: {0, :v}}} =
              tx =
              Transaction.put(tx, :k, :v)
 
-    assert %Transaction{writes: [{:put, :k, :w}, {:put, :k, :v}], mem_table: %{k: :w}} =
+    assert %Transaction{writes: [{1, :put, :k, :w}, {0, :put, :k, :v}], mem_table: %{k: {1, :w}}} =
              Transaction.put(tx, :k, :w)
   end
 
   test "remove/2 writes to MemTable and inserts a write command" do
     tx = Transaction.new(:owner) |> Transaction.put(:k, :v)
 
-    assert %Transaction{writes: [{:remove, :k}, {:put, :k, :v}], mem_table: %{k: :tombstone}} =
+    assert %Transaction{
+             writes: [{1, :remove, :k}, {0, :put, :k, :v}],
+             mem_table: %{k: {1, :tombstone}}
+           } =
              Transaction.remove(tx, :k)
   end
 
   test "remove/2 removes key not written during transaction" do
     tx = Transaction.new(:owner)
 
-    assert %Transaction{writes: [{:remove, :k}], mem_table: %{k: :tombstone}} =
+    assert %Transaction{writes: [{0, :remove, :k}], mem_table: %{k: {0, :tombstone}}} =
              Transaction.remove(tx, :k)
   end
 
@@ -41,9 +44,9 @@ defmodule SeaGoat.Writer.TransactionTest do
     {nil, tx} = Transaction.new(:owner) |> Transaction.read(:k3)
 
     mem_tables = [
-      MemTable.upsert(MemTable.new(), :k1, :v1),
-      MemTable.upsert(MemTable.new(), :k2, :v1),
-      MemTable.upsert(MemTable.new(), :k3, :v1)
+      MemTable.upsert(MemTable.new(), 0, :k1, :v1),
+      MemTable.upsert(MemTable.new(), 1, :k2, :v1),
+      MemTable.upsert(MemTable.new(), 2, :k3, :v1)
     ]
 
     assert Transaction.has_conflict(tx, mem_tables)
@@ -57,9 +60,9 @@ defmodule SeaGoat.Writer.TransactionTest do
       |> Transaction.put(:k3, :v0)
 
     mem_tables = [
-      MemTable.upsert(MemTable.new(), :k1, :v1),
-      MemTable.upsert(MemTable.new(), :k2, :v1),
-      MemTable.upsert(MemTable.new(), :k3, :v1)
+      MemTable.upsert(MemTable.new(), 0, :k1, :v1),
+      MemTable.upsert(MemTable.new(), 1, :k2, :v1),
+      MemTable.upsert(MemTable.new(), 2, :k3, :v1)
     ]
 
     assert Transaction.has_conflict(tx, mem_tables)
@@ -71,13 +74,13 @@ defmodule SeaGoat.Writer.TransactionTest do
       |> Transaction.put(:k1, :v0)
       |> Transaction.read(:k2)
 
-    mem_table = MemTable.new() |> MemTable.upsert(:k3, :v1)
+    mem_table = MemTable.new() |> MemTable.upsert(0, :k3, :v1)
     refute Transaction.has_conflict(tx, [mem_table])
   end
 
   test "read/2 updates read table and returns value" do
     tx = Transaction.new(:owner) |> Transaction.put(:k, :v)
-    assert {:v, %{reads: %{k: :v}}} = Transaction.read(tx, :k)
+    assert {{0, :v}, %{reads: %{k: {0, :v}}}} = Transaction.read(tx, :k)
   end
 
   test "read/2 returns value from fallback reader" do
