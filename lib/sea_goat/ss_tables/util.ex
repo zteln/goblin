@@ -1,7 +1,6 @@
 defmodule SeaGoat.SSTables.Util do
   alias SeaGoat.SSTables.SSTable
   alias SeaGoat.SSTables.Disk
-  alias SeaGoat.SSTables.Iterator
   alias SeaGoat.BloomFilter
 
   def valid_ss_table(disk) do
@@ -31,15 +30,15 @@ defmodule SeaGoat.SSTables.Util do
     end
   end
 
-  def read_range(disk, pos, size) do
-    with {:ok, encoded_range} <- Disk.read(disk, pos, size) do
-      SSTable.decode_range(encoded_range)
+  def read_key_range(disk, pos, size) do
+    with {:ok, encoded_key_range} <- Disk.read(disk, pos, size) do
+      SSTable.decode_key_range(encoded_key_range)
     end
   end
 
-  def read_sequence(disk, pos, size) do
-    with {:ok, encoded_sequence} <- Disk.read(disk, pos, size) do
-      SSTable.decode_sequence(encoded_sequence)
+  def read_priority(disk, pos, size) do
+    with {:ok, encoded_priority} <- Disk.read(disk, pos, size) do
+      SSTable.decode_priority(encoded_priority)
     end
   end
 
@@ -49,10 +48,10 @@ defmodule SeaGoat.SSTables.Util do
     mid = div(low + high, 2)
     position = (mid - 1) * SSTable.size(:block)
 
-    with {:ok, k, v} <- read_block(disk, position) do
+    with {:ok, seq, k, v} <- read_block(disk, position) do
       cond do
         key == k ->
-          {:ok, {:value, v}}
+          {:ok, {:value, seq, v}}
 
         key < k ->
           binary_search(disk, key, low, mid - 1)
@@ -69,8 +68,8 @@ defmodule SeaGoat.SSTables.Util do
     with {:ok, encoded_header} <- Disk.read(disk, position, SSTable.size(:block_header)),
          {:ok, span} <- SSTable.block_span(encoded_header),
          {:ok, encoded} <- Disk.read(disk, position, SSTable.size(:block) * span),
-         {:ok, {key, value}} <- SSTable.decode_block(encoded) do
-      {:ok, key, value}
+         {:ok, {seq, key, value}} <- SSTable.decode_block(encoded) do
+      {:ok, seq, key, value}
     else
       {:error, :not_block_start} ->
         read_block(disk, position - SSTable.size(:block))
@@ -80,68 +79,78 @@ defmodule SeaGoat.SSTables.Util do
     end
   end
 
-  def write_to_file(file, level, iterator) do
-    with {:ok, disk} <- Disk.open(file, write?: true),
-         {:ok, disk, bloom_filter} <- write_ss_table(disk, level, iterator),
-         :ok <- Disk.sync(disk),
-         :ok <- Disk.close(disk) do
-      {:ok, bloom_filter}
+  def read_next_key(disk) do
+    with {:ok, enc_header} <- Disk.read(disk, SSTable.size(:block_header)),
+         {:ok, span} <- SSTable.block_span(enc_header),
+         {:ok, enc_block} <- Disk.read(disk, SSTable.size(:block) * span),
+         {:ok, data} <- SSTable.decode_block(enc_block) do
+      {:ok, data, Disk.advance_offset(disk, SSTable.size(:block) * span)}
     end
   end
 
-  def write_ss_table(disk, level, iterator) do
-    with {:ok, iterator} <- Iterator.init(iterator),
-         {:ok, disk, no_of_blocks, range, bloom_filter, min_seq, max_seq, iterator} <-
-           write_data(disk, iterator),
-         :ok <- Iterator.deinit(iterator) do
-      write_meta(disk, level, bloom_filter, min_seq, max_seq, range, no_of_blocks)
+  def write_sst(disk, level_key, data) do
+    with {:ok, disk, data} <- write_data(disk, data),
+         {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data) do
+      {:ok, disk, bloom_filter, data.priority, data.size + meta_size, data.key_range}
     end
   end
 
-  def write_data(
-        disk,
-        iterator,
-        no_of_blocks \\ 0,
-        {smallest, largest} \\ {nil, nil},
-        bloom_filter \\ BloomFilter.new()
-      ) do
-    case Iterator.next(iterator) do
-      {:next, {k, v}, iterator} ->
-        block = SSTable.encode_block(k, v)
-        span = SSTable.span(byte_size(block))
-        smallest = if smallest, do: smallest, else: k
-        largest = k
-        bloom_filter = BloomFilter.put(bloom_filter, k)
-        {:ok, disk} = Disk.write(disk, block)
+  def write_data(disk, data) do
+    init = %{
+      priority: nil,
+      no_of_keys: 0,
+      no_of_blocks: 0,
+      key_range: {nil, nil},
+      bloom_filter: BloomFilter.new(),
+      size: 0
+    }
 
-        write_data(
-          disk,
-          iterator,
-          no_of_blocks + span,
-          {smallest, largest},
-          bloom_filter
-        )
+    Enum.reduce_while(data, {:ok, disk, init}, fn {seq, k, v}, {:ok, disk, acc} ->
+      block = SSTable.encode_block(seq, k, v)
+      block_size = byte_size(block)
+      span = SSTable.span(block_size)
+      priority = if acc.priority, do: acc.priority, else: seq
+      {smallest, _largest} = acc.key_range
+      smallest = if smallest, do: smallest, else: k
+      largest = k
+      bloom_filter = BloomFilter.put(acc.bloom_filter, k)
 
-      {:end_iter, min_seq, max_seq, iterator} ->
-        bloom_filter = BloomFilter.generate(bloom_filter)
-        {:ok, disk, no_of_blocks, {smallest, largest}, bloom_filter, min_seq, max_seq, iterator}
-    end
+      case Disk.write(disk, block) do
+        {:ok, disk} ->
+          acc = %{
+            acc
+            | no_of_keys: acc.no_of_keys + 1,
+              no_of_blocks: acc.no_of_blocks + span,
+              key_range: {smallest, largest},
+              priority: priority,
+              bloom_filter: bloom_filter,
+              size: acc.size + block_size
+          }
+
+          {:cont, {:ok, disk, acc}}
+
+        error ->
+          {:halt, error}
+      end
+    end)
   end
 
-  def write_meta(disk, level, bloom_filter, min_seq, max_seq, range, no_of_blocks) do
+  def write_meta(disk, level_key, data) do
+    bloom_filter = BloomFilter.generate(data.bloom_filter)
+
     footer =
       SSTable.encode_footer(
-        level,
+        level_key,
         bloom_filter,
-        range,
-        min_seq,
-        max_seq,
+        data.key_range,
+        data.priority,
         disk.offset,
-        no_of_blocks
+        data.no_of_keys,
+        data.no_of_blocks
       )
 
     with {:ok, disk} <- Disk.write(disk, footer) do
-      {:ok, disk, bloom_filter}
+      {:ok, disk, bloom_filter, byte_size(footer)}
     end
   end
 
