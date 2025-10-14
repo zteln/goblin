@@ -6,7 +6,7 @@ defmodule SeaGoat.ManifestTest do
   @manifest_id :manifest_test_id
   @manifest_file "manifest.test"
   @manifest_name :manifest_test_log
-  @manifest_max_size 1024
+  @manifest_max_size 512
   @moduletag :tmp_dir
 
   setup c do
@@ -45,6 +45,23 @@ defmodule SeaGoat.ManifestTest do
              read_disk_log(:ro_manifest, c.manifest_file)
 
     assert %{files: ["foo.seagoat"], count: 1, seq: 0} == Manifest.get_version(manifest)
+  end
+
+  test "log file rotates when it exceeds size limit", c do
+    assert {:ok, [snapshot: %{count: 0, seq: 0, files: MapSet.new()}]} ==
+             read_disk_log(:ro_manifest, c.manifest_file)
+
+    for _ <- 1..9 do
+      assert :ok == Manifest.log_file_removed(c.manifest, "foo.seagoat")
+      assert :ok == Manifest.log_file_added(c.manifest, "foo.seagoat")
+    end
+
+    assert {:ok,
+            [
+              snapshot: %{count: 8, seq: 0, files: MapSet.new(["foo.seagoat"])},
+              file_removed: "foo.seagoat",
+              file_added: "foo.seagoat"
+            ]} == read_disk_log(:ro_manifest, c.manifest_file)
   end
 
   test "log_file_added/2 appends a :file_added edit to manifest and returns :ok", c do
