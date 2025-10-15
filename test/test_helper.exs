@@ -8,8 +8,6 @@ defmodule TestHelper do
   end
 
   defmacro setup_db(opts \\ []) do
-    opts = Macro.expand(opts, __CALLER__)
-
     quote do
       setup c do
         start_db(c.tmp_dir, unquote(opts))
@@ -17,22 +15,15 @@ defmodule TestHelper do
     end
   end
 
-  defmacro start_db(dir, opts \\ []) do
+  defmacro start_db(db_dir, opts \\ []) do
+    opts = Macro.expand(opts, __CALLER__)
+
     id = opts[:id]
-    name = opts[:name]
-    level_limit = opts[:level_limit]
-    sync_interval = opts[:sync_interval]
-    wal_name = opts[:wal_name]
 
     quote do
       db =
-        start_supervised!(
-          {SeaGoat,
-           name: unquote(name),
-           dir: unquote(dir),
-           level_limit: unquote(level_limit),
-           wal_name: unquote(wal_name),
-           sync_interval: unquote(sync_interval)},
+        start_link_supervised!(
+          {SeaGoat, [db_dir: unquote(db_dir)] ++ unquote(opts)},
           id: unquote(id)
         )
 
@@ -40,7 +31,9 @@ defmodule TestHelper do
         {SeaGoat.Writer, writer, _, _},
         {SeaGoat.Store, store, _, _},
         {SeaGoat.Compactor, compactor, _, _},
+        {SeaGoat.Recovery, _recovery, _, _},
         {SeaGoat.WAL, wal, _, _},
+        {SeaGoat.Manifest, manifest, _, _},
         {SeaGoat.RWLocks, rw_locks, _, _}
       ] = Supervisor.which_children(db)
 
@@ -50,6 +43,7 @@ defmodule TestHelper do
         store: store,
         compactor: compactor,
         wal: wal,
+        manifest: manifest,
         rw_locks: rw_locks
       }
     end
