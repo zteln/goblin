@@ -16,12 +16,12 @@ defmodule SeaGoat.ManifestTest do
 
   test "adds snapshot of new version on start", c do
     assert {:ok, [snapshot: %{count: 0, seq: 0, files: MapSet.new()}]} ==
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
   end
 
-  test "recovers previous version if old file exists", c do
+  test "recovers previous version if previously rotated file exists", c do
     assert :ok == Manifest.log_file_added(c.manifest, "foo1.seagoat")
-    File.cp!(c.manifest_file, c.manifest_file <> ".old")
+    File.cp!(c.manifest_file, c.manifest_file <> ".rot")
     assert :ok == Manifest.log_file_added(c.manifest, "foo2.seagoat")
 
     assert %{files: ["foo1.seagoat", "foo2.seagoat"], count: 2, seq: 0} ==
@@ -31,7 +31,7 @@ defmodule SeaGoat.ManifestTest do
     manifest = start_manifest(c.tmp_dir)
 
     assert {:ok, [snapshot: %{count: 0, seq: 0, files: MapSet.new()}, file_added: "foo1.seagoat"]} ==
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
 
     assert %{files: ["foo1.seagoat"], count: 1, seq: 0} == Manifest.get_version(manifest)
   end
@@ -42,14 +42,14 @@ defmodule SeaGoat.ManifestTest do
     manifest = start_manifest(c.tmp_dir)
 
     assert {:ok, [snapshot: %{count: 0, seq: 0, files: MapSet.new()}, file_added: "foo.seagoat"]} ==
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
 
     assert %{files: ["foo.seagoat"], count: 1, seq: 0} == Manifest.get_version(manifest)
   end
 
   test "log file rotates when it exceeds size limit", c do
     assert {:ok, [snapshot: %{count: 0, seq: 0, files: MapSet.new()}]} ==
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
 
     for _ <- 1..9 do
       assert :ok == Manifest.log_file_removed(c.manifest, "foo.seagoat")
@@ -61,28 +61,28 @@ defmodule SeaGoat.ManifestTest do
               snapshot: %{count: 8, seq: 0, files: MapSet.new(["foo.seagoat"])},
               file_removed: "foo.seagoat",
               file_added: "foo.seagoat"
-            ]} == read_disk_log(:ro_manifest, c.manifest_file)
+            ]} == read_manifest(:ro_manifest, c.manifest_file)
   end
 
   test "log_file_added/2 appends a :file_added edit to manifest and returns :ok", c do
-    assert {:ok, [snapshot: _]} = read_disk_log(:ro_manifest, c.manifest_file)
+    assert {:ok, [snapshot: _]} = read_manifest(:ro_manifest, c.manifest_file)
     assert :ok == Manifest.log_file_added(c.manifest, "foo.seagoat")
 
     assert {:ok, [_, file_added: "foo.seagoat"]} =
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
   end
 
   test "log_file_removed/2 appends a :file_removed edit to manifest and returns :ok", c do
-    assert {:ok, [snapshot: _]} = read_disk_log(:ro_manifest, c.manifest_file)
+    assert {:ok, [snapshot: _]} = read_manifest(:ro_manifest, c.manifest_file)
     assert :ok == Manifest.log_file_removed(c.manifest, "foo.seagoat")
 
     assert {:ok, [_, file_removed: "foo.seagoat"]} =
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
   end
 
   test "log_compaction/3 appends :file_added and :filed_removed edits to manifest and returns :ok",
        c do
-    assert {:ok, [snapshot: _]} = read_disk_log(:ro_manifest, c.manifest_file)
+    assert {:ok, [snapshot: _]} = read_manifest(:ro_manifest, c.manifest_file)
 
     assert :ok ==
              Manifest.log_compaction(c.manifest, ["foo1.seagoat", "foo2.seagoat"], [
@@ -97,7 +97,7 @@ defmodule SeaGoat.ManifestTest do
               file_added: "bar2.seagoat",
               file_removed: "foo1.seagoat",
               file_removed: "foo2.seagoat"
-            ]} = read_disk_log(:ro_manifest, c.manifest_file)
+            ]} = read_manifest(:ro_manifest, c.manifest_file)
   end
 
   test "edits are logged sequentially", c do
@@ -122,7 +122,7 @@ defmodule SeaGoat.ManifestTest do
               file_removed: "foo1.seagoat",
               file_removed: "foo2.seagoat"
             ]} =
-             read_disk_log(:ro_manifest, c.manifest_file)
+             read_manifest(:ro_manifest, c.manifest_file)
   end
 
   test "edits update manifest version", c do
@@ -148,6 +148,27 @@ defmodule SeaGoat.ManifestTest do
 
     assert %{count: 3} == Manifest.get_version(c.manifest, [:count])
     assert %{count: 3, seq: 5} == Manifest.get_version(c.manifest, [:count, :seq])
+  end
+
+  def read_manifest(name, file) do
+    with {:ok, log} <- :disk_log.open(name: name, file: ~c"#{file}", mode: :read_only),
+         {:ok, content} <- do_manifest(log),
+         :ok <- :disk_log.close(log) do
+      {:ok, content}
+    end
+  end
+
+  defp do_manifest(log, continuation \\ :start, acc \\ []) do
+    case :disk_log.chunk(log, continuation) do
+      {:error, _} = error ->
+        error
+
+      :eof ->
+        {:ok, acc}
+
+      {continuation, chunk} ->
+        do_manifest(log, continuation, acc ++ chunk)
+    end
   end
 
   defp start_manifest(dir) do

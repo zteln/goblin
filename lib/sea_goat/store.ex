@@ -9,6 +9,7 @@ defmodule SeaGoat.Store do
   @file_suffix ".seagoat"
   @tmp_suffix ".tmp"
 
+  @type store :: GenServer.server()
   @type file :: String.t()
   @type level :: non_neg_integer()
 

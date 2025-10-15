@@ -16,7 +16,7 @@ defmodule SeaGoat.Manifest do
 
   @manifest_name :sea_goat_manifest
   @manifest_file "manifest.seagoat"
-  @old_manifest_suffix ".old"
+  @rotated_manifest_suffix ".rot"
   @manifest_max_size 1024 * 1024
 
   @type manifest :: GenServer.server()
@@ -69,9 +69,9 @@ defmodule SeaGoat.Manifest do
   @doc "Logs a compaction to the manifest."
   @spec log_compaction(manifest(), [SeaGoat.db_file()], [SeaGoat.db_file()]) ::
           :ok | {:error, term()}
-  def log_compaction(manifest, old_files, new_files) do
+  def log_compaction(manifest, rotated_files, new_files) do
     added_edits = Enum.map(new_files, &{:file_added, &1})
-    removed_edits = Enum.map(old_files, &{:file_removed, &1})
+    removed_edits = Enum.map(rotated_files, &{:file_removed, &1})
     GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
@@ -87,8 +87,8 @@ defmodule SeaGoat.Manifest do
     file = Path.join(args[:db_dir], args[:manifest_file] || @manifest_file)
     max_size = args[:manifest_max_size] || @manifest_max_size
 
-    if File.exists?(old_file(file)) do
-      recover_old_manifest(file)
+    if File.exists?(rotated_file(file)) do
+      recover_rotated_manifest(file)
     end
 
     case open_manifest(name, file) do
@@ -155,10 +155,10 @@ defmodule SeaGoat.Manifest do
 
   defp rotate(state) do
     with :ok <- close_manifest(state.log),
-         :ok <- File.rename(state.file, old_file(state.file)),
+         :ok <- File.rename(state.file, rotated_file(state.file)),
          {:ok, log} <- open_manifest(state.name, state.file),
          {:ok, size} <- append_to_manifest(log, {:snapshot, state.version}),
-         :ok <- File.rm(old_file(state.file)) do
+         :ok <- File.rm(rotated_file(state.file)) do
       {:ok, %{state | log: log, size: size}}
     end
   end
@@ -188,8 +188,8 @@ defmodule SeaGoat.Manifest do
     :disk_log.close(log)
   end
 
-  defp recover_old_manifest(file) do
-    File.rename(old_file(file), file)
+  defp recover_rotated_manifest(file) do
+    File.rename(rotated_file(file), file)
   end
 
   defp fetch_version(log) do
@@ -241,5 +241,5 @@ defmodule SeaGoat.Manifest do
   end
 
   defp new_version, do: %{files: MapSet.new(), count: 0, seq: 0}
-  defp old_file(file), do: file <> @old_manifest_suffix
+  defp rotated_file(file), do: file <> @rotated_manifest_suffix
 end
