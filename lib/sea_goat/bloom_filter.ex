@@ -51,7 +51,7 @@ defmodule SeaGoat.BloomFilter do
   defp init(size) do
     no_of_bits = no_of_bits(size)
     no_of_hashes = no_of_hashes(size, no_of_bits)
-    hashes = hashes(no_of_hashes, no_of_bits, no_of_bits, [])
+    hashes = hashes(no_of_hashes, no_of_bits, [])
     array = :array.new(no_of_bits, default: 0)
     %__MODULE__{hashes: hashes, array: array}
   end
@@ -72,10 +72,10 @@ defmodule SeaGoat.BloomFilter do
     round(no_of_bits / size * :math.log(2))
   end
 
-  defp hashes(0, _no_of_bits, _range, hashes), do: hashes
+  defp hashes(0, _range, hashes), do: hashes
 
-  defp hashes(no_of_hashes, no_of_bits, range, hashes) do
-    hash = &rem(:erlang.phash2(&1, range), no_of_bits)
-    hashes(no_of_hashes - 1, no_of_bits, range + 10, [hash | hashes])
+  defp hashes(salt, range, hashes) do
+    hash = &:erlang.phash2({&1, salt}, range)
+    hashes(salt - 1, range, [hash | hashes])
   end
 end

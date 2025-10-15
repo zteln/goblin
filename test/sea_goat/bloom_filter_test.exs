@@ -2,7 +2,7 @@ defmodule SeaGoat.BloomFilterTest do
   use ExUnit.Case, async: true
   alias SeaGoat.BloomFilter
 
-  test "new/2 returns valid Bloom Filter" do
+  test "Bloom filter works as expected" do
     bloom_filter =
       for n <- 1..100, reduce: BloomFilter.new() do
         acc ->
