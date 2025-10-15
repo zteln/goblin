@@ -31,19 +31,23 @@ defmodule SeaGoat.Reader do
       nil
   """
   @spec get(GenServer.server(), GenServer.server(), SeaGoat.db_key(), non_neg_integer()) ::
-          SeaGoat.db_value() | nil
+          SeaGoat.db_value() | :not_found
   def get(writer, store, key, timeout \\ @task_timeout) do
     case try_writer(writer, key) do
-      {:ok, value} ->
-        value
+      {:ok, {:value, seq, value}} ->
+        {seq, value}
 
       :error ->
         try_store(store, key, timeout)
     end
   end
 
+  # def select(writer, store, min, max) do
+  #
+  # end
+
   defp try_writer(writer, key) do
-    Writer.read(writer, key)
+    Writer.get(writer, key)
   end
 
   defp try_store(store, key, timeout) do
@@ -62,15 +66,16 @@ defmodule SeaGoat.Reader do
           res
       end)
       |> Stream.filter(&match?({:ok, _}, &1))
-      |> Stream.take(1)
-      |> Enum.to_list()
+      |> Stream.map(fn {:ok, res} -> res end)
+      |> Enum.sort_by(&elem(&1, 1), :desc)
+      |> Enum.take(1)
 
     ss_tables
     |> Enum.each(&elem(&1, 1).())
 
     case result do
-      [] -> nil
-      [ok: {:value, value}] -> value
+      [] -> :not_found
+      [{:value, seq, value}] -> {seq, value}
     end
   end
 end
