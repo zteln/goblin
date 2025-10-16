@@ -32,12 +32,12 @@ defmodule SeaGoat.Reader do
   """
   @spec get(GenServer.server(), GenServer.server(), SeaGoat.db_key(), non_neg_integer()) ::
           SeaGoat.db_value() | :not_found
-  def get(writer, store, key, timeout \\ @task_timeout) do
+  def get(key, writer, store, timeout \\ @task_timeout) do
     case try_writer(writer, key) do
       {:ok, {:value, seq, value}} ->
         {seq, value}
 
-      :error ->
+      :not_found ->
         try_store(store, key, timeout)
     end
   end

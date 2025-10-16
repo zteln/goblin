@@ -69,7 +69,7 @@ defmodule SeaGoat.Writer.Transaction do
   defp has_read_conflict(reads, [mem_table | mem_tables]) do
     read_conflict? =
       Enum.any?(reads, fn
-        {key, nil} ->
+        {key, :not_found} ->
           case MemTable.read(mem_table, key) do
             :not_found -> false
             {:value, _read_seq, _read_value} -> true
@@ -98,8 +98,8 @@ defmodule SeaGoat.Writer.Transaction do
   @doc """
   Reads `key` from either its own MemTable or via its `fallback_read` function if `:not_found` is returned from its own MemTable..
   """
-  @spec read(t(), SeaGoat.db_key()) :: {{SeaGoat.db_sequence(), SeaGoat.db_value()} | nil, t()}
-  def read(tx, key) do
+  @spec get(t(), SeaGoat.db_key()) :: {{SeaGoat.db_sequence(), SeaGoat.db_value()} | :error, t()}
+  def get(tx, key) do
     read =
       case MemTable.read(tx.mem_table, key) do
         {:value, seq, value} -> {seq, value}

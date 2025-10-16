@@ -1,0 +1,318 @@
+defmodule SeaGoat.WriterTest do
+  use ExUnit.Case, async: true
+  use TestHelper
+  alias SeaGoat.Writer
+  alias SeaGoat.WAL
+
+  @moduletag :tmp_dir
+  @db_opts [
+    id: :writer_test,
+    key_limit: 100,
+    wal_name: :writer_test_wal_log,
+    manifest_name: :writer_test_log_name,
+    flusher: &__MODULE__.flush/2
+  ]
+
+  setup_db(@db_opts)
+
+  test "writer starts with empty write state", c do
+    assert %{seq: 0, mem_table: mem_table} = :sys.get_state(c.writer)
+    assert %{} == mem_table
+  end
+
+  test "writes increase sequence", c do
+    assert %{seq: 0} = :sys.get_state(c.writer)
+    assert :ok == Writer.put(c.writer, :k1, :v1)
+    assert :ok == Writer.put(c.writer, :k2, :v2)
+    assert :ok == Writer.remove(c.writer, :k3)
+    assert %{seq: 3} = :sys.get_state(c.writer)
+  end
+
+  test "writer can put key-value in memory", c do
+    assert :ok == Writer.put(c.writer, :k1, :v1)
+    assert :ok == Writer.put(c.writer, :k2, :v2)
+    assert :ok == Writer.put(c.writer, :k3, :v3)
+    assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
+    assert {:ok, {:value, 1, :v2}} == Writer.get(c.writer, :k2)
+    assert {:ok, {:value, 2, :v3}} == Writer.get(c.writer, :k3)
+  end
+
+  test "writer can remove key-value pairs", c do
+    assert :ok == Writer.remove(c.writer, :k)
+    assert {:ok, {:value, 0, nil}} == Writer.get(c.writer, :k)
+    assert :ok == Writer.put(c.writer, :k, :v)
+    assert {:ok, {:value, 1, :v}} == Writer.get(c.writer, :k)
+    assert :ok == Writer.remove(c.writer, :k)
+    assert {:ok, {:value, 2, nil}} == Writer.get(c.writer, :k)
+  end
+
+  test "writer recovers memory after restart", c do
+    assert :ok == Writer.put(c.writer, :k1, :v1)
+    assert :ok == Writer.put(c.writer, :k2, :v2)
+    assert :ok == Writer.remove(c.writer, :k3)
+    WAL.sync(c.wal)
+    stop_supervised!(c.db_id)
+    %{writer: writer} = start_db(c.tmp_dir, @db_opts)
+    assert {:ok, {:value, 0, :v1}} == Writer.get(writer, :k1)
+    assert {:ok, {:value, 1, :v2}} == Writer.get(writer, :k2)
+    assert {:ok, {:value, 2, nil}} == Writer.get(writer, :k3)
+  end
+
+  test "overflowing the MemTable causes a flush", c do
+    assert %{seq: 0, flushing: nil} = :sys.get_state(c.writer)
+
+    for n <- 1..100 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{seq: 100, flushing: {ref, _mem_table}} = :sys.get_state(c.writer)
+    assert is_reference(ref)
+  end
+
+  test "able to read from flushing MemTables", c do
+    for n <- 1..100 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{mem_table: mem_table, flushing: {_ref, _}} = :sys.get_state(c.writer)
+    assert %{} == mem_table
+
+    for n <- 1..100 do
+      assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
+    end
+  end
+
+  test "overflowing the MemTable while already flushing queues the MemTable", c do
+    for n <- 1..100 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{flushing: {_ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
+    assert :queue.len(flush_queue) == 0
+
+    for n <- 101..200 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{flushing: {_ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
+    assert :queue.len(flush_queue) == 1
+
+    for n <- 201..400 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{flushing: {_ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
+    assert :queue.len(flush_queue) == 3
+  end
+
+  test "able to read from both flushing and queued flushes", c do
+    for n <- 1..300 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{mem_table: mem_table} = :sys.get_state(c.writer)
+    assert %{} == mem_table
+
+    for n <- 1..300 do
+      assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
+    end
+  end
+
+  test "flushes from the queue once the current flush completes", c do
+    for n <- 1..300 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{flushing: {ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
+    assert :queue.len(flush_queue) == 2
+
+    {{:value, {queued_mem_table, _}}, _} = :queue.out(flush_queue)
+    send(c.writer, {ref, :flushed})
+
+    assert_eventually do
+      assert %{flushing: {_ref, ^queued_mem_table}, flush_queue: flush_queue} =
+               :sys.get_state(c.writer)
+
+      assert :queue.len(flush_queue) == 1
+    end
+  end
+
+  test "reads from latest queued flush", c do
+    for i <- 1..3 do
+      for n <- 1..100 do
+        assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
+      end
+    end
+
+    for n <- 1..100 do
+      assert {:ok, {:value, n + 200 - 1, "v3-#{n}"}} == Writer.get(c.writer, n)
+    end
+  end
+
+  test "merges MemTable with transactions writes after commit", c do
+    assert :ok == Writer.put(c.writer, :i, :u)
+
+    assert :ok ==
+             Writer.transaction(c.writer, fn tx ->
+               tx = Writer.Transaction.put(tx, :k, :v)
+               tx = Writer.Transaction.put(tx, :l, :w)
+               tx = Writer.Transaction.remove(tx, :m)
+               assert {:not_found, tx} = Writer.Transaction.get(tx, :n)
+               assert {{0, :u}, tx} = Writer.Transaction.get(tx, :i)
+               {:commit, tx, :ok}
+             end)
+
+    assert {:ok, {:value, 0, :u}} == Writer.get(c.writer, :i)
+    assert {:ok, {:value, 1, :v}} == Writer.get(c.writer, :k)
+    assert {:ok, {:value, 2, :w}} == Writer.get(c.writer, :l)
+    assert {:ok, {:value, 3, nil}} == Writer.get(c.writer, :m)
+  end
+
+  test "does not merge with MemTable after a transaction cancels", c do
+    assert :ok == Writer.put(c.writer, :i, :u)
+
+    assert :ok ==
+             Writer.transaction(c.writer, fn tx ->
+               tx = Writer.Transaction.put(tx, :k, :v)
+               tx = Writer.Transaction.put(tx, :l, :w)
+               tx = Writer.Transaction.remove(tx, :m)
+               assert {:not_found, _tx} = Writer.Transaction.get(tx, :n)
+               :cancel
+             end)
+
+    assert {:ok, {:value, 0, :u}} == Writer.get(c.writer, :i)
+    assert :not_found == Writer.get(c.writer, :k)
+    assert :not_found == Writer.get(c.writer, :l)
+    assert :not_found == Writer.get(c.writer, :m)
+  end
+
+  test "concurrent non-conflicting transactions are merged into the MemTable", c do
+    pid1 =
+      spawn(fn ->
+        pid2 =
+          Writer.transaction(c.writer, fn tx ->
+            tx = Writer.Transaction.put(tx, :k1, :v1)
+
+            pid2 =
+              receive do
+                {:cont, pid2} -> pid2
+              end
+
+            {:commit, tx, pid2}
+          end)
+
+        send(pid2, :cont)
+      end)
+
+    spawn(fn ->
+      Writer.transaction(c.writer, fn tx ->
+        tx = Writer.Transaction.put(tx, :k2, :v2)
+
+        send(pid1, {:cont, self()})
+
+        receive do
+          :cont -> :ok
+        end
+
+        {:commit, tx, :ok}
+      end)
+    end)
+
+    assert_eventually do
+      assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
+      assert {:ok, {:value, 1, :v2}} == Writer.get(c.writer, :k2)
+    end
+  end
+
+  test "concurrent transactions with read-conflict are not all merged into the MemTable", c do
+    pid1 =
+      spawn_link(fn ->
+        pid2 =
+          Writer.transaction(c.writer, fn tx ->
+            tx = Writer.Transaction.put(tx, :k1, :v1)
+
+            pid2 =
+              receive do
+                {:cont, pid2} -> pid2
+              end
+
+            {:commit, tx, pid2}
+          end)
+
+        send(pid2, :cont)
+      end)
+
+    spawn(fn ->
+      assert {:error, :in_conflict} ==
+               Writer.transaction(c.writer, fn tx ->
+                 tx = Writer.Transaction.put(tx, :k2, :v2)
+                 assert {:not_found, tx} = Writer.Transaction.get(tx, :k1)
+                 send(pid1, {:cont, self()})
+
+                 receive do
+                   :cont -> :ok
+                 end
+
+                 {:commit, tx, :ok}
+               end)
+    end)
+
+    assert_eventually do
+      assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
+      assert :not_found == Writer.get(c.writer, :k2)
+    end
+  end
+
+  test "concurrent transactions with write-conflicts are not all merged to the MemTable", c do
+    pid1 =
+      spawn(fn ->
+        pid2 =
+          Writer.transaction(c.writer, fn tx ->
+            tx = Writer.Transaction.put(tx, :k1, :v1)
+
+            pid2 =
+              receive do
+                {:cont, pid2} -> pid2
+              end
+
+            {:commit, tx, pid2}
+          end)
+
+        send(pid2, :cont)
+      end)
+
+    spawn(fn ->
+      assert {:error, :in_conflict} ==
+               Writer.transaction(c.writer, fn tx ->
+                 tx = Writer.Transaction.put(tx, :k1, :v2)
+                 send(pid1, {:cont, self()})
+
+                 receive do
+                   :cont -> :ok
+                 end
+
+                 {:commit, tx, :ok}
+               end)
+    end)
+
+    assert_eventually do
+      assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
+    end
+  end
+
+  test "a transaction raises if it returns anything other than {:commit, tx, reply} or :cancel",
+       c do
+    assert_raise RuntimeError, fn ->
+      Writer.transaction(c.writer, fn tx ->
+        Writer.Transaction.put(tx, :k, :v)
+        :tx_done
+      end)
+    end
+
+    assert_eventually do
+      assert :not_found == Writer.get(c.writer, :k1)
+    end
+  end
+
+  def flush(_mem_table, _rotated_wal), do: make_ref()
+end

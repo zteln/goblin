@@ -38,7 +38,7 @@ defmodule SeaGoat do
     writer = name(db, :writer)
     store = name(db, :store)
 
-    case SeaGoat.Reader.get(writer, store, key) do
+    case SeaGoat.Reader.get(key, writer, store) do
       :not_found -> default
       {_seq, value} -> value
     end

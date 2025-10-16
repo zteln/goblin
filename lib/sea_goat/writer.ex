@@ -3,6 +3,7 @@ defmodule SeaGoat.Writer do
   alias SeaGoat.Writer.MemTable
   alias SeaGoat.Writer.Transaction
   alias SeaGoat.Writer.Flusher
+  alias SeaGoat.Reader
   alias SeaGoat.WAL
   alias SeaGoat.Manifest
 
@@ -66,10 +67,13 @@ defmodule SeaGoat.Writer do
   end
 
   @doc "Runs a transaction."
-  @spec transaction(writer(), (Transaction.t() -> transaction_return())) :: term()
+  @spec transaction(writer(), (Transaction.t() -> transaction_return())) ::
+          term() | :ok | {:error, term()}
   def transaction(writer, f) do
-    with {:ok, tx} <- start_transaction(writer, self()) do
-      run_transaction(writer, f, tx)
+    with {:ok, tx} <- start_transaction(writer, self()),
+         {:ok, tx, reply} <- run_transaction(writer, f, tx),
+         :ok <- commit_transaction(writer, tx, self()) do
+      reply
     end
   end
 
@@ -77,15 +81,9 @@ defmodule SeaGoat.Writer do
 
   defp run_transaction(writer, f, tx) do
     case f.(tx) do
-      {:commit, tx, reply} ->
-        :ok = commit_transaction(writer, tx, self())
-        reply
-
-      :cancel ->
-        cancel_transaction(writer, self())
-
-      _ ->
-        raise "Invalid return type from transaction."
+      {:commit, tx, reply} -> {:ok, tx, reply}
+      :cancel -> cancel_transaction(writer, self())
+      _ -> raise "Invalid return type from transaction."
     end
   end
 
@@ -122,23 +120,19 @@ defmodule SeaGoat.Writer do
       state.flush_queue
       |> :queue.to_list()
       |> Enum.map(&elem(&1, 0))
+      |> Enum.reverse()
 
     mem_tables = [state.mem_table | flush_queue_mem_tables ++ flushing_mem_table]
-
-    case search_for_key(mem_tables, key) do
-      {:ok, value} ->
-        {:reply, {:ok, value}, state}
-
-      :not_found ->
-        {:reply, :error, state}
-    end
+    reply = search_for_key(mem_tables, key)
+    {:reply, reply, state}
   end
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
       writer = self()
       store = state.store
-      tx = Transaction.new(pid, &SeaGoat.Reader.get(writer, store, &1))
+      reader = &Reader.get(&1, writer, store)
+      tx = Transaction.new(pid, reader)
       transactions = Map.put(state.transactions, pid, [])
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
     else
