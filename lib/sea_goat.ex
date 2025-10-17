@@ -116,8 +116,8 @@ defmodule SeaGoat do
     Supervisor.init(children, strategy: :one_for_all)
   end
 
-  defp name(name, suffix) when is_pid(name) do
-    case Process.info(name, :registered_name) do
+  defp name(pid, suffix) when is_pid(pid) do
+    case Process.info(pid, :registered_name) do
       {:registered_name, []} ->
         name(nil, suffix)
 
