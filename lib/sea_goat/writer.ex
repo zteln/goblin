@@ -3,6 +3,7 @@ defmodule SeaGoat.Writer do
   alias SeaGoat.Writer.MemTable
   alias SeaGoat.Writer.Transaction
   alias SeaGoat.Writer.Flusher
+  alias SeaGoat.Writer.FlushQueue
   alias SeaGoat.Reader
   alias SeaGoat.WAL
   alias SeaGoat.Manifest
@@ -16,11 +17,10 @@ defmodule SeaGoat.Writer do
     :manifest,
     :key_limit,
     :flushing,
-    :flusher,
     seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
-    flush_queue: :queue.new(),
+    flush_queue: FlushQueue.new(),
     subscribers: %{}
   ]
 
@@ -31,7 +31,6 @@ defmodule SeaGoat.Writer do
         :wal,
         :store,
         :manifest,
-        :flusher,
         :key_limit
       ])
 
@@ -65,6 +64,8 @@ defmodule SeaGoat.Writer do
       {:commit, tx, :ok}
     end)
   end
+
+  def is_flushing(writer), do: GenServer.call(writer, :is_flushing)
 
   @doc "Runs a transaction."
   @spec transaction(writer(), (Transaction.t() -> transaction_return())) ::
@@ -107,7 +108,6 @@ defmodule SeaGoat.Writer do
        store: store,
        manifest: manifest,
        key_limit: args[:key_limit],
-       flusher: args[:flusher] || (&Flusher.flush(&1, &2, store, wal, manifest)),
        mem_table: MemTable.new()
      }, {:continue, :recover_state}}
   end
@@ -115,14 +115,8 @@ defmodule SeaGoat.Writer do
   @impl GenServer
   def handle_call({:get, key}, _from, state) do
     flushing_mem_table = if state.flushing, do: [elem(state.flushing, 1)], else: []
-
-    flush_queue_mem_tables =
-      state.flush_queue
-      |> :queue.to_list()
-      |> Enum.map(&elem(&1, 0))
-      |> Enum.reverse()
-
-    mem_tables = [state.mem_table | flush_queue_mem_tables ++ flushing_mem_table]
+    queued_mem_tables = FlushQueue.to_data_list(state.flush_queue)
+    mem_tables = [state.mem_table | queued_mem_tables ++ flushing_mem_table]
     reply = search_for_key(mem_tables, key)
     {:reply, reply, state}
   end
@@ -178,6 +172,11 @@ defmodule SeaGoat.Writer do
     {:reply, :ok, state}
   end
 
+  def handle_call(:is_flushing, _from, state) do
+    is_flushing = not is_nil(state.flushing)
+    {:reply, is_flushing, state}
+  end
+
   @impl GenServer
   def handle_continue(:recover_state, state) do
     case recover_writes(state) do
@@ -226,33 +225,40 @@ defmodule SeaGoat.Writer do
 
   defp queue_overflow(state, rotated_wal) do
     rotated_wal = maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq)
-
-    flush_queue =
-      :queue.in({state.mem_table, rotated_wal}, state.flush_queue)
-
+    flush_queue = FlushQueue.push(state.flush_queue, state.mem_table, rotated_wal)
     %{state | mem_table: MemTable.new(), flush_queue: flush_queue}
   end
 
   defp start_flush?(state) do
-    MemTable.has_overflow(state.mem_table, state.key_limit) and :queue.len(state.flush_queue) == 0
+    MemTable.has_overflow(state.mem_table, state.key_limit) and
+      FlushQueue.empty?(state.flush_queue)
   end
 
   defp start_flush(state, rotated_wal) do
     rotated_wal = maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq)
-    ref = state.flusher.(state.mem_table, rotated_wal)
+    ref = flush(state.mem_table, rotated_wal, {state.store, state.wal, state.manifest})
     flushing = {ref, state.mem_table}
     %{state | mem_table: MemTable.new(), flushing: flushing}
   end
 
   defp flush_from_queue?(state) do
-    is_nil(state.flushing) and :queue.len(state.flush_queue) > 0
+    is_nil(state.flushing) and not FlushQueue.empty?(state.flush_queue)
   end
 
   defp flush_from_queue(state) do
-    {{:value, {mem_table, rotated_wal}}, flush_queue} = :queue.out(state.flush_queue)
-    ref = state.flusher.(mem_table, rotated_wal)
+    {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
+    ref = flush(mem_table, rotated_wal, {state.store, state.wal, state.manifest})
     flushing = {ref, mem_table}
     %{state | flushing: flushing, flush_queue: flush_queue}
+  end
+
+  defp flush(mem_table, rotated_wal, pids) do
+    %{ref: ref} =
+      Task.async(fn ->
+        Flusher.flush(mem_table, rotated_wal, pids)
+      end)
+
+    ref
   end
 
   defp maybe_rotate(nil, wal, manifest, seq) do
