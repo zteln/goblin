@@ -5,7 +5,7 @@ defmodule SeaGoat do
   @type db_level_limit :: non_neg_integer()
   @type db_key :: term()
   @type db_value :: term() | nil
-  @type db_level :: non_neg_integer()
+  @type db_level_key :: non_neg_integer()
   @type db_sequence :: non_neg_integer()
   @type db_file :: String.t()
   @type db_server :: GenServer.server()
