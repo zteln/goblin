@@ -64,6 +64,7 @@ defmodule SeaGoat.SSTables.SSTable do
   @type position :: non_neg_integer()
   @type offset :: non_neg_integer()
   @type no_of_blocks :: non_neg_integer()
+  @type triple :: {SeaGoat.db_sequence(), SeaGoat.db_key(), SeaGoat.db_value()}
 
   @magic "SEAGOATDBFILE000"
   @magic_size byte_size(@magic)
@@ -193,13 +194,9 @@ defmodule SeaGoat.SSTables.SSTable do
     >>
   end
 
-  @doc """
-  Decodes a block, retrieving the key-value pair that it holds. 
-  Returns `{:ok, {key, value}}` if successful, `{:error, :invalid_block}` if it fails to decode.
-  """
-  @spec decode_block(binary()) :: {:ok, {term(), term()}} | {:error, :invalid_block}
-  def decode_block(<<@block_id, _span::integer-16, pair::binary>>) do
-    {:ok, decode(pair)}
+  @spec decode_block(binary()) :: {:ok, triple()} | {:error, :invalid_block}
+  def decode_block(<<@block_id, _span::integer-16, triple::binary>>) do
+    {:ok, decode(triple)}
   end
 
   def decode_block(_), do: {:error, :invalid_block}

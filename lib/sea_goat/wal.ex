@@ -1,12 +1,5 @@
 defmodule SeaGoat.WAL do
-  @moduledoc """
-  A Write-Ahead Log. 
-  All writes are appended to the WAL before being committed to the database repo.
-  WAL files are rotated after every flush, and the previous WAL file is cleaned once the flush is completed.
-  On start, the previous WAL files can be read to regain the previous state.
-
-  Writes are buffered and periodically written and synced to the WAL file.
-  """
+  @moduledoc false
   use GenServer
 
   @type wal :: GenServer.server()
@@ -19,7 +12,7 @@ defmodule SeaGoat.WAL do
   @wal_name :sea_goat_wal
   @wal_ro_name :sea_goat_wal_ro
   @wal_file "wal.seagoat"
-  @old_wal_file_suffix ".old"
+  @old_wal_file_suffix ".rot"
 
   defstruct [
     :log,

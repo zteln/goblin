@@ -1,4 +1,5 @@
 defmodule SeaGoat.Writer.FlushQueue do
+  @moduledoc false
   @type t :: :queue.queue()
 
   @spec new() :: t()
