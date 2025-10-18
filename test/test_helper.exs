@@ -1,5 +1,7 @@
 defmodule TestHelper do
+  @moduledoc false
   require ExUnit.Assertions
+  require ExUnit.Callbacks
 
   defmacro __using__(_) do
     quote do
@@ -15,38 +17,33 @@ defmodule TestHelper do
     end
   end
 
-  defmacro start_db(db_dir, opts \\ []) do
-    opts = Macro.expand(opts, __CALLER__)
-
+  def start_db(db_dir, opts \\ []) do
     id = opts[:id]
 
-    quote do
-      db =
-        start_link_supervised!(
-          {SeaGoat, [db_dir: unquote(db_dir)] ++ unquote(opts)},
-          id: unquote(id)
-        )
+    db =
+      ExUnit.Callbacks.start_link_supervised!(
+        {SeaGoat, [db_dir: db_dir] ++ opts},
+        id: id
+      )
 
-      [
-        {SeaGoat.Writer, writer, _, _},
-        {SeaGoat.Store, store, _, _},
-        {SeaGoat.Compactor, compactor, _, _},
-        {SeaGoat.Recovery, _recovery, _, _},
-        {SeaGoat.WAL, wal, _, _},
-        {SeaGoat.Manifest, manifest, _, _},
-        {SeaGoat.RWLocks, rw_locks, _, _}
-      ] = Supervisor.which_children(db)
+    [
+      {SeaGoat.Writer, writer, _, _},
+      {SeaGoat.Store, store, _, _},
+      {SeaGoat.Compactor, compactor, _, _},
+      {SeaGoat.WAL, wal, _, _},
+      {SeaGoat.Manifest, manifest, _, _},
+      {SeaGoat.RWLocks, rw_locks, _, _}
+    ] = Supervisor.which_children(db)
 
-      %{
-        db_id: unquote(id),
-        writer: writer,
-        store: store,
-        compactor: compactor,
-        wal: wal,
-        manifest: manifest,
-        rw_locks: rw_locks
-      }
-    end
+    %{
+      db_id: id,
+      writer: writer,
+      store: store,
+      compactor: compactor,
+      wal: wal,
+      manifest: manifest,
+      rw_locks: rw_locks
+    }
   end
 
   defmacro assert_eventually(opts \\ [], do: block) do
