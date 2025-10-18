@@ -22,6 +22,7 @@ defmodule SeaGoat.Writer.FlushQueue do
 
   @spec empty?(t()) :: boolean()
   def empty?(queue), do: :queue.len(queue) == 0
+
   @spec size(t()) :: non_neg_integer()
   def size(queue), do: :queue.len(queue)
 
