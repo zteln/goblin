@@ -29,7 +29,7 @@ defmodule SeaGoat.Writer.Transaction do
   The store pid is used to reading the on-disk SSTables.
   """
   @spec new(pid(), (term() -> term())) :: t()
-  def new(pid, fallback_read \\ fn _ -> nil end) do
+  def new(pid, fallback_read \\ fn _ -> :not_found end) do
     %__MODULE__{owner: pid, fallback_read: fallback_read}
   end
 

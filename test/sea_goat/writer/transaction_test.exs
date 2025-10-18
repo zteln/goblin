@@ -41,7 +41,7 @@ defmodule SeaGoat.Writer.TransactionTest do
   end
 
   test "has_conflict/2 returns true on read conflict" do
-    {nil, tx} = Transaction.new(:owner) |> Transaction.get(:k3)
+    {:not_found, tx} = Transaction.new(:owner) |> Transaction.get(:k3)
 
     mem_tables = [
       MemTable.upsert(MemTable.new(), 0, :k1, :v1),
@@ -69,7 +69,7 @@ defmodule SeaGoat.Writer.TransactionTest do
   end
 
   test "has_conflict/2 returns false on no conflicts" do
-    {nil, tx} =
+    {:not_found, tx} =
       Transaction.new(:owner)
       |> Transaction.put(:k1, :v0)
       |> Transaction.get(:k2)
