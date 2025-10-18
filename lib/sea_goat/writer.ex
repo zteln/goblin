@@ -149,7 +149,7 @@ defmodule SeaGoat.Writer do
 
           writes = Enum.map(tx.writes, &advance_seq_in_write(&1, state.seq))
           WAL.append(state.wal, writes)
-          tx_mem_table = Enum.into(tx.mem_table, %{}, &advance_seq_in_mem_table(&1, state.seq))
+          tx_mem_table = MemTable.advance_seq(tx.mem_table, state.seq)
           mem_table = MemTable.merge(state.mem_table, tx_mem_table)
 
           state = %{
@@ -215,7 +215,6 @@ defmodule SeaGoat.Writer do
 
   defp advance_seq_in_write({seq1, :put, k, v}, seq2), do: {seq1 + seq2, :put, k, v}
   defp advance_seq_in_write({seq1, :remove, k}, seq2), do: {seq1 + seq2, :remove, k}
-  defp advance_seq_in_mem_table({key, {seq1, value}}, seq2), do: {key, {seq1 + seq2, value}}
 
   defp maybe_flush(state, rotated_wal \\ nil) do
     cond do
