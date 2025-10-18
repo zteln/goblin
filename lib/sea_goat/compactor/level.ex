@@ -7,6 +7,8 @@ defmodule SeaGoat.Compactor.Level do
     entries: %{}
   ]
 
+  @type t :: %__MODULE__{}
+
   def get_total_size(level) do
     Enum.reduce(level.entries, 0, fn {_id, %{size: size}}, acc -> acc + size end)
   end
