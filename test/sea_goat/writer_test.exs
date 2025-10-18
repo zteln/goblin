@@ -60,6 +60,24 @@ defmodule SeaGoat.WriterTest do
     assert {:ok, {:value, 2, nil}} == Writer.get(writer, :k3)
   end
 
+  test "recovers flushes after restart", c do
+    ignore_flush()
+
+    for n <- 1..200 do
+      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    assert %{flushing: {_, mem_table}, flush_queue: flush_queue} = :sys.get_state(c.writer)
+    assert 1 == Writer.FlushQueue.size(flush_queue)
+
+    WAL.sync(c.wal)
+    stop_supervised!(c.db_id)
+    %{writer: writer} = start_db(c.tmp_dir, @db_opts)
+
+    assert %{flushing: {_, ^mem_table}, flush_queue: flush_queue} = :sys.get_state(writer)
+    assert 1 == Writer.FlushQueue.size(flush_queue)
+  end
+
   test "overflowing the MemTable causes a flush and writes data to disk", c do
     assert %{seq: 0, flushing: nil} = :sys.get_state(c.writer)
     no_of_files = length(File.ls!(c.tmp_dir))
