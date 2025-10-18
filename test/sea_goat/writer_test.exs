@@ -1,16 +1,18 @@
 defmodule SeaGoat.WriterTest do
   use ExUnit.Case, async: true
   use TestHelper
+  use Patch
   alias SeaGoat.Writer
   alias SeaGoat.WAL
 
   @moduletag :tmp_dir
   @db_opts [
     id: :writer_test,
+    name: :writer_test,
     key_limit: 100,
+    sync_interval: 50,
     wal_name: :writer_test_wal_log,
-    manifest_name: :writer_test_log_name,
-    flusher: &__MODULE__.flush/2
+    manifest_name: :writer_test_log_name
   ]
 
   setup_db(@db_opts)
@@ -58,18 +60,24 @@ defmodule SeaGoat.WriterTest do
     assert {:ok, {:value, 2, nil}} == Writer.get(writer, :k3)
   end
 
-  test "overflowing the MemTable causes a flush", c do
+  test "overflowing the MemTable causes a flush and writes data to disk", c do
     assert %{seq: 0, flushing: nil} = :sys.get_state(c.writer)
+    no_of_files = length(File.ls!(c.tmp_dir))
 
     for n <- 1..100 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{seq: 100, flushing: {ref, _mem_table}} = :sys.get_state(c.writer)
-    assert is_reference(ref)
+    assert_eventually do
+      assert %{seq: 100, flushing: nil} = :sys.get_state(c.writer)
+    end
+
+    assert no_of_files + 1 == length(File.ls!(c.tmp_dir))
   end
 
-  test "able to read from flushing MemTables", c do
+  test "able to read data inbetween flush and flushed", c do
+    ignore_flush()
+
     for n <- 1..100 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
@@ -82,62 +90,35 @@ defmodule SeaGoat.WriterTest do
     end
   end
 
-  test "overflowing the MemTable while already flushing queues the MemTable", c do
-    for n <- 1..100 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
-    end
+  test "able to read data from flushing MemTable and queued flushes", c do
+    ignore_flush()
 
-    assert %{flushing: {_ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
-    assert :queue.len(flush_queue) == 0
-
-    for n <- 101..200 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
-    end
-
-    assert %{flushing: {_ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
-    assert :queue.len(flush_queue) == 1
-
-    for n <- 201..400 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
-    end
-
-    assert %{flushing: {_ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
-    assert :queue.len(flush_queue) == 3
-  end
-
-  test "able to read from both flushing and queued flushes", c do
     for n <- 1..300 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{mem_table: mem_table} = :sys.get_state(c.writer)
-    assert %{} == mem_table
+    assert %{flushing: {_, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
+    assert 2 == Writer.FlushQueue.size(flush_queue)
 
     for n <- 1..300 do
       assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
     end
   end
 
-  test "flushes from the queue once the current flush completes", c do
-    for n <- 1..300 do
+  test "flushes are queued and writes to disk", c do
+    no_of_files = length(File.ls!(c.tmp_dir))
+
+    for n <- 1..400 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{flushing: {ref, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
-    assert :queue.len(flush_queue) == 2
-
-    {{:value, {queued_mem_table, _}}, _} = :queue.out(flush_queue)
-    send(c.writer, {ref, :flushed})
-
     assert_eventually do
-      assert %{flushing: {_ref, ^queued_mem_table}, flush_queue: flush_queue} =
-               :sys.get_state(c.writer)
-
-      assert :queue.len(flush_queue) == 1
+      assert %{flushing: nil} = :sys.get_state(c.writer)
+      assert no_of_files + 4 == length(File.ls!(c.tmp_dir))
     end
   end
 
-  test "reads from latest queued flush", c do
+  test "reads from latest write", c do
     for i <- 1..3 do
       for n <- 1..100 do
         assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
@@ -314,5 +295,36 @@ defmodule SeaGoat.WriterTest do
     end
   end
 
-  def flush(_mem_table, _rotated_wal), do: make_ref()
+  test "all writes are appended to the WAL", c do
+    assert :ok == Writer.put(c.writer, :k, :v)
+
+    assert_eventually do
+      assert {:ok, [{nil, [{0, :put, :k, :v}]}]} == WAL.recover(c.wal)
+    end
+
+    assert :ok == Writer.remove(c.writer, :k)
+
+    assert_eventually do
+      assert {:ok, [{nil, [{0, :put, :k, :v}, {1, :remove, :k}]}]} == WAL.recover(c.wal)
+    end
+
+    assert :ok ==
+             Writer.transaction(c.writer, fn tx ->
+               tx = Writer.Transaction.put(tx, :l, :w)
+               tx = Writer.Transaction.remove(tx, :l)
+               {:commit, tx, :ok}
+             end)
+
+    assert_eventually do
+      assert {:ok,
+              [{nil, [{0, :put, :k, :v}, {1, :remove, :k}, {2, :put, :l, :w}, {3, :remove, :l}]}]} ==
+               WAL.recover(c.wal)
+    end
+  end
+
+  defp ignore_flush do
+    patch(Writer.Flusher, :flush, fn
+      _mem_table, _rotated_wal, _pids -> :ignore
+    end)
+  end
 end

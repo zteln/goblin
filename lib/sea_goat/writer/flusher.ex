@@ -1,4 +1,5 @@
 defmodule SeaGoat.Writer.Flusher do
+  @moduledoc false
   alias SeaGoat.WAL
   alias SeaGoat.Manifest
   alias SeaGoat.SSTables

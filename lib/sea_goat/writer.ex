@@ -1,4 +1,5 @@
 defmodule SeaGoat.Writer do
+  @moduledoc false
   use GenServer
   alias SeaGoat.Writer.MemTable
   alias SeaGoat.Writer.Transaction
@@ -290,7 +291,8 @@ defmodule SeaGoat.Writer do
   end
 
   defp recover_state({rotated_wal_file, writes}, state) do
-    Enum.reduce(writes, state, &apply_write/2)
+    writes
+    |> Enum.reduce(state, &apply_write/2)
     |> maybe_flush(rotated_wal_file)
   end
 
