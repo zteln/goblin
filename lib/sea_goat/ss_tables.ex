@@ -1,75 +1,13 @@
 defmodule SeaGoat.SSTables do
-  @moduledoc """
-  Provides operations for managing SSTable files on disk.
-
-  SSTables (Sorted String Tables) are immutable, on-disk data structures used for 
-  efficient storage and retrieval of key-value pairs. This module handles the 
-  complete lifecycle of SSTable files including creation, reading, file management,
-  and key lookups.
-  """
-  # alias SeaGoat.BloomFilter
+  @moduledoc false
   alias SeaGoat.SSTables.Util
   alias SeaGoat.SSTables.Disk
-  # alias SeaGoat.SSTables.Iterator
 
   def delete(file), do: Disk.rm(file)
 
-  @doc """
-  Renames an SSTable file from one file to another.
-
-  Atomically moves an SSTable file from the source file to the destination file.
-  Commonly used during compaction operations to replace old SSTable files.
-
-  ## Parameters
-
-  - `from` - Source file
-  - `to` - Destination file
-
-  ## Returns
-
-  `:ok` on success.
-  """
   @spec switch(SeaGoat.db_file(), SeaGoat.db_file()) :: :ok
   def switch(from, to), do: Disk.rename(from, to)
 
-  # @doc """
-  # Writes key-value data to an SSTable file on disk.
-  #
-  # Creates a new SSTable file containing the data provided through the iterator. 
-  # The iterator determines how data is sourced and ordered:
-  #
-  # - `MemTableIterator` - sorts in-memory data before writing
-  # - `SSTablesIterator` - merges multiple existing SSTables in sorted order
-  #
-  # Returns the bloom filter, file, and level upon successful completion.
-  #
-  # ## Parameters
-  #
-  # - `iterator` - Iterator struct that implements the Iterator protocol
-  # - `data` - Data source passed to the iterator (mem_table, files, etc.)
-  # - `file` - File where the SSTable will be created
-  # - `level` - SSTable level for LSM tree organization
-  #
-  # ## Returns
-  #
-  # `{:ok, bloom_filter, file, level}` on success, or `{:error, reason}` on failure.
-  # """
-  # @spec write(Iterator.t(), SeaGoat.db_file(), non_neg_integer()) ::
-  #         {:ok, BloomFilter.t(), SeaGoat.db_file(), non_neg_integer()}
-  # def write(iterator, file, level) do
-  #   with {:ok, disk} <- Disk.open(file, write?: true),
-  #        {:ok, disk, bloom_filter, smallest_seq, written_size, range} <-
-  #          Util.write_ss_table(disk, level, iterator),
-  #        :ok <- Disk.sync(disk),
-  #        :ok <- Disk.close(disk) do
-  #     {:ok, bloom_filter, smallest_seq, written_size, range}
-  #   end
-  #
-  #   # Util.write_to_file(file, level, iterator)
-  #   # with {:ok, bloom_filter} <- Util.write_to_file(file, level, iterator) do
-  #   #   {:ok, bloom_filter}
-  #   # end
-  # end
   def write(file, level_key, data) do
     disk = Disk.open!(file, write?: true)
 
