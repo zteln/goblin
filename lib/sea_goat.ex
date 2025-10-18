@@ -82,7 +82,6 @@ defmodule SeaGoat do
       {SeaGoat.RWLocks, Keyword.merge(args, name: rw_locks_name)},
       {SeaGoat.Manifest, Keyword.merge(args, name: manifest_name, db_dir: db_dir)},
       {SeaGoat.WAL, Keyword.merge(args, name: wal_name, db_dir: db_dir)},
-      {SeaGoat.Recovery, Keyword.merge(args, dir: db_dir, manifest: manifest_name)},
       {SeaGoat.Compactor,
        Keyword.merge(args,
          name: compactor_name,

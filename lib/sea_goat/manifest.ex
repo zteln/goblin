@@ -1,17 +1,18 @@
 defmodule SeaGoat.Manifest do
-  @moduledoc """
-  The manifest is the source-of-truth of DB changes.
-  This module tracks the files added and removed from the database repo.
-  Other modules get the database files from the manifest on start.
-
-  The manifest is rotated when it becomes too large (1024 * 1024 bytes).
-  On rotation, it appends the accumulated version (a snapshot) to the log file.
-  Once this is done, then the previous log file is deleted and it starts logging to the new file.
-
-  By default, it logs to a file called `manifest.seagoat`.
-
-  All edits that are appended are synced immediately.
-  """
+  @moduledoc false
+  # @moduledoc """
+  # The manifest is the source-of-truth of DB changes.
+  # This module tracks the files added and removed from the database repo.
+  # Other modules get the database files from the manifest on start.
+  #
+  # The manifest is rotated when it becomes too large (1024 * 1024 bytes).
+  # On rotation, it appends the accumulated version (a snapshot) to the log file.
+  # Once this is done, then the previous log file is deleted and it starts logging to the new file.
+  #
+  # By default, it logs to a file called `manifest.seagoat`.
+  #
+  # All edits that are appended are synced immediately.
+  # """
   use GenServer
 
   @manifest_name :sea_goat_manifest
@@ -48,16 +49,17 @@ defmodule SeaGoat.Manifest do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @doc "Logs a file added in the DB repo to the manifest."
-  @spec log_file_added(manifest(), SeaGoat.db_file()) :: :ok | {:error, term()}
-  def log_file_added(manifest, file) do
-    GenServer.call(manifest, {:log_edit, {:file_added, file}})
+  @spec log_rotation(manifest(), SeaGoat.WAL.rotated_file()) :: :ok | {:error, term()}
+  def log_rotation(manifest, wal) do
+    GenServer.call(manifest, {:log_edit, {:wal_added, wal}})
   end
 
-  @doc "Logs a file removed in the DB repo to the manifest."
-  @spec log_file_removed(manifest(), SeaGoat.db_file()) :: :ok | {:error, term()}
-  def log_file_removed(manifest, file) do
-    GenServer.call(manifest, {:log_edit, {:file_removed, file}})
+  @spec log_flush(manifest(), SeaGoat.db_file(), SeaGoat.WAL.rotated_file()) ::
+          :ok | {:error, term()}
+  def log_flush(manifest, file, wal) do
+    added_edit = {:file_added, file}
+    removed_edit = {:wal_removed, wal}
+    GenServer.call(manifest, {:log_edit, [added_edit, removed_edit]})
   end
 
   @doc "Logs a new sequence number to the manifest."
@@ -84,20 +86,28 @@ defmodule SeaGoat.Manifest do
   @impl GenServer
   def init(args) do
     name = args[:manifest_name] || @manifest_name
-    file = Path.join(args[:db_dir], args[:manifest_file] || @manifest_file)
+    file = args[:manifest_file] || @manifest_file
+    db_dir = args[:db_dir]
+    file = Path.join(db_dir, file)
     max_size = args[:manifest_max_size] || @manifest_max_size
 
     if File.exists?(rotated_file(file)) do
       recover_rotated_manifest(file)
     end
 
-    case open_manifest(name, file) do
-      {:ok, log} ->
-        {:ok, %__MODULE__{name: name, file: file, log: log, max_size: max_size},
-         {:continue, :recover_version}}
-
-      error ->
-        {:stop, error}
+    with {:ok, log} <- open_manifest(name, file),
+         {:ok, version} <- fetch_version(log),
+         :ok <- clean_up(db_dir, version) do
+      {:ok,
+       %__MODULE__{
+         name: name,
+         file: file,
+         log: log,
+         max_size: max_size,
+         version: version
+       }}
+    else
+      error -> {:stop, error}
     end
   end
 
@@ -143,14 +153,29 @@ defmodule SeaGoat.Manifest do
 
   def handle_continue(:rotate, state), do: {:noreply, state}
 
-  def handle_continue(:recover_version, state) do
-    case fetch_version(state.log) do
-      {:ok, version} ->
-        {:noreply, %{state | version: version}}
+  defp clean_up(dir, version) do
+    rm_tmp_files!(dir)
+    rm_orphaned_files!(dir, version)
+  end
 
-      error ->
-        {:stop, error, state}
-    end
+  defp rm_tmp_files!(dir) do
+    dir
+    |> File.ls!()
+    |> Enum.map(&Path.join(dir, &1))
+    |> Enum.filter(&String.ends_with?(&1, ".seagoat.tmp"))
+    |> Enum.each(&File.rm!/1)
+  end
+
+  defp rm_orphaned_files!(dir, version) do
+    %{files: files, wals: wals} = version
+
+    dir
+    |> File.ls!()
+    |> Enum.reject(&(&1 == "wal.seagoat" or &1 == "manifest.seagoat"))
+    |> Enum.map(&Path.join(dir, &1))
+    |> Enum.reject(&MapSet.member?(files, &1))
+    |> Enum.reject(&MapSet.member?(wals, &1))
+    |> Enum.each(&File.rm!/1)
   end
 
   defp rotate(state) do
@@ -236,10 +261,20 @@ defmodule SeaGoat.Manifest do
     %{version | files: files}
   end
 
+  defp apply_edit(version, {:wal_added, wal}) do
+    wals = MapSet.put(version.wals, wal)
+    %{version | wals: wals}
+  end
+
+  defp apply_edit(version, {:wal_removed, wal}) do
+    wals = MapSet.delete(version.wals, wal)
+    %{version | wals: wals}
+  end
+
   defp apply_edit(version, {:seq, seq}) do
     %{version | seq: seq}
   end
 
-  defp new_version, do: %{files: MapSet.new(), count: 0, seq: 0}
+  defp new_version, do: %{files: MapSet.new(), wals: MapSet.new(), count: 0, seq: 0}
   defp rotated_file(file), do: file <> @rotated_manifest_suffix
 end
