@@ -3,8 +3,8 @@ defmodule SeaGoat.Writer do
   use GenServer
   alias SeaGoat.Writer.MemTable
   alias SeaGoat.Writer.Transaction
-  alias SeaGoat.Writer.Flusher
   alias SeaGoat.Writer.FlushQueue
+  alias SeaGoat.Actions
   alias SeaGoat.Reader
   alias SeaGoat.WAL
   alias SeaGoat.Manifest
@@ -200,7 +200,7 @@ defmodule SeaGoat.Writer do
   end
 
   @impl GenServer
-  def handle_info({_ref, :flushed}, state) do
+  def handle_info({_ref, {:ok, :flushed}}, state) do
     {:noreply, %{state | flushing: nil}, {:continue, :flush}}
   end
 
@@ -268,7 +268,8 @@ defmodule SeaGoat.Writer do
   defp flush(mem_table, rotated_wal, pids) do
     %{ref: ref} =
       Task.async(fn ->
-        Flusher.flush(mem_table, rotated_wal, pids)
+        data = mem_table |> MemTable.sort() |> MemTable.flatten()
+        Actions.flush(data, rotated_wal, pids)
       end)
 
     ref

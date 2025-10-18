@@ -83,24 +83,6 @@ defmodule SeaGoat.WriterTest do
     assert 1 == Writer.FlushQueue.size(flush_queue)
   end
 
-  # test "writer exits if WAL cannot rotate before flush", c do
-  #   patch(WAL, :rotate, fn _ -> {:error, :unable_to_rotate} end)
-  #
-  #   try do
-  #     for n <- 1..10 do
-  #       assert :ok == Writer.put(c.writer, n, "v-#{n}")
-  #     end
-  #   rescue
-  #     e -> dbg(e)
-  #   catch
-  #     e1, e2 -> dbg({e1, e2})
-  #   end
-  #
-  #   receive do
-  #     msg -> dbg(msg)
-  #   end
-  # end
-
   test "overflowing the MemTable causes a flush and writes data to disk", c do
     assert %{seq: 0, flushing: nil} = :sys.get_state(c.writer)
     no_of_files = length(File.ls!(c.tmp_dir))

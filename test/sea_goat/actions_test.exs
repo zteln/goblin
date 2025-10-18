@@ -1,8 +1,7 @@
-defmodule SeaGoat.Writer.FlusherTest do
+defmodule SeaGoat.ActionsTest do
   use ExUnit.Case, async: true
   use TestHelper
-  alias SeaGoat.Writer.Flusher
-  alias SeaGoat.Writer.MemTable
+  alias SeaGoat.Actions
   alias SeaGoat.SSTables
 
   @moduletag :tmp_dir
@@ -18,13 +17,9 @@ defmodule SeaGoat.Writer.FlusherTest do
   test "flush/3 writes an SST file on disk", c do
     rotated_wal = Path.join(c.tmp_dir, "rot_wal")
     File.touch(rotated_wal)
+    data = [{0, :k1, :v1}, {1, :k2, :v2}]
 
-    mem_table =
-      MemTable.new()
-      |> MemTable.upsert(0, :k1, :v1)
-      |> MemTable.upsert(1, :k2, :v2)
-
-    assert :flushed == Flusher.flush(mem_table, rotated_wal, {c.store, c.wal, c.manifest})
+    assert {:ok, :flushed} == Actions.flush(data, rotated_wal, {c.store, c.wal, c.manifest})
 
     refute File.exists?(rotated_wal)
 

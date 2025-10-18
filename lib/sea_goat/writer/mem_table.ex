@@ -28,6 +28,9 @@ defmodule SeaGoat.Writer.MemTable do
     end
   end
 
+  def sort(mem_table), do: Enum.sort(mem_table)
+  def flatten(mem_table), do: Enum.map(mem_table, fn {key, {seq, value}} -> {seq, key, value} end)
+
   @spec advance_seq(t(), SeaGoat.db_sequence()) :: t()
   def advance_seq(mem_table, seq) do
     Enum.into(mem_table, %{}, fn {k, {s, v}} -> {k, {s + seq, v}} end)
