@@ -398,9 +398,5 @@ defmodule SeaGoat.WriterTest do
     assert :not_found == Writer.get(writer, :k)
   end
 
-  defp ignore_flush do
-    patch(Writer.Flusher, :flush, fn
-      _mem_table, _rotated_wal, _pids -> :ignore
-    end)
-  end
+  defp ignore_flush, do: patch(SeaGoat.Actions, :flush, :ignore)
 end
