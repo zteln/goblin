@@ -5,7 +5,7 @@ defmodule SeaGoat.Writer.MemTable do
   @spec new() :: t()
   def new, do: %{}
 
-  # @spec upsert(t(), SeaGoat.db_key(), SeaGoat.db_value()) :: t()
+  @spec upsert(t(), SeaGoat.db_sequence(), SeaGoat.db_key(), SeaGoat.db_value()) :: t()
   def upsert(mem_table, _seq, _key, :tombstone) do
     mem_table
   end
@@ -14,7 +14,7 @@ defmodule SeaGoat.Writer.MemTable do
     Map.put(mem_table, key, {seq, value})
   end
 
-  # @spec delete(t(), SeaGoat.db_key()) :: t()
+  @spec delete(t(), SeaGoat.db_sequence(), SeaGoat.db_key()) :: t()
   def delete(mem_table, seq, key) do
     Map.put(mem_table, key, {seq, :tombstone})
   end
@@ -28,7 +28,10 @@ defmodule SeaGoat.Writer.MemTable do
     end
   end
 
+  @spec sort(t()) :: [{SeaGoat.db_key(), {SeaGoat.db_sequence(), SeaGoat.db_value()}}]
   def sort(mem_table), do: Enum.sort(mem_table)
+
+  @spec flatten(t()) :: [{SeaGoat.db_sequence(), SeaGoat.db_key(), SeaGoat.db_value()}]
   def flatten(mem_table), do: Enum.map(mem_table, fn {key, {seq, value}} -> {seq, key, value} end)
 
   @spec advance_seq(t(), SeaGoat.db_sequence()) :: t()
