@@ -190,7 +190,13 @@ defmodule SeaGoat.Writer do
   end
 
   def handle_continue(:flush, state) do
-    {:noreply, maybe_flush(state)}
+    case maybe_flush(state) do
+      {:ok, state} ->
+        {:noreply, state}
+
+      {:error, _reason} = error ->
+        {:stop, error, state}
+    end
   end
 
   @impl GenServer
@@ -216,7 +222,7 @@ defmodule SeaGoat.Writer do
       queue_overflow?(state) -> queue_overflow(state, rotated_wal)
       flush_from_queue?(state) -> flush_from_queue(state)
       start_flush?(state) -> start_flush(state, rotated_wal)
-      true -> state
+      true -> {:ok, state}
     end
   end
 
@@ -225,9 +231,11 @@ defmodule SeaGoat.Writer do
   end
 
   defp queue_overflow(state, rotated_wal) do
-    rotated_wal = maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq)
-    flush_queue = FlushQueue.push(state.flush_queue, state.mem_table, rotated_wal)
-    %{state | mem_table: MemTable.new(), flush_queue: flush_queue}
+    with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
+      flush_queue = FlushQueue.push(state.flush_queue, state.mem_table, rotated_wal)
+      state = %{state | mem_table: MemTable.new(), flush_queue: flush_queue}
+      {:ok, state}
+    end
   end
 
   defp start_flush?(state) do
@@ -236,10 +244,13 @@ defmodule SeaGoat.Writer do
   end
 
   defp start_flush(state, rotated_wal) do
-    rotated_wal = maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq)
-    ref = flush(state.mem_table, rotated_wal, {state.store, state.wal, state.manifest})
-    flushing = {ref, state.mem_table}
-    %{state | mem_table: MemTable.new(), flushing: flushing}
+    with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
+      pids = {state.store, state.wal, state.manifest}
+      ref = flush(state.mem_table, rotated_wal, pids)
+      flushing = {ref, state.mem_table}
+      state = %{state | mem_table: MemTable.new(), flushing: flushing}
+      {:ok, state}
+    end
   end
 
   defp flush_from_queue?(state) do
@@ -248,9 +259,11 @@ defmodule SeaGoat.Writer do
 
   defp flush_from_queue(state) do
     {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
-    ref = flush(mem_table, rotated_wal, {state.store, state.wal, state.manifest})
+    pids = {state.store, state.wal, state.manifest}
+    ref = flush(mem_table, rotated_wal, pids)
     flushing = {ref, mem_table}
-    %{state | flushing: flushing, flush_queue: flush_queue}
+    state = %{state | flushing: flushing, flush_queue: flush_queue}
+    {:ok, state}
   end
 
   defp flush(mem_table, rotated_wal, pids) do
@@ -263,12 +276,14 @@ defmodule SeaGoat.Writer do
   end
 
   defp maybe_rotate(nil, wal, manifest, seq) do
-    {:ok, rotated_wal} = WAL.rotate(wal)
-    Manifest.log_sequence(manifest, seq)
-    rotated_wal
+    with {:ok, rotated_wal} <- WAL.rotate(wal),
+         :ok <- Manifest.log_rotation(manifest, rotated_wal),
+         :ok <- Manifest.log_sequence(manifest, seq) do
+      {:ok, rotated_wal}
+    end
   end
 
-  defp maybe_rotate(rotated_wal, _wal, _manifest, _seq), do: rotated_wal
+  defp maybe_rotate(rotated_wal, _wal, _manifest, _seq), do: {:ok, rotated_wal}
 
   defp search_for_key([], _key), do: :not_found
 
@@ -283,17 +298,21 @@ defmodule SeaGoat.Writer do
   end
 
   defp recover_writes(state) do
-    with {:ok, writes} <- WAL.recover(state.wal) do
-      %{seq: seq} = Manifest.get_version(state.manifest, [:seq])
-      state = Enum.reduce(writes, %{state | seq: seq}, &recover_state/2)
-      {:ok, state}
+    %{seq: seq} = Manifest.get_version(state.manifest, [:seq])
+
+    with {:ok, logs} <- WAL.recover(state.wal) do
+      recover_state(logs, %{state | seq: seq})
     end
   end
 
-  defp recover_state({rotated_wal_file, writes}, state) do
-    writes
-    |> Enum.reduce(state, &apply_write/2)
-    |> maybe_flush(rotated_wal_file)
+  defp recover_state([], state), do: {:ok, state}
+
+  defp recover_state([{rotated_wal_file, writes} | logs], state) do
+    state = Enum.reduce(writes, state, &apply_write/2)
+
+    with {:ok, state} <- maybe_flush(state, rotated_wal_file) do
+      recover_state(logs, state)
+    end
   end
 
   defp apply_write({seq, :put, k, v}, state) do
