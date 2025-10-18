@@ -9,13 +9,18 @@ defmodule SeaGoat.WriterTest do
   @db_opts [
     id: :writer_test,
     name: :writer_test,
-    key_limit: 100,
+    key_limit: 10,
     sync_interval: 50,
     wal_name: :writer_test_wal_log,
     manifest_name: :writer_test_log_name
   ]
 
   setup_db(@db_opts)
+
+  setup c do
+    {:registered_name, writer_name} = Process.info(c.writer, :registered_name)
+    %{writer_name: writer_name}
+  end
 
   test "writer starts with empty write state", c do
     assert %{seq: 0, mem_table: mem_table} = :sys.get_state(c.writer)
@@ -63,7 +68,7 @@ defmodule SeaGoat.WriterTest do
   test "recovers flushes after restart", c do
     ignore_flush()
 
-    for n <- 1..200 do
+    for n <- 1..20 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
@@ -78,16 +83,34 @@ defmodule SeaGoat.WriterTest do
     assert 1 == Writer.FlushQueue.size(flush_queue)
   end
 
+  # test "writer exits if WAL cannot rotate before flush", c do
+  #   patch(WAL, :rotate, fn _ -> {:error, :unable_to_rotate} end)
+  #
+  #   try do
+  #     for n <- 1..10 do
+  #       assert :ok == Writer.put(c.writer, n, "v-#{n}")
+  #     end
+  #   rescue
+  #     e -> dbg(e)
+  #   catch
+  #     e1, e2 -> dbg({e1, e2})
+  #   end
+  #
+  #   receive do
+  #     msg -> dbg(msg)
+  #   end
+  # end
+
   test "overflowing the MemTable causes a flush and writes data to disk", c do
     assert %{seq: 0, flushing: nil} = :sys.get_state(c.writer)
     no_of_files = length(File.ls!(c.tmp_dir))
 
-    for n <- 1..100 do
+    for n <- 1..10 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
     assert_eventually do
-      assert %{seq: 100, flushing: nil} = :sys.get_state(c.writer)
+      assert %{seq: 10, flushing: nil} = :sys.get_state(c.writer)
     end
 
     assert no_of_files + 1 == length(File.ls!(c.tmp_dir))
@@ -96,14 +119,14 @@ defmodule SeaGoat.WriterTest do
   test "able to read data inbetween flush and flushed", c do
     ignore_flush()
 
-    for n <- 1..100 do
+    for n <- 1..10 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
     assert %{mem_table: mem_table, flushing: {_ref, _}} = :sys.get_state(c.writer)
     assert %{} == mem_table
 
-    for n <- 1..100 do
+    for n <- 1..10 do
       assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
     end
   end
@@ -111,14 +134,14 @@ defmodule SeaGoat.WriterTest do
   test "able to read data from flushing MemTable and queued flushes", c do
     ignore_flush()
 
-    for n <- 1..300 do
+    for n <- 1..30 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
     assert %{flushing: {_, _}, flush_queue: flush_queue} = :sys.get_state(c.writer)
     assert 2 == Writer.FlushQueue.size(flush_queue)
 
-    for n <- 1..300 do
+    for n <- 1..30 do
       assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
     end
   end
@@ -126,7 +149,7 @@ defmodule SeaGoat.WriterTest do
   test "flushes are queued and writes to disk", c do
     no_of_files = length(File.ls!(c.tmp_dir))
 
-    for n <- 1..400 do
+    for n <- 1..40 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
@@ -137,14 +160,16 @@ defmodule SeaGoat.WriterTest do
   end
 
   test "reads from latest write", c do
+    ignore_flush()
+
     for i <- 1..3 do
-      for n <- 1..100 do
+      for n <- 1..10 do
         assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
       end
     end
 
-    for n <- 1..100 do
-      assert {:ok, {:value, n + 200 - 1, "v3-#{n}"}} == Writer.get(c.writer, n)
+    for n <- 1..10 do
+      assert {:ok, {:value, n + 20 - 1, "v3-#{n}"}} == Writer.get(c.writer, n)
     end
   end
 
@@ -338,6 +363,57 @@ defmodule SeaGoat.WriterTest do
               [{nil, [{0, :put, :k, :v}, {1, :remove, :k}, {2, :put, :l, :w}, {3, :remove, :l}]}]} ==
                WAL.recover(c.wal)
     end
+  end
+
+  test "cannot be in two transactions simultaneously", c do
+    assert :ok ==
+             Writer.transaction(c.writer, fn tx ->
+               assert {:error, :already_in_transaction} ==
+                        Writer.transaction(c.writer, fn tx ->
+                          {:commit, tx, :ok}
+                        end)
+
+               {:commit, tx, :ok}
+             end)
+  end
+
+  test "transactions are not persisted on restarts", c do
+    parent = self()
+    ref1 = make_ref()
+    ref2 = make_ref()
+    ref3 = make_ref()
+
+    pid =
+      spawn(fn ->
+        assert {:error, :no_tx_found} ==
+                 Writer.transaction(c.writer_name, fn tx ->
+                   tx = Writer.Transaction.put(tx, :k, :v)
+                   send(parent, {:ok, ref1})
+
+                   receive do
+                     {:ok, ^ref2} -> :ok
+                   end
+
+                   {:commit, tx, :ok}
+                 end)
+
+        send(parent, {:ok, ref3})
+      end)
+
+    receive do
+      {:ok, ^ref1} -> :ok
+    end
+
+    stop_supervised!(c.db_id)
+    %{writer: writer} = start_db(c.tmp_dir, @db_opts)
+
+    send(pid, {:ok, ref2})
+
+    receive do
+      {:ok, ^ref3} -> :ok
+    end
+
+    assert :not_found == Writer.get(writer, :k)
   end
 
   defp ignore_flush do
