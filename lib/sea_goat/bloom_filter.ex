@@ -1,7 +1,5 @@
 defmodule SeaGoat.BloomFilter do
-  @moduledoc """
-  Generate Bloom filters.
-  """
+  @moduledoc false
   @default_false_positive_probability 0.05
 
   @derive {Inspect, except: [:array]}
@@ -13,21 +11,12 @@ defmodule SeaGoat.BloomFilter do
 
   @type t :: %__MODULE__{}
 
-  @doc """
-  Returns a new BloomFilter struct.
-  """
   @spec new() :: t()
   def new, do: %__MODULE__{}
 
-  @doc """
-  Puts a key into the Bloom filters set, to be used when generating the Bloom Filter.
-  """
   @spec put(t(), term()) :: t()
   def put(bf, key), do: %{bf | set: MapSet.put(bf.set, key)}
 
-  @doc """
-  Generates the Bloom filter, i.e. from the set of keys generates hashes and populates the bit array.
-  """
   @spec generate(t()) :: t()
   def generate(bf) do
     size = MapSet.size(bf.set)
@@ -38,9 +27,6 @@ defmodule SeaGoat.BloomFilter do
     end
   end
 
-  @doc """
-  Checks whether `key` is a member of the BloomFilter structure or not.
-  """
   @spec is_member(t(), term()) :: boolean()
   def is_member(bloom_filter, key) do
     Enum.all?(bloom_filter.hashes, fn hash ->

@@ -69,6 +69,7 @@ defmodule SeaGoat.SSTables do
         :ok
 
       e ->
+        Disk.close(disk)
         e
     end
   end
@@ -78,46 +79,6 @@ defmodule SeaGoat.SSTables do
     {:next, disk}
   end
 
-  # def start_iterate(file) do
-  #   disk = Disk.open!(file)
-  #
-  #   with :ok <- Util.valid_ss_table(disk) do
-  #     disk = Disk.start_of_file(disk)
-  #     {:ok, {:next, disk}}
-  #   end
-  # end
-  #
-  # def iterate({:next, disk}) do
-  #   case Util.read_next_key(disk) do
-  #     {:ok, data, disk} ->
-  #       {:ok, data, {:next, disk}}
-  #
-  #     {:error, :eod} ->
-  #       Disk.close(disk)
-  #       :ok
-  #
-  #     e ->
-  #       e
-  #   end
-  # end
-  #
-  # def end_iterate({:next, disk}), do: Disk.close(disk)
-
-  @doc """
-  Reads and returns the bloom filter from an SSTable file.
-
-  Extracts the bloom filter and level information from the SSTable's metadata
-  section. The bloom filter is used for efficient key existence checks before
-  performing expensive disk searches.
-
-  ## Parameters
-
-  - `file` - SSTable file name
-
-  ## Returns
-
-  `{:ok, bloom_filter, level}` on success, or `{:error, reason}` on failure.
-  """
   @spec fetch_ss_table_info(SeaGoat.db_file()) ::
           {:ok, {SeaGoat.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
   def fetch_ss_table_info(file) do

@@ -31,31 +31,26 @@ defmodule SeaGoat.WAL do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @doc "Syncs the WAL file, appending anything in the buffer first."
   @spec sync(wal()) :: :ok | {:error, term()}
   def sync(wal) do
     GenServer.call(wal, :sync_now)
   end
 
-  @doc "Append a list of writes to the WAL buffer."
   @spec append(wal(), [write()]) :: :ok | {:error, term()}
   def append(wal, buffer) do
     GenServer.call(wal, {:append, buffer})
   end
 
-  @doc "Rotates the WAL file."
   @spec rotate(wal()) :: {:ok, rotated_file()} | {:error, term()}
   def rotate(wal) do
     GenServer.call(wal, :rotate)
   end
 
-  @doc "Removes a rotated file."
   @spec clean(wal(), rotated_file()) :: :ok | {:error, term()}
   def clean(wal, rotated_file) do
     GenServer.call(wal, {:clean, rotated_file})
   end
 
-  @doc "Returns the logs from the available WAL files, current and previously rotated."
   @spec recover(wal()) :: {:ok, [{rotated_file(), [write()]}]} | {:error, term()}
   def recover(wal) do
     GenServer.call(wal, :recover)

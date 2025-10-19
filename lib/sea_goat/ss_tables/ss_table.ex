@@ -90,28 +90,18 @@ defmodule SeaGoat.SSTables.SSTable do
 
   @block_header_size byte_size(<<@block_id::binary, 0::integer-16>>)
 
-  @doc """
-  Returns true if the argument matches the magic constant for SSTables, false otherwise.
-  """
   @spec is_ss_table(binary()) :: boolean()
   def is_ss_table(<<@magic>>), do: true
   def is_ss_table(_), do: false
 
-  @doc """
-  Decodes the block header and returns `{:ok, span}`, where `span` is the multiple of 512-bytes the block spans over.
-  `{:error, :eod}` is returned if the separator ID is matched on instead.
-  `{:error, :not_block_start}` is returned if the block header does not start with the block ID.
-  """
   @spec block_span(binary()) :: {:ok, non_neg_integer()} | {:error, :eod | :not_block_start}
   def block_span(<<@block_id, span::integer-16>>), do: {:ok, span}
   def block_span(<<@separator, _rest::binary>>), do: {:error, :eod}
   def block_span(_), do: {:error, :not_block_start}
 
-  @doc "Returns how many 512-bytes blocks are needed for `size`."
   @spec span(non_neg_integer()) :: non_neg_integer()
   def span(size), do: div(size + @block_size - 1, @block_size)
 
-  @doc "Returns the sizes of a block, magic number, metadata table, and block header."
   @spec size(:block | :magic | :metadata | :block_header) :: non_neg_integer()
   def size(:block), do: @block_size
   def size(:magic), do: @magic_size
@@ -119,7 +109,6 @@ defmodule SeaGoat.SSTables.SSTable do
   def size(:metadata), do: @metadata_size
   def size(:block_header), do: @block_header_size
 
-  @doc "Encodes `key` and `value` into a block which has a byte size of `n * 512`, `n` a positive integer. It prepends a block header."
   # @spec encode_block(term(), term()) :: binary()
   def encode_block(seq, key, value) do
     encoded = encode({seq, key, value})
@@ -129,10 +118,6 @@ defmodule SeaGoat.SSTables.SSTable do
     <<@block_id::binary, span::integer-16, encoded::binary, 0::size(padding)-unit(8)>>
   end
 
-  @doc """
-  Encodes the footer part of the SSTable file.
-  The footer stores the Bloom filter, key range, metadata, and finally the magic number.
-  """
   # @spec encode_footer(
   #         level(),
   #         BloomFilter.t(),
@@ -201,10 +186,6 @@ defmodule SeaGoat.SSTables.SSTable do
 
   def decode_block(_), do: {:error, :invalid_block}
 
-  # @doc """
-  # Decodes the metadata part of the footer.
-  # If successful, returns `{:ok, level, bloom_filter_size, bloom_filter_position, range_size, range_position, no_of_blocks, offset}`, otherwise `{:error, :invalid_metadata}`.
-  # """
   # @spec decode_metadata(binary()) ::
   #         {:ok, {level(), size(), position(), size(), position(), no_of_blocks(), offset()}}
   #         | {:error, :invalid_metadata}
@@ -237,10 +218,6 @@ defmodule SeaGoat.SSTables.SSTable do
 
   def decode_metadata(_), do: {:error, :invalid_metadata}
 
-  @doc """
-  Decodes the Bloom filter part from the footer.
-  Returns `{:ok, bloom_filter}` if successful, `{:error, :invalid_bloom_filter}` otherwise.
-  """
   @spec decode_bloom_filter(binary()) ::
           {:ok, BloomFilter.t()} | {:error, :invalid_bloom_filter}
   def decode_bloom_filter(encoded) do
@@ -250,10 +227,6 @@ defmodule SeaGoat.SSTables.SSTable do
     end
   end
 
-  # @doc """
-  # Decodes the range part of the footer.
-  # Returns `{:ok, range}` if successful, `{:error, :invalid_range}` otherwise.
-  # """
   # @spec decode_range(binary()) ::
   #         {:ok, range()}
   #         | {:error, :invalid_range}
@@ -270,14 +243,6 @@ defmodule SeaGoat.SSTables.SSTable do
       _ -> {:error, :invalid_priority}
     end
   end
-
-  # def decode_sequence(encoded) do
-  #   case decode(encoded) do
-  #     {:min_seq, min_seq} -> {:ok, min_seq}
-  #     {:max_seq, max_seq} -> {:ok, max_seq}
-  #     _ -> {:error, :invalid_sequence}
-  #   end
-  # end
 
   defp encode(term), do: :erlang.term_to_binary(term)
   defp decode(binary), do: :erlang.binary_to_term(binary)
