@@ -64,7 +64,7 @@ defmodule SeaGoat.Compactor.LevelTest do
   test "place_in_buffer/2 creates virtual entry if entries is empty" do
     level = Level.place_in_buffer(%Level{}, {0, 1, 2})
     assert %{entries: entries} = level
-    assert %{nil: %Entry{is_virtual: true, key_range: {1, 1}, buffer: [{0, 1, 2}]}} = entries
+    assert %{nil: %Entry{is_virtual: true, key_range: {1, 1}, buffer: %{1 => {0, 2}}}} = entries
   end
 
   test "place_in_buffer/2 places data in the only entry that exists" do
@@ -77,12 +77,12 @@ defmodule SeaGoat.Compactor.LevelTest do
       |> Level.place_in_buffer({0, 1, 2})
 
     assert %{entries: entries} = level
-    assert %{foo: %Entry{key_range: {1, 1}, buffer: [{0, 1, 2}]}} = entries
+    assert %{foo: %Entry{key_range: {1, 1}, buffer: %{1 => {0, 2}}}} = entries
 
     level = Level.place_in_buffer(level, {1, 2, 3})
 
     assert %{entries: entries} = level
-    assert %{foo: %Entry{key_range: {1, 2}, buffer: [{1, 2, 3}, {0, 1, 2}]}} = entries
+    assert %{foo: %Entry{key_range: {1, 2}, buffer: %{1 => {0, 2}, 2 => {1, 3}}}} = entries
   end
 
   test "place_in_buffer/2 updates buffer with key in closest range" do
@@ -99,24 +99,24 @@ defmodule SeaGoat.Compactor.LevelTest do
     assert %{entries: entries} = level
 
     assert %{
-             foo: %Entry{key_range: {0, 5}, buffer: [{1, 2, 3}]},
-             bar: %Entry{key_range: {6, 10}, buffer: []}
+             foo: %Entry{key_range: {0, 5}, buffer: %{2 => {1, 3}}},
+             bar: %Entry{key_range: {6, 10}, buffer: %{}}
            } = entries
 
     level = Level.place_in_buffer(level, {2, 7, 8})
     assert %{entries: entries} = level
 
     assert %{
-             foo: %Entry{key_range: {0, 5}, buffer: [{1, 2, 3}]},
-             bar: %Entry{key_range: {6, 10}, buffer: [{2, 7, 8}]}
+             foo: %Entry{key_range: {0, 5}, buffer: %{2 => {1, 3}}},
+             bar: %Entry{key_range: {6, 10}, buffer: %{7 => {2, 8}}}
            } = entries
 
     level = Level.place_in_buffer(level, {3, 11, 20})
     assert %{entries: entries} = level
 
     assert %{
-             foo: %Entry{key_range: {0, 5}, buffer: [{1, 2, 3}]},
-             bar: %Entry{key_range: {6, 11}, buffer: [{3, 11, 20}, {2, 7, 8}]}
+             foo: %Entry{key_range: {0, 5}, buffer: %{2 => {1, 3}}},
+             bar: %Entry{key_range: {6, 11}, buffer: %{7 => {2, 8}, 11 => {3, 20}}}
            } = entries
   end
 end
