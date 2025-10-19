@@ -1,22 +1,11 @@
 defmodule SeaGoat.Manifest do
   @moduledoc false
-  # @moduledoc """
-  # The manifest is the source-of-truth of DB changes.
-  # This module tracks the files added and removed from the database repo.
-  # Other modules get the database files from the manifest on start.
-  #
-  # The manifest is rotated when it becomes too large (1024 * 1024 bytes).
-  # On rotation, it appends the accumulated version (a snapshot) to the log file.
-  # Once this is done, then the previous log file is deleted and it starts logging to the new file.
-  #
-  # By default, it logs to a file called `manifest.seagoat`.
-  #
-  # All edits that are appended are synced immediately.
-  # """
   use GenServer
 
   @manifest_name :sea_goat_manifest
   @manifest_file "manifest.seagoat"
+  @wal_file "wal.seagoat"
+  @tmp_suffix ".seagoat.tmp"
   @rotated_manifest_suffix ".rot"
   @manifest_max_size 1024 * 1024
 
@@ -62,13 +51,11 @@ defmodule SeaGoat.Manifest do
     GenServer.call(manifest, {:log_edit, [added_edit, removed_edit]})
   end
 
-  @doc "Logs a new sequence number to the manifest."
   @spec log_sequence(manifest(), SeaGoat.db_sequence()) :: :ok | {:error, term()}
   def log_sequence(manifest, seq) do
     GenServer.call(manifest, {:log_edit, {:seq, seq}})
   end
 
-  @doc "Logs a compaction to the manifest."
   @spec log_compaction(manifest(), [SeaGoat.db_file()], [SeaGoat.db_file()]) ::
           :ok | {:error, term()}
   def log_compaction(manifest, rotated_files, new_files) do
@@ -77,7 +64,6 @@ defmodule SeaGoat.Manifest do
     GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
-  @doc "Returns a snapshot of the DB repo."
   @spec get_version(manifest(), [atom()]) :: map()
   def get_version(manifest, keys \\ []) do
     GenServer.call(manifest, {:get_version, keys})
@@ -128,13 +114,8 @@ defmodule SeaGoat.Manifest do
 
     version =
       state.version
-      |> then(fn version ->
-        if :files in keys do
-          Map.replace(version, :files, MapSet.to_list(state.version.files))
-        else
-          version
-        end
-      end)
+      |> Map.replace(:files, MapSet.to_list(state.version.files))
+      |> Map.replace(:wals, MapSet.to_list(state.version.wals))
       |> Map.take(keys)
 
     {:reply, version, state}
@@ -162,7 +143,7 @@ defmodule SeaGoat.Manifest do
     dir
     |> File.ls!()
     |> Enum.map(&Path.join(dir, &1))
-    |> Enum.filter(&String.ends_with?(&1, ".seagoat.tmp"))
+    |> Enum.filter(&String.ends_with?(&1, @tmp_suffix))
     |> Enum.each(&File.rm!/1)
   end
 
@@ -171,7 +152,7 @@ defmodule SeaGoat.Manifest do
 
     dir
     |> File.ls!()
-    |> Enum.reject(&(&1 == "wal.seagoat" or &1 == "manifest.seagoat"))
+    |> Enum.reject(&(&1 == @wal_file or &1 == @manifest_file))
     |> Enum.map(&Path.join(dir, &1))
     |> Enum.reject(&MapSet.member?(files, &1))
     |> Enum.reject(&MapSet.member?(wals, &1))
