@@ -38,7 +38,7 @@ defmodule SeaGoat.SSTables do
     result
   end
 
-  def stream(file) do
+  def stream!(file) do
     Stream.resource(
       fn ->
         Disk.open!(file, start?: true)

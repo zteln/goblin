@@ -71,6 +71,12 @@ defmodule TestHelper do
         assert_eventually(f, timeout - step, step)
     end
   end
+
+  def write_sst(dir, name, level_key, data) do
+    file = Path.join(dir, "#{name}.seagoat")
+    SeaGoat.SSTables.write(file, level_key, data)
+    file
+  end
 end
 
 ExUnit.start()
