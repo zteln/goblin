@@ -102,39 +102,58 @@ defmodule SeaGoat.Compactor do
 
   defp maybe_compact(state, source_level_key) do
     source_level = Map.get(state.levels, source_level_key)
-    target_level = Map.get(state.levels, source_level_key + 1, %Level{level_key: source_level_key + 1})
+
+    target_level =
+      Map.get(state.levels, source_level_key + 1, %Level{level_key: source_level_key + 1})
 
     cond do
-      not (is_nil(target_level.compacting_ref) and is_nil(source_level.compacting_ref)) ->
+      compacting?(source_level, target_level) ->
         state
 
-      Level.get_total_size(source_level) >= level_limit(state.level_limit, source_level_key) ->
-        entries = Level.get_highest_prio_entries(source_level)
-        clean_tombstones? = clean_tombstones?(target_level, state.levels)
-
-        ref =
-          compact(
-            Enum.map(entries, & &1.id),
-            source_level.level_key,
+      exceeding_level_limit?(source_level, state.level_limit) ->
+        levels =
+          start_compaction(
+            state.levels,
+            source_level,
             target_level,
-            clean_tombstones?,
             state.key_limit,
             {state.store, state.manifest, state.rw_locks}
           )
-
-        source_level = %{source_level | compacting_ref: ref}
-        target_level = %{target_level | compacting_ref: ref}
-
-        levels =
-          state.levels
-          |> Map.put(source_level_key, source_level)
-          |> Map.put(source_level_key + 1, target_level)
 
         %{state | levels: levels}
 
       true ->
         state
     end
+  end
+
+  defp compacting?(%{compacting_ref: nil}, %{compacting_ref: nil}), do: false
+  defp compacting?(_source_level, _target_level), do: true
+
+  defp exceeding_level_limit?(source_level, level_limit) do
+    Level.get_total_size(source_level) >= level_limit(level_limit, source_level.level_key)
+  end
+
+  defp start_compaction(levels, source_level, target_level, key_limit, pids) do
+    entries = Level.get_highest_prio_entries(source_level)
+    clean_tombstones? = clean_tombstones?(target_level, levels)
+
+    ref =
+      compact(
+        Enum.map(entries, & &1.id),
+        source_level.level_key,
+        target_level,
+        clean_tombstones?,
+        key_limit,
+        pids
+      )
+
+    source_level = %{source_level | compacting_ref: ref}
+    target_level = %{target_level | compacting_ref: ref}
+
+    levels
+    |> Map.put(source_level.level_key, source_level)
+    |> Map.put(target_level.level_key, target_level)
   end
 
   defp compact(files, source_level_key, target_level, clean_tombstones?, key_limit, pids) do
