@@ -22,17 +22,17 @@ defmodule TestHelper do
 
     db =
       ExUnit.Callbacks.start_link_supervised!(
-        {SeaGoat, [db_dir: db_dir] ++ opts},
+        {SeaGoatDB, [db_dir: db_dir] ++ opts},
         id: id
       )
 
     [
-      {SeaGoat.Writer, writer, _, _},
-      {SeaGoat.Store, store, _, _},
-      {SeaGoat.Compactor, compactor, _, _},
-      {SeaGoat.WAL, wal, _, _},
-      {SeaGoat.Manifest, manifest, _, _},
-      {SeaGoat.RWLocks, rw_locks, _, _}
+      {SeaGoatDB.Writer, writer, _, _},
+      {SeaGoatDB.Store, store, _, _},
+      {SeaGoatDB.Compactor, compactor, _, _},
+      {SeaGoatDB.WAL, wal, _, _},
+      {SeaGoatDB.Manifest, manifest, _, _},
+      {SeaGoatDB.RWLocks, rw_locks, _, _}
     ] = Supervisor.which_children(db)
 
     %{
@@ -74,7 +74,7 @@ defmodule TestHelper do
 
   def write_sst(dir, name, level_key, data) do
     file = Path.join(dir, "#{name}.seagoat")
-    SeaGoat.SSTables.write(file, level_key, data)
+    SeaGoatDB.SSTs.write(file, level_key, data) |> dbg()
     file
   end
 end
