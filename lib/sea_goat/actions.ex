@@ -52,7 +52,7 @@ defmodule SeaGoat.Actions do
           {Store.store(), Manifest.manifest(), RWLocks.rw_locks()}
         ) :: {:ok, [SeaGoat.db_file()], SeaGoat.db_level_key(), SeaGoat.db_level_key()}
   def merge(
-        file,
+        files,
         level_key,
         target_level,
         reducer,
@@ -60,7 +60,7 @@ defmodule SeaGoat.Actions do
         key_limit,
         {store, manifest, rw_locks}
       ) do
-    target_level = deplete(file, target_level, reducer)
+    target_level = deplete(files, target_level, reducer)
 
     with {:ok, old, new} <-
            merge_reduce(
@@ -70,17 +70,22 @@ defmodule SeaGoat.Actions do
              key_limit,
              store
            ),
-         :ok <- Manifest.log_compaction(manifest, [file | old], Enum.map(new, &elem(&1, 0))),
+         :ok <- Manifest.log_compaction(manifest, files ++ old, Enum.map(new, &elem(&1, 0))),
          :ok <- put_new_files_in_store(new, target_level.level_key, store),
-         :ok <- remove_old_files([file | old], store, rw_locks) do
-      {:ok, [file | old], level_key, target_level.level_key}
+         :ok <- remove_old_files(files ++ old, store, rw_locks) do
+      {:ok, files ++ old, level_key, target_level.level_key}
     end
   end
 
-  defp deplete(file, level, reducer) do
-    file
-    |> SSTables.stream()
-    |> Enum.reduce(level, reducer)
+  defp deplete([], level, _reducer), do: level
+
+  defp deplete([file | files], level, reducer) do
+    level =
+      file
+      |> SSTables.stream()
+      |> Enum.reduce(level, reducer)
+
+    deplete(files, level, reducer)
   end
 
   defp merge_reduce(entries, level_key, clean_tombstones?, key_limit, store, acc \\ {[], []})
@@ -176,11 +181,15 @@ defmodule SeaGoat.Actions do
 
   defp init_buffer(buffer, true) do
     buffer
-    |> Enum.filter(fn {_seq, _key, value} -> value != :tombstone end)
+    |> Enum.reject(fn {_key, {_seq, value}} -> value == :tombstone end)
     |> init_buffer(false)
   end
 
-  defp init_buffer(buffer, false), do: Enum.reverse(buffer)
+  defp init_buffer(buffer, false) do
+    buffer
+    |> Enum.map(fn {key, {seq, value}} -> {seq, key, value} end)
+    |> Enum.sort_by(fn {_seq, key, _value} -> key end, :asc)
+  end
 
   defp iter_merge_data({nil, [], nil}), do: {:halt, :ok}
   defp iter_merge_data({nil, [next | buffer], nil}), do: {[next], {nil, buffer, nil}}

@@ -4,15 +4,13 @@ defmodule SeaGoat.Compactor.Entry do
     :priority,
     :size,
     key_range: {nil, nil},
-    buffer: [],
+    buffer: %{},
     is_virtual: false
   ]
 
-  # def in_range(entry, key) do
-  #   %{key_range: {smallest, largest}} = entry
-  #   key >= smallest and key <= largest
-  # end
+  @type t :: %__MODULE__{}
 
+  @spec in_range(t(), SeaGoat.db_key()) :: boolean()
   def in_range(entry, key) do
     case entry.key_range do
       {nil, nil} -> true
@@ -22,8 +20,16 @@ defmodule SeaGoat.Compactor.Entry do
     end
   end
 
-  def place_in_buffer(entry, data) do
-    buffer = [data | entry.buffer]
+  @spec place_in_buffer(t(), {SeaGoat.db_sequence(), SeaGoat.db_key(), SeaGoat.db_value()}) :: t()
+  def place_in_buffer(entry, {seq, key, value}) do
+    buffer =
+      Map.merge(entry.buffer, %{key => {seq, value}}, fn _k, {s1, v1}, {s2, v2} ->
+        cond do
+          s1 > s2 -> {s1, v1}
+          s2 > s1 -> {s2, v2}
+        end
+      end)
+
     %{entry | buffer: buffer}
   end
 end

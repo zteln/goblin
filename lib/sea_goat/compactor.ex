@@ -10,8 +10,7 @@ defmodule SeaGoat.Compactor do
     :manifest,
     :key_limit,
     :level_limit,
-    levels: %{},
-    merging: %{}
+    levels: %{}
   ]
 
   @type compactor :: GenServer.server()
@@ -23,7 +22,7 @@ defmodule SeaGoat.Compactor do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec put(compactor(), SeaGoat.db_level_key(), SeaGoat.db_file(), data())
+  @spec put(compactor(), SeaGoat.db_level_key(), SeaGoat.db_file(), data()) :: :ok
   def put(compactor, level_key, file, data) do
     GenServer.call(compactor, {:put, level_key, file, data})
   end
@@ -101,12 +100,12 @@ defmodule SeaGoat.Compactor do
         state
 
       Level.get_total_size(level) >= level_limit(state.level_limit, level_key) ->
-        entry = Level.get_highest_prio_entry(level)
+        entries = Level.get_highest_prio_entries(level)
         clean_tombstones? = clean_tombstones?(target_level, state.levels)
 
         ref =
           compact(
-            entry.id,
+            Enum.map(entries, & &1.id),
             level.level_key,
             target_level,
             clean_tombstones?,
@@ -129,11 +128,11 @@ defmodule SeaGoat.Compactor do
     end
   end
 
-  defp compact(file, level_key, target_level, clean_tombstones?, key_limit, pids) do
+  defp compact(files, level_key, target_level, clean_tombstones?, key_limit, pids) do
     %{ref: ref} =
       Task.async(fn ->
         Actions.merge(
-          file,
+          files,
           level_key,
           target_level,
           &Level.place_in_buffer(&2, &1),
