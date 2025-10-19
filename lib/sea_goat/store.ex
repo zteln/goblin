@@ -1,4 +1,5 @@
 defmodule SeaGoat.Store do
+  @moduledoc false
   use GenServer
   alias SeaGoat.Compactor
   alias SeaGoat.Manifest
@@ -10,8 +11,9 @@ defmodule SeaGoat.Store do
   @tmp_suffix ".tmp"
 
   @type store :: GenServer.server()
-  @type file :: String.t()
-  @type level :: non_neg_integer()
+  @type data ::
+          {BloomFilter.t(), SeaGoat.db_sequence(), non_neg_integer(),
+           {SeaGoat.db_key(), SeaGoat.db_key()}}
 
   defstruct [
     :dir,
@@ -28,17 +30,24 @@ defmodule SeaGoat.Store do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  def put(store, file, level, data) do
-    GenServer.call(store, {:put, file, level, data})
+  @spec put(store(), SeaGoat.db_file(), SeaGoat.db_level_key(), data()) :: :ok
+  def put(store, file, level_key, {_, _, _, _} = data) do
+    GenServer.call(store, {:put, file, level_key, data})
   end
 
+  @spec remove(store(), SeaGoat.db_file()) :: :ok
   def remove(store, file) do
     GenServer.call(store, {:remove, file})
   end
 
+  @spec new_file(store()) :: SeaGoat.db_file()
   def new_file(store) do
     GenServer.call(store, :new_file)
   end
+
+  # def get_ss_tables(store) do
+  #   GenServer.call(store, :get_ss_tables)
+  # end
 
   @spec get_ss_tables(GenServer.server(), SeaGoat.db_key()) :: [
           {(-> SeaGoat.db_value()), (-> :ok)}
@@ -47,6 +56,11 @@ defmodule SeaGoat.Store do
     GenServer.call(store, {:get_ss_tables, key})
   end
 
+  # def get_ss_tables(store, min, max) do
+  #   GenServer.call(store, {:get_ss_tables, min, max})
+  # end
+
+  @spec tmp_file(SeaGoat.db_file()) :: SeaGoat.db_file()
   def tmp_file(file), do: file <> @tmp_suffix
 
   @impl GenServer
@@ -61,13 +75,13 @@ defmodule SeaGoat.Store do
   end
 
   @impl GenServer
-  def handle_call({:put, file, level, {bloom_filter, seq, size, key_range}}, _from, state) do
+  def handle_call({:put, file, level_key, {bloom_filter, seq, size, key_range}}, _from, state) do
     ss_tables = [
       %{file: file, bloom_filter: bloom_filter} | state.ss_tables
     ]
 
     {:reply, :ok, %{state | ss_tables: ss_tables},
-     {:continue, {:put_in_compactor, level, file, {seq, size, key_range}}}}
+     {:continue, {:put_in_compactor, level_key, file, {seq, size, key_range}}}}
   end
 
   def handle_call({:remove, file}, _from, state) do
@@ -99,8 +113,8 @@ defmodule SeaGoat.Store do
   end
 
   @impl GenServer
-  def handle_continue({:put_in_compactor, level, file, data}, state) do
-    :ok = Compactor.put(state.compactor, level, file, data)
+  def handle_continue({:put_in_compactor, level_key, file, data}, state) do
+    :ok = Compactor.put(state.compactor, level_key, file, data)
     {:noreply, state}
   end
 
