@@ -54,11 +54,13 @@ defmodule SeaGoat.CompactorTest do
     assert is_reference(ref)
   end
 
-  test "a completed merge cleans up sources", c do
+  test "a completed compaction cleans up sources", c do
     file1 = write_sst(c.tmp_dir, "foo", 0, [{0, 1, :v1}, {1, 2, :v2}])
     file2 = write_sst(c.tmp_dir, "bar", 0, [{2, 3, :v3}, {3, 4, :v4}])
-    assert :ok == Compactor.put(c.compactor, 0, file1, {0, 50, {1, 2}})
-    assert :ok == Compactor.put(c.compactor, 0, file2, {2, 50, {3, 4}})
+    %{size: size1} = File.stat!(file1)
+    %{size: size2} = File.stat!(file2)
+    assert :ok == Compactor.put(c.compactor, 0, file1, {0, size1, {1, 2}})
+    assert :ok == Compactor.put(c.compactor, 0, file2, {2, size2, {3, 4}})
     assert File.exists?(file1)
     assert File.exists?(file2)
 
@@ -74,7 +76,15 @@ defmodule SeaGoat.CompactorTest do
                }
              } = :sys.get_state(c.compactor)
 
-      assert [%{priority: 0, key_range: {1, 4}}] = Map.values(entries)
+      assert [%{id: file, priority: 0, size: size, key_range: {1, 4}}] = Map.values(entries)
+      assert size < size1 + size2
+
+      assert [
+               {0, 1, :v1},
+               {1, 2, :v2},
+               {2, 3, :v3},
+               {3, 4, :v4}
+             ] == file |> SeaGoat.SSTables.stream!() |> Enum.to_list()
     end
 
     refute File.exists?(file1)
