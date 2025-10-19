@@ -59,22 +59,31 @@ defmodule SeaGoat.Compactor do
   end
 
   @impl GenServer
-  def handle_info({_ref, {:ok, compacted_away_files, level_key, target_level_key}}, state) do
+  def handle_info({_ref, {:ok, compacted_away_files, source_level_key, target_level_key}}, state) do
     state =
       Enum.reduce(compacted_away_files, state, fn compacted_away_file, acc ->
-        level = process_level_after_compaction(acc.levels, level_key, compacted_away_file)
+        source_level =
+          process_level_after_compaction(
+            acc.levels,
+            source_level_key,
+            compacted_away_file
+          )
 
         target_level =
-          process_level_after_compaction(acc.levels, target_level_key, compacted_away_file)
+          process_level_after_compaction(
+            acc.levels,
+            target_level_key,
+            compacted_away_file
+          )
 
         levels =
           acc.levels
-          |> Map.put(level_key, level)
+          |> Map.put(source_level_key, source_level)
           |> Map.put(target_level_key, target_level)
 
         %{acc | levels: levels}
       end)
-      |> maybe_compact(level_key)
+      |> maybe_compact(source_level_key)
       |> maybe_compact(target_level_key)
 
     {:noreply, state}
@@ -91,35 +100,35 @@ defmodule SeaGoat.Compactor do
     %{level | entries: level_entries, compacting_ref: nil}
   end
 
-  defp maybe_compact(state, level_key) do
-    level = Map.get(state.levels, level_key)
-    target_level = Map.get(state.levels, level_key + 1, %Level{level_key: level_key + 1})
+  defp maybe_compact(state, source_level_key) do
+    source_level = Map.get(state.levels, source_level_key)
+    target_level = Map.get(state.levels, source_level_key + 1, %Level{level_key: source_level_key + 1})
 
     cond do
-      not (is_nil(target_level.compacting_ref) and is_nil(level.compacting_ref)) ->
+      not (is_nil(target_level.compacting_ref) and is_nil(source_level.compacting_ref)) ->
         state
 
-      Level.get_total_size(level) >= level_limit(state.level_limit, level_key) ->
-        entries = Level.get_highest_prio_entries(level)
+      Level.get_total_size(source_level) >= level_limit(state.level_limit, source_level_key) ->
+        entries = Level.get_highest_prio_entries(source_level)
         clean_tombstones? = clean_tombstones?(target_level, state.levels)
 
         ref =
           compact(
             Enum.map(entries, & &1.id),
-            level.level_key,
+            source_level.level_key,
             target_level,
             clean_tombstones?,
             state.key_limit,
             {state.store, state.manifest, state.rw_locks}
           )
 
-        level = %{level | compacting_ref: ref}
+        source_level = %{source_level | compacting_ref: ref}
         target_level = %{target_level | compacting_ref: ref}
 
         levels =
           state.levels
-          |> Map.put(level_key, level)
-          |> Map.put(level_key + 1, target_level)
+          |> Map.put(source_level_key, source_level)
+          |> Map.put(source_level_key + 1, target_level)
 
         %{state | levels: levels}
 
@@ -128,12 +137,12 @@ defmodule SeaGoat.Compactor do
     end
   end
 
-  defp compact(files, level_key, target_level, clean_tombstones?, key_limit, pids) do
+  defp compact(files, source_level_key, target_level, clean_tombstones?, key_limit, pids) do
     %{ref: ref} =
       Task.async(fn ->
         Actions.merge(
           files,
-          level_key,
+          source_level_key,
           target_level,
           &Level.place_in_buffer(&2, &1),
           clean_tombstones?,

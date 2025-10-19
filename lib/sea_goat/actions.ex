@@ -41,7 +41,7 @@ defmodule SeaGoat.Actions do
   defp iter_flush_data([next | data]), do: {[next], data}
 
   @spec merge(
-          SeaGoat.db_file(),
+          [SeaGoat.db_file()],
           SeaGoat.db_level_key(),
           SeaGoat.Compactor.Level.t(),
           (SeaGoat.Compactor.Level.t(),
@@ -52,15 +52,15 @@ defmodule SeaGoat.Actions do
           {Store.store(), Manifest.manifest(), RWLocks.rw_locks()}
         ) :: {:ok, [SeaGoat.db_file()], SeaGoat.db_level_key(), SeaGoat.db_level_key()}
   def merge(
-        files,
-        level_key,
+        sources,
+        source_level_key,
         target_level,
-        reducer,
+        level_reducer,
         clean_tombstones?,
         key_limit,
         {store, manifest, rw_locks}
       ) do
-    target_level = deplete(files, target_level, reducer)
+    target_level = deplete(sources, target_level, level_reducer)
 
     with {:ok, old, new} <-
            merge_reduce(
@@ -70,22 +70,22 @@ defmodule SeaGoat.Actions do
              key_limit,
              store
            ),
-         :ok <- Manifest.log_compaction(manifest, files ++ old, Enum.map(new, &elem(&1, 0))),
+         :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, &elem(&1, 0))),
          :ok <- put_new_files_in_store(new, target_level.level_key, store),
-         :ok <- remove_old_files(files ++ old, store, rw_locks) do
-      {:ok, files ++ old, level_key, target_level.level_key}
+         :ok <- remove_old_files(sources ++ old, store, rw_locks) do
+      {:ok, sources ++ old, source_level_key, target_level.level_key}
     end
   end
 
-  defp deplete([], level, _reducer), do: level
+  defp deplete([], level, _level_reducer), do: level
 
-  defp deplete([file | files], level, reducer) do
+  defp deplete([source | sources], level, level_reducer) do
     level =
-      file
-      |> SSTables.stream()
-      |> Enum.reduce(level, reducer)
+      source
+      |> SSTables.stream!()
+      |> Enum.reduce(level, level_reducer)
 
-    deplete(files, level, reducer)
+    deplete(sources, level, level_reducer)
   end
 
   defp merge_reduce(entries, level_key, clean_tombstones?, key_limit, store, acc \\ {[], []})
