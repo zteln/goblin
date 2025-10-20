@@ -27,12 +27,12 @@ defmodule SeaGoatDB.Actions do
   end
 
   defp write_flush(stream, key_limit, store) do
-    file = Store.new_file(store)
-    tmp_file = Store.tmp_file(file)
-
     stream
     |> Stream.chunk_every(key_limit)
     |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, flushed} ->
+      file = Store.new_file(store)
+      tmp_file = Store.tmp_file(file)
+
       case SSTs.write(tmp_file, @flush_level, chunk) do
         {:ok, bloom_filter, priority, size, key_range} ->
           {:cont, {:ok, [{tmp_file, file, {bloom_filter, priority, size, key_range}} | flushed]}}
