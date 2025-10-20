@@ -129,6 +129,6 @@ defmodule SeaGoatDB do
   end
 
   defp name(name, suffix) do
-    if name, do: :"#{name}_#{suffix}", else: :"sea_goat_#{suffix}"
+    if name, do: :"#{name}_#{suffix}", else: :"sea_goat_db_#{suffix}"
   end
 end
