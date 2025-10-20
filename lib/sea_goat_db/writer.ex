@@ -18,6 +18,7 @@ defmodule SeaGoatDB.Writer do
     :manifest,
     :key_limit,
     :flushing,
+    :action_mod,
     seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
@@ -32,7 +33,8 @@ defmodule SeaGoatDB.Writer do
         :wal,
         :store,
         :manifest,
-        :key_limit
+        :key_limit,
+        :action_mod
       ])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
@@ -115,6 +117,7 @@ defmodule SeaGoatDB.Writer do
        store: store,
        manifest: manifest,
        key_limit: args[:key_limit],
+       action_mod: args[:action_mod] || Actions,
        mem_table: MemTable.new()
      }, {:continue, :recover_state}}
   end
@@ -251,8 +254,8 @@ defmodule SeaGoatDB.Writer do
   defp start_flush(state, rotated_wal) do
     with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
       pids = {state.store, state.wal, state.manifest}
-      ref = flush(state.mem_table, rotated_wal, state.key_limit, pids)
-      flushing = {ref, state.mem_table}
+      task = flush(state.action_mod, state.mem_table, rotated_wal, state.key_limit, pids)
+      flushing = {task, state.mem_table}
       state = %{state | mem_table: MemTable.new(), flushing: flushing}
       {:ok, state}
     end
@@ -265,20 +268,17 @@ defmodule SeaGoatDB.Writer do
   defp flush_from_queue(state) do
     {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
     pids = {state.store, state.wal, state.manifest}
-    ref = flush(mem_table, rotated_wal, state.key_limit, pids)
-    flushing = {ref, mem_table}
+    task = flush(state.action_mod, mem_table, rotated_wal, state.key_limit, pids)
+    flushing = {task, mem_table}
     state = %{state | flushing: flushing, flush_queue: flush_queue}
     {:ok, state}
   end
 
-  defp flush(mem_table, rotated_wal, key_limit, pids) do
-    %{ref: ref} =
-      Task.async(fn ->
-        data = mem_table |> MemTable.sort() |> MemTable.flatten()
-        Actions.flush(data, rotated_wal, key_limit, pids)
-      end)
-
-    ref
+  defp flush(action_mod, mem_table, rotated_wal, key_limit, pids) do
+    Task.async(fn ->
+      data = mem_table |> MemTable.sort() |> MemTable.flatten()
+      apply(action_mod, :flush, [data, rotated_wal, key_limit, pids])
+    end)
   end
 
   defp maybe_rotate(nil, wal, manifest, seq) do

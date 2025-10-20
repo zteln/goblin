@@ -74,7 +74,7 @@ defmodule TestHelper do
 
   def write_sst(dir, name, level_key, data) do
     file = Path.join(dir, "#{name}.seagoat")
-    SeaGoatDB.SSTs.write(file, level_key, data) |> dbg()
+    SeaGoatDB.SSTs.write(file, level_key, data)
     file
   end
 end

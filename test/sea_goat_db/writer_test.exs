@@ -1,9 +1,17 @@
 defmodule SeaGoatDB.WriterTest do
   use ExUnit.Case, async: true
   use TestHelper
-  use Patch
   alias SeaGoatDB.Writer
   alias SeaGoatDB.WAL
+
+  defmodule FakeActions do
+    def flush(data, rotated_wal, key_limit, pids) do
+      receive do
+        :cont_with_flush ->
+          SeaGoatDB.Actions.flush(data, rotated_wal, key_limit, pids)
+      end
+    end
+  end
 
   @moduletag :tmp_dir
   @db_opts [
@@ -11,8 +19,9 @@ defmodule SeaGoatDB.WriterTest do
     name: :writer_test,
     key_limit: 10,
     sync_interval: 50,
-    wal_name: :writer_test_wal_log,
-    manifest_name: :writer_test_log_name
+    wal_name: :writer_test_wal,
+    manifest_name: :writer_test_manifest,
+    action_mod: FakeActions
   ]
 
   setup_db(@db_opts)
@@ -66,8 +75,6 @@ defmodule SeaGoatDB.WriterTest do
   end
 
   test "recovers flushes after restart", c do
-    ignore_flush()
-
     for n <- 1..20 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
@@ -91,6 +98,10 @@ defmodule SeaGoatDB.WriterTest do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
+    assert %{flushing: {%{pid: flushing_pid}, _mem_table}} = :sys.get_state(c.writer)
+
+    send(flushing_pid, :cont_with_flush)
+
     assert_eventually do
       assert %{seq: 10, flushing: nil} = :sys.get_state(c.writer)
     end
@@ -99,13 +110,11 @@ defmodule SeaGoatDB.WriterTest do
   end
 
   test "able to read data inbetween flush and flushed", c do
-    ignore_flush()
-
     for n <- 1..10 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{mem_table: mem_table, flushing: {_ref, _}} = :sys.get_state(c.writer)
+    assert %{mem_table: mem_table, flushing: {_task, _}} = :sys.get_state(c.writer)
     assert %{} == mem_table
 
     for n <- 1..10 do
@@ -114,8 +123,6 @@ defmodule SeaGoatDB.WriterTest do
   end
 
   test "able to read data from flushing MemTable and queued flushes", c do
-    ignore_flush()
-
     for n <- 1..30 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
@@ -135,15 +142,18 @@ defmodule SeaGoatDB.WriterTest do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
+    for _ <- 1..4 do
+      assert %{flushing: {%{pid: flushing_pid}, _}} = :sys.get_state(c.writer)
+
+      send(flushing_pid, :cont_with_flush)
+    end
+
     assert_eventually do
-      assert %{flushing: nil} = :sys.get_state(c.writer)
       assert no_of_files + 4 == length(File.ls!(c.tmp_dir))
     end
   end
 
   test "reads from latest write", c do
-    ignore_flush()
-
     for i <- 1..3 do
       for n <- 1..10 do
         assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
@@ -397,6 +407,4 @@ defmodule SeaGoatDB.WriterTest do
 
     assert :not_found == Writer.get(writer, :k)
   end
-
-  defp ignore_flush, do: patch(SeaGoatDB.Actions, :flush, {:ok, :ignore})
 end

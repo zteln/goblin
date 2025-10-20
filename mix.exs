@@ -20,9 +20,6 @@ defmodule SeaGoatDB.MixProject do
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
-    [
-      # {:recon, "~> 2.5", only: :dev},
-      {:patch, "~> 0.16", only: :test}
-    ]
+    []
   end
 end
