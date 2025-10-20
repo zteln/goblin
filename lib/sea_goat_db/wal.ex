@@ -128,6 +128,7 @@ defmodule SeaGoatDB.WAL do
     state = %{state | rotated_files: rotated_files(state.file)}
     {:noreply, state}
   end
+
   def handle_continue(:sync, state) do
     now = now()
 
@@ -233,7 +234,7 @@ defmodule SeaGoatDB.WAL do
     end
   end
 
-  defp now, do: System.monotonic_time(:millisecond)
+  defp now, do: System.monotonic_time(:nanosecond)
   defp rotated_file(file), do: "#{file}#{@old_wal_file_suffix}.#{abs(now())}"
 
   defp rotated_files(file) do
