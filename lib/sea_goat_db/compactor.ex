@@ -14,7 +14,8 @@ defmodule SeaGoatDB.Compactor do
   ]
 
   @type compactor :: GenServer.server()
-  @type data :: {SeaGoatDB.db_sequence(), non_neg_integer(), {SeaGoatDB.db_key(), SeaGoatDB.db_key()}}
+  @type data ::
+          {SeaGoatDB.db_sequence(), non_neg_integer(), {SeaGoatDB.db_key(), SeaGoatDB.db_key()}}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do

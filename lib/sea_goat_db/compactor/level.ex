@@ -33,7 +33,8 @@ defmodule SeaGoatDB.Compactor.Level do
     %{level | entries: entries}
   end
 
-  @spec place_in_buffer(t(), {SeaGoatDB.db_sequence(), SeaGoatDB.db_key(), SeaGoatDB.db_value()}) :: t()
+  @spec place_in_buffer(t(), {SeaGoatDB.db_sequence(), SeaGoatDB.db_key(), SeaGoatDB.db_value()}) ::
+          t()
   def place_in_buffer(level, {seq, key, value} = data) do
     case Map.keys(level.entries) do
       [] ->

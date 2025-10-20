@@ -126,7 +126,7 @@ defmodule SeaGoatDB.ManifestTest do
               file_added: "bar2.seagoat",
               file_added: "bar3.seagoat",
               file_removed: "foo1.seagoat",
-              file_removed: "foo2.seagoat",
+              file_removed: "foo2.seagoat"
             ]} =
              read_manifest(:ro_manifest, c.manifest_file)
   end

@@ -45,7 +45,7 @@ defmodule SeaGoatDB.ActionsTest do
       {6, :k7, :v7},
       {7, :k8, :v8},
       {8, :k9, :v9},
-      {9, :k10, :v10},
+      {9, :k10, :v10}
     ]
 
     assert {:ok, :flushed} ==

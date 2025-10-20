@@ -20,7 +20,8 @@ defmodule SeaGoatDB.Compactor.Entry do
     end
   end
 
-  @spec place_in_buffer(t(), {SeaGoatDB.db_sequence(), SeaGoatDB.db_key(), SeaGoatDB.db_value()}) :: t()
+  @spec place_in_buffer(t(), {SeaGoatDB.db_sequence(), SeaGoatDB.db_key(), SeaGoatDB.db_value()}) ::
+          t()
   def place_in_buffer(entry, {seq, key, value}) do
     buffer =
       Map.merge(entry.buffer, %{key => {seq, value}}, fn _k, {s1, v1}, {s2, v2} ->

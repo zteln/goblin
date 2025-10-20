@@ -55,7 +55,8 @@ defmodule SeaGoatDB.Writer.Transaction do
   # @doc """
   # Reads `key` from either its own MemTable or via its `fallback_read` function if `:not_found` is returned from its own MemTable..
   # """
-  @spec get(t(), SeaGoatDB.db_key()) :: {{SeaGoatDB.db_sequence(), SeaGoatDB.db_value()} | :error, t()}
+  @spec get(t(), SeaGoatDB.db_key()) ::
+          {{SeaGoatDB.db_sequence(), SeaGoatDB.db_value()} | :error, t()}
   def get(tx, key) do
     read =
       case MemTable.read(tx.mem_table, key) do

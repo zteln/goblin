@@ -11,7 +11,9 @@ defmodule SeaGoatDB.Writer.MemTableTest do
   end
 
   test "upsert/3 updates existing key" do
-    assert %{"key" => {0, "value"}} = mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+    assert %{"key" => {0, "value"}} =
+             mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+
     assert %{"key" => {1, "value1"}} = MemTable.upsert(mem_table, 1, "key", "value1")
   end
 
@@ -24,12 +26,16 @@ defmodule SeaGoatDB.Writer.MemTableTest do
   end
 
   test "delete/2 replaces value with :tombstone" do
-    assert %{"key" => {0, "value"}} = mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+    assert %{"key" => {0, "value"}} =
+             mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+
     assert %{"key" => {1, :tombstone}} == MemTable.delete(mem_table, 1, "key")
   end
 
   test "read/2 returns value" do
-    assert %{"key" => {0, "value"}} = mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+    assert %{"key" => {0, "value"}} =
+             mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+
     assert {:value, 0, "value"} == MemTable.read(mem_table, "key")
   end
 
