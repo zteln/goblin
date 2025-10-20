@@ -31,7 +31,7 @@ defmodule SeaGoatDB.Manifest do
       Keyword.take(opts, [
         :db_dir,
         :manifest_file,
-        :manifest_log_name,
+        :manifest_name,
         :manifest_max_size
       ])
 
@@ -43,12 +43,12 @@ defmodule SeaGoatDB.Manifest do
     GenServer.call(manifest, {:log_edit, {:wal_added, wal}})
   end
 
-  @spec log_flush(manifest(), SeaGoatDB.db_file(), SeaGoatDB.WAL.rotated_file()) ::
+  @spec log_flush(manifest(), [SeaGoatDB.db_file()], SeaGoatDB.WAL.rotated_file()) ::
           :ok | {:error, term()}
-  def log_flush(manifest, file, wal) do
-    added_edit = {:file_added, file}
+  def log_flush(manifest, files, wal) do
+    added_edits = Enum.map(files, &{:file_added, &1})
     removed_edit = {:wal_removed, wal}
-    GenServer.call(manifest, {:log_edit, [added_edit, removed_edit]})
+    GenServer.call(manifest, {:log_edit, added_edits ++ [removed_edit]})
   end
 
   @spec log_sequence(manifest(), SeaGoatDB.db_sequence()) :: :ok | {:error, term()}

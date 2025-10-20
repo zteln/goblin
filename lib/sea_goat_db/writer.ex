@@ -245,7 +245,7 @@ defmodule SeaGoatDB.Writer do
   defp start_flush(state, rotated_wal) do
     with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
       pids = {state.store, state.wal, state.manifest}
-      ref = flush(state.mem_table, rotated_wal, pids)
+      ref = flush(state.mem_table, rotated_wal, state.key_limit, pids)
       flushing = {ref, state.mem_table}
       state = %{state | mem_table: MemTable.new(), flushing: flushing}
       {:ok, state}
@@ -259,17 +259,17 @@ defmodule SeaGoatDB.Writer do
   defp flush_from_queue(state) do
     {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
     pids = {state.store, state.wal, state.manifest}
-    ref = flush(mem_table, rotated_wal, pids)
+    ref = flush(mem_table, rotated_wal, state.key_limit, pids)
     flushing = {ref, mem_table}
     state = %{state | flushing: flushing, flush_queue: flush_queue}
     {:ok, state}
   end
 
-  defp flush(mem_table, rotated_wal, pids) do
+  defp flush(mem_table, rotated_wal, key_limit, pids) do
     %{ref: ref} =
       Task.async(fn ->
         data = mem_table |> MemTable.sort() |> MemTable.flatten()
-        Actions.flush(data, rotated_wal, pids)
+        Actions.flush(data, rotated_wal, key_limit, pids)
       end)
 
     ref

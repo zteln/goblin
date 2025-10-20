@@ -11,21 +11,59 @@ defmodule SeaGoatDB.Actions do
   @spec flush(
           [{SeaGoatDB.db_sequence(), SeaGoatDB.db_key(), SeaGoatDB.db_value()}],
           WAL.rotated_file(),
+          SeaGoatDB.key_limit(),
           {Store.store(), WAL.wal(), Manifest.manifest()}
         ) :: {:ok, :flushed} | {:error, term()}
-  def flush(data, rotated_wal, {store, wal, manifest}) do
-    file = Store.new_file(store)
-    tmp_file = Store.tmp_file(file)
+  def flush(data, rotated_wal, key_limit, {store, wal, manifest}) do
     stream = flush_stream(data)
 
-    with {:ok, bloom_filter, priority, size, key_range} <-
-           SSTs.write(tmp_file, @flush_level, stream),
-         :ok <- SSTs.switch(tmp_file, file),
-         :ok <- Manifest.log_flush(manifest, file, rotated_wal),
+    with {:ok, flushed} <- write_flush(stream, key_limit, store),
+         {:ok, flushed} <- switch(flushed),
+         :ok <- log_flush(flushed, rotated_wal, manifest),
          :ok <- WAL.clean(wal, rotated_wal),
-         :ok <-
-           Store.put(store, file, @flush_level, {bloom_filter, priority, size, key_range}) do
+         :ok <- put_in_store(flushed, store) do
       {:ok, :flushed}
+    end
+  end
+
+  defp write_flush(stream, key_limit, store) do
+    file = Store.new_file(store)
+    tmp_file = Store.tmp_file(file)
+
+    stream
+    |> Stream.chunk_every(key_limit)
+    |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, flushed} ->
+      case SSTs.write(tmp_file, @flush_level, chunk) do
+        {:ok, bloom_filter, priority, size, key_range} ->
+          {:cont, {:ok, [{tmp_file, file, {bloom_filter, priority, size, key_range}} | flushed]}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp switch(flushed, acc \\ [])
+  defp switch([], acc), do: {:ok, acc}
+
+  defp switch([{tmp_file, file, sst_info} | flushed], acc) do
+    case SSTs.switch(tmp_file, file) do
+      :ok -> switch(flushed, [{file, sst_info} | acc])
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp log_flush(flushed, rotated_wal, manifest) do
+    files = Enum.map(flushed, &elem(&1, 0))
+    Manifest.log_flush(manifest, files, rotated_wal)
+  end
+
+  defp put_in_store([], _store), do: :ok
+
+  defp put_in_store([{file, sst_info} | flushed], store) do
+    case Store.put(store, file, @flush_level, sst_info) do
+      :ok -> put_in_store(flushed, store)
+      {:error, _reason} = error -> error
     end
   end
 
