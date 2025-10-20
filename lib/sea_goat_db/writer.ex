@@ -83,9 +83,15 @@ defmodule SeaGoatDB.Writer do
 
   defp run_transaction(writer, f, tx) do
     case f.(tx) do
-      {:commit, tx, reply} -> {:ok, tx, reply}
-      :cancel -> cancel_transaction(writer, self())
-      _ -> raise "Invalid return type from transaction."
+      {:commit, tx, reply} ->
+        {:ok, tx, reply}
+
+      :cancel ->
+        cancel_transaction(writer, self())
+
+      _ ->
+        cancel_transaction(writer, self())
+        raise "Invalid return type from transaction."
     end
   end
 
