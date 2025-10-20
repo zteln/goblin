@@ -14,18 +14,53 @@ defmodule SeaGoatDB.ActionsTest do
 
   setup_db(@db_opts)
 
-  test "flush/3 writes an SST file on disk", c do
+  test "flush/4 writes an SST file on disk", c do
+    key_limit = 10
     rotated_wal = Path.join(c.tmp_dir, "rot_wal")
     File.touch(rotated_wal)
     data = [{0, :k1, :v1}, {1, :k2, :v2}]
 
-    assert {:ok, :flushed} == Actions.flush(data, rotated_wal, {c.store, c.wal, c.manifest})
+    assert {:ok, :flushed} ==
+             Actions.flush(data, rotated_wal, key_limit, {c.store, c.wal, c.manifest})
 
     refute File.exists?(rotated_wal)
 
     assert %{ss_tables: [%{file: flushed_file}]} = :sys.get_state(c.store)
 
-    assert [{0, :k1, :v1}, {1, :k2, :v2}] == SSTs.stream!(flushed_file) |> Enum.to_list()
+    assert data == SSTs.stream!(flushed_file) |> Enum.to_list()
+  end
+
+  test "flush/4 splits into multiple SSTs if exceeding key_limit", c do
+    key_limit = 5
+    rotated_wal = Path.join(c.tmp_dir, "rot_wal")
+    File.touch(rotated_wal)
+
+    data = [
+      {0, :k1, :v1},
+      {1, :k2, :v2},
+      {2, :k3, :v3},
+      {3, :k4, :v4},
+      {4, :k5, :v5},
+      {5, :k6, :v6},
+      {6, :k7, :v7},
+      {7, :k8, :v8},
+      {8, :k9, :v9},
+      {9, :k10, :v10},
+    ]
+
+    assert {:ok, :flushed} ==
+             Actions.flush(data, rotated_wal, key_limit, {c.store, c.wal, c.manifest})
+
+    assert %{ss_tables: [%{file: file1}, %{file: file2}]} = :sys.get_state(c.store)
+
+    assert File.exists?(file1)
+    assert File.exists?(file2)
+    refute File.exists?(rotated_wal)
+
+    stream1 = SSTs.stream!(file1)
+    stream2 = SSTs.stream!(file2)
+
+    assert data == Stream.concat(stream1, stream2) |> Enum.to_list() |> List.keysort(0)
   end
 
   test "merge/7 merges multiple SST files into new SST files", c do
