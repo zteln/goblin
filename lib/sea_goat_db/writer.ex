@@ -44,13 +44,11 @@ defmodule SeaGoatDB.Writer do
   #   GenServer.call(server, {:subscribe, pid})
   # end
 
-  @doc "Gets a value from in-memory MemTables."
   @spec get(writer(), key :: SeaGoatDB.db_key()) :: {:ok, SeaGoatDB.db_value()} | :error
   def get(writer, key) do
     GenServer.call(writer, {:get, key})
   end
 
-  @doc "Puts a key-value pair in the writers current MemTable."
   @spec put(writer(), SeaGoatDB.db_key(), SeaGoatDB.db_value()) :: :ok
   def put(writer, key, value) do
     transaction(writer, fn tx ->
@@ -59,7 +57,6 @@ defmodule SeaGoatDB.Writer do
     end)
   end
 
-  @doc "Removes the value corresponding to `key` in the writers current MemTable."
   @spec remove(writer(), SeaGoatDB.db_key()) :: :ok
   def remove(writer, key) do
     transaction(writer, fn tx ->
@@ -70,7 +67,6 @@ defmodule SeaGoatDB.Writer do
 
   def is_flushing(writer), do: GenServer.call(writer, :is_flushing)
 
-  @doc "Runs a transaction."
   @spec transaction(writer(), (Transaction.t() -> transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(writer, f) do
@@ -246,6 +242,17 @@ defmodule SeaGoatDB.Writer do
     end
   end
 
+  defp flush_from_queue?(state) do
+    is_nil(state.flushing) and not FlushQueue.empty?(state.flush_queue)
+  end
+
+  defp flush_from_queue(state) do
+    {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
+    flushing = flush(state, rotated_wal, mem_table)
+    state = %{state | flushing: flushing, flush_queue: flush_queue}
+    {:ok, state}
+  end
+
   defp start_flush?(state) do
     MemTable.has_overflow(state.mem_table, state.key_limit) and
       FlushQueue.empty?(state.flush_queue)
@@ -253,32 +260,26 @@ defmodule SeaGoatDB.Writer do
 
   defp start_flush(state, rotated_wal) do
     with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
-      pids = {state.store, state.wal, state.manifest}
-      task = flush(state.action_mod, state.mem_table, rotated_wal, state.key_limit, pids)
-      flushing = {task, state.mem_table}
+      flushing = flush(state, rotated_wal)
       state = %{state | mem_table: MemTable.new(), flushing: flushing}
       {:ok, state}
     end
   end
 
-  defp flush_from_queue?(state) do
-    is_nil(state.flushing) and not FlushQueue.empty?(state.flush_queue)
-  end
+  defp flush(state, rotated_wal, mem_table \\ nil) do
+    mem_table = mem_table || state.mem_table
+    servers = {state.store, state.wal, state.manifest}
+    key_limit = state.key_limit
 
-  defp flush_from_queue(state) do
-    {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
-    pids = {state.store, state.wal, state.manifest}
-    task = flush(state.action_mod, mem_table, rotated_wal, state.key_limit, pids)
-    flushing = {task, mem_table}
-    state = %{state | flushing: flushing, flush_queue: flush_queue}
-    {:ok, state}
-  end
+    %{ref: ref} =
+      Task.async(fn ->
+        mem_table
+        |> MemTable.sort()
+        |> MemTable.flatten()
+        |> Actions.flush(rotated_wal, key_limit, servers)
+      end)
 
-  defp flush(action_mod, mem_table, rotated_wal, key_limit, pids) do
-    Task.async(fn ->
-      data = mem_table |> MemTable.sort() |> MemTable.flatten()
-      apply(action_mod, :flush, [data, rotated_wal, key_limit, pids])
-    end)
+    {ref, mem_table}
   end
 
   defp maybe_rotate(nil, wal, manifest, seq) do
