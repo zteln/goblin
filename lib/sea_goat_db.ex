@@ -72,32 +72,33 @@ defmodule SeaGoatDB do
     key_limit = args[:key_limit] || @default_key_limit
     level_limit = args[:level_limit] || @default_level_limit
     rw_locks_name = name(args[:name], :rw_locks)
-    manifest_name = name(args[:name], :manifest)
-    wal_name = name(args[:name], :wal)
+    manifest_server_name = name(args[:name], :manifest_server)
+    wal_server_name = name(args[:name], :wal_server)
     writer_name = name(args[:name], :writer)
     compactor_name = name(args[:name], :compactor)
-    store_name = name(args[:name], :store)
+    store_server_name = name(args[:name], :store)
 
     children = [
       {SeaGoatDB.RWLocks, Keyword.merge(args, name: rw_locks_name)},
-      {SeaGoatDB.Manifest, Keyword.merge(args, name: manifest_name, db_dir: db_dir)},
-      {SeaGoatDB.WAL, Keyword.merge(args, name: wal_name, db_dir: db_dir)},
+      {SeaGoatDB.Manifest.Server,
+       Keyword.merge(args, name: manifest_server_name, db_dir: db_dir)},
+      {SeaGoatDB.WAL.Server, Keyword.merge(args, name: wal_server_name, db_dir: db_dir)},
       {SeaGoatDB.Compactor,
        Keyword.merge(args,
          name: compactor_name,
          key_limit: key_limit,
          level_limit: level_limit,
-         manifest: manifest_name,
-         store: store_name,
+         manifest: args[:manifest] || %SeaGoatDB.Manifest.Server{server: manifest_server_name},
+         store: args[:store] || %SeaGoatDB.Store.Server{server: store_server_name},
          rw_locks: rw_locks_name,
          level_limit: level_limit
        )},
-      {SeaGoatDB.Store,
+      {SeaGoatDB.Store.Server,
        Keyword.merge(args,
          name: store_name,
          dir: db_dir,
          writer: writer_name,
-         manifest: manifest_name,
+         manifest: args[:manifest] || %SeaGoatDB.Manifest.Server{server: manifest_server_name},
          rw_locks: rw_locks_name,
          compactor: compactor_name
        )},
@@ -105,10 +106,9 @@ defmodule SeaGoatDB do
        Keyword.merge(args,
          name: writer_name,
          key_limit: key_limit,
-         wal: wal_name,
-         store: store_name,
-         manifest: manifest_name,
-         limit: key_limit
+         wal: args[:wal] || %SeaGoatDB.WAL.Server{server: wal_server_name},
+         store: args[:store] || %SeaGoatDB.Store.Server{server: store_server_name},
+         manifest: args[:manifest] || %SeaGoatDB.Manifest.Server{server: manifest_server_name}
        )}
     ]
 
