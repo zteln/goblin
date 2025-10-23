@@ -29,15 +29,6 @@ defmodule SeaGoatDB.SSTs do
     end)
   end
 
-  defp switch(to_switch, acc \\ [])
-  defp switch([], acc), do: {:ok, acc}
-
-  defp switch([{from, to, write_data} | to_switch], acc) do
-    with :ok <- Disk.rename(from, to) do
-      switch(to_switch, [{to, write_data} | acc])
-    end
-  end
-
   defp flush_stream(data) do
     Stream.resource(
       fn -> data end,
@@ -77,7 +68,9 @@ defmodule SeaGoatDB.SSTs do
   end
 
   defp do_merge(entries, level_key, clean_tombstones?, key_limit, file_getter, acc \\ {[], []})
-  defp do_merge([], _level_key, _clean_tombstones?, _key_limit, _file_getter, {old, new}), do: {:ok, old, new}
+
+  defp do_merge([], _level_key, _clean_tombstones?, _key_limit, _file_getter, {old, new}),
+    do: {:ok, old, new}
 
   defp do_merge(
          [{_id, entry} | entries],
@@ -182,9 +175,6 @@ defmodule SeaGoatDB.SSTs do
     end
   end
 
-  defp after_iter(_), do: :ok
-  defp tmp_file(file), do: file <> @tmp_suffix
-
   def write(file, level_key, data) do
     disk = Disk.open!(file, write?: true)
 
@@ -287,4 +277,16 @@ defmodule SeaGoatDB.SSTs do
   end
 
   def delete(file), do: Disk.rm(file)
+
+  defp switch(to_switch, acc \\ [])
+  defp switch([], acc), do: {:ok, acc}
+
+  defp switch([{from, to, write_data} | to_switch], acc) do
+    with :ok <- Disk.rename(from, to) do
+      switch(to_switch, [{to, write_data} | acc])
+    end
+  end
+
+  defp after_iter(_), do: :ok
+  defp tmp_file(file), do: file <> @tmp_suffix
 end
