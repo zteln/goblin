@@ -4,14 +4,12 @@ defmodule SeaGoatDB.Writer do
   alias SeaGoatDB.Writer.MemTable
   alias SeaGoatDB.Writer.Transaction
   alias SeaGoatDB.Writer.FlushQueue
-  alias SeaGoatDB.SSTs
   alias SeaGoatDB.Reader
   alias SeaGoatDB.Store
-  alias SeaGoatDB.WAL
-  alias SeaGoatDB.Manifest
 
   @type writer :: GenServer.server()
   @type transaction_return :: {:commit, Transaction.t(), term()} | :cancel
+
   @flush_level 0
 
   defstruct [
@@ -20,7 +18,9 @@ defmodule SeaGoatDB.Writer do
     :manifest,
     :key_limit,
     :flushing,
-    :write_mod,
+    :sst_mod,
+    :wal_mod,
+    :manifest_mod,
     seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
@@ -36,7 +36,9 @@ defmodule SeaGoatDB.Writer do
         :store,
         :manifest,
         :key_limit,
-        :write_mod
+        :sst_mod,
+        :wal_mod,
+        :manifest_mod
       ])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
@@ -115,7 +117,9 @@ defmodule SeaGoatDB.Writer do
        store: store,
        manifest: manifest,
        key_limit: args[:key_limit],
-       write_mod: args[:write_mod],
+       sst_mod: args[:sst_mod] || SeaGoatDB.SSTs,
+       wal_mod: args[:wal_mod] || SeaGoatDB.WAL,
+       manifest_mod: args[:manifest_mod] || SeaGoatDB.Manifest,
        mem_table: MemTable.new()
      }, {:continue, :recover_state}}
   end
@@ -155,7 +159,7 @@ defmodule SeaGoatDB.Writer do
             |> add_commit_to_running_transactions(tx.mem_table)
 
           writes = Enum.map(tx.writes, &advance_seq_in_write(&1, state.seq))
-          WAL.append(state.wal, writes)
+          state.wal_mod.append(state.wal, writes)
           tx_mem_table = MemTable.advance_seq(tx.mem_table, state.seq)
           mem_table = MemTable.merge(state.mem_table, tx_mem_table)
 
@@ -237,7 +241,7 @@ defmodule SeaGoatDB.Writer do
   end
 
   defp queue_overflow(state, rotated_wal) do
-    with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
+    with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
       flush_queue = FlushQueue.push(state.flush_queue, state.mem_table, rotated_wal)
       state = %{state | mem_table: MemTable.new(), flush_queue: flush_queue}
       {:ok, state}
@@ -261,7 +265,7 @@ defmodule SeaGoatDB.Writer do
   end
 
   defp start_flush(state, rotated_wal) do
-    with {:ok, rotated_wal} <- maybe_rotate(rotated_wal, state.wal, state.manifest, state.seq) do
+    with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
       flushing = flush(state, rotated_wal)
       state = %{state | mem_table: MemTable.new(), flushing: flushing}
       {:ok, state}
@@ -270,19 +274,25 @@ defmodule SeaGoatDB.Writer do
 
   defp flush(state, rotated_wal, mem_table \\ nil) do
     mem_table = mem_table || state.mem_table
-    store = state.store
-    wal = state.wal
-    manifest = state.manifest
-    key_limit = state.key_limit
+
+    %{
+      store: store,
+      sst_mod: sst_mod,
+      wal: wal,
+      wal_mod: wal_mod,
+      manifest: manifest,
+      manifest_mod: manifest_mod,
+      key_limit: key_limit
+    } = state
 
     %{ref: ref} =
       Task.async(fn ->
         data = mem_table |> MemTable.sort() |> MemTable.flatten()
 
         with {:ok, flushed} <-
-               SSTs.flush(data, @flush_level, key_limit, fn -> Store.new_file(store) end),
-             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, &elem(&1, 0)), rotated_wal),
-             :ok <- WAL.clean(wal, rotated_wal),
+               sst_mod.flush(data, @flush_level, key_limit, fn -> Store.new_file(store) end),
+             :ok <- manifest_mod.log_flush(manifest, Enum.map(flushed, &elem(&1, 0)), rotated_wal),
+             :ok <- wal_mod.clean(wal, rotated_wal),
              :ok <- put_in_store(flushed, store) do
           {:ok, :flushed}
         end
@@ -298,15 +308,23 @@ defmodule SeaGoatDB.Writer do
     put_in_store(flushed, store)
   end
 
-  defp maybe_rotate(nil, wal, manifest, seq) do
-    with {:ok, rotated_wal} <- WAL.rotate(wal),
-         :ok <- Manifest.log_rotation(manifest, rotated_wal),
-         :ok <- Manifest.log_sequence(manifest, seq) do
+  defp maybe_rotate(state, nil) do
+    %{
+      wal: wal,
+      wal_mod: wal_mod,
+      manifest: manifest,
+      manifest_mod: manifest_mod,
+      seq: seq
+    } = state
+
+    with {:ok, rotated_wal} <- wal_mod.rotate(wal),
+         :ok <- manifest_mod.log_rotation(manifest, rotated_wal),
+         :ok <- manifest_mod.log_sequence(manifest, seq) do
       {:ok, rotated_wal}
     end
   end
 
-  defp maybe_rotate(rotated_wal, _wal, _manifest, _seq), do: {:ok, rotated_wal}
+  defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
 
   defp search_for_key([], _key), do: :not_found
 
@@ -321,9 +339,9 @@ defmodule SeaGoatDB.Writer do
   end
 
   defp recover_writes(state) do
-    %{seq: seq} = Manifest.get_version(state.manifest, [:seq])
+    %{seq: seq} = state.manifest_mod.get_version(state.manifest, [:seq])
 
-    with {:ok, logs} <- WAL.recover(state.wal) do
+    with {:ok, logs} <- state.wal_mod.recover(state.wal) do
       recover_state(logs, %{state | seq: seq})
     end
   end
