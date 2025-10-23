@@ -4,13 +4,15 @@ defmodule SeaGoatDB.Writer do
   alias SeaGoatDB.Writer.MemTable
   alias SeaGoatDB.Writer.Transaction
   alias SeaGoatDB.Writer.FlushQueue
-  alias SeaGoatDB.Actions
+  alias SeaGoatDB.SSTs
   alias SeaGoatDB.Reader
+  alias SeaGoatDB.Store
   alias SeaGoatDB.WAL
   alias SeaGoatDB.Manifest
 
   @type writer :: GenServer.server()
   @type transaction_return :: {:commit, Transaction.t(), term()} | :cancel
+  @flush_level 0
 
   defstruct [
     :wal,
@@ -18,7 +20,7 @@ defmodule SeaGoatDB.Writer do
     :manifest,
     :key_limit,
     :flushing,
-    :action_mod,
+    :write_mod,
     seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
@@ -34,7 +36,7 @@ defmodule SeaGoatDB.Writer do
         :store,
         :manifest,
         :key_limit,
-        :action_mod
+        :write_mod
       ])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
@@ -113,7 +115,7 @@ defmodule SeaGoatDB.Writer do
        store: store,
        manifest: manifest,
        key_limit: args[:key_limit],
-       action_mod: args[:action_mod] || Actions,
+       write_mod: args[:write_mod],
        mem_table: MemTable.new()
      }, {:continue, :recover_state}}
   end
@@ -268,18 +270,32 @@ defmodule SeaGoatDB.Writer do
 
   defp flush(state, rotated_wal, mem_table \\ nil) do
     mem_table = mem_table || state.mem_table
-    servers = {state.store, state.wal, state.manifest}
+    store = state.store
+    wal = state.wal
+    manifest = state.manifest
     key_limit = state.key_limit
 
     %{ref: ref} =
       Task.async(fn ->
-        mem_table
-        |> MemTable.sort()
-        |> MemTable.flatten()
-        |> Actions.flush(rotated_wal, key_limit, servers)
+        data = mem_table |> MemTable.sort() |> MemTable.flatten()
+
+        with {:ok, flushed} <-
+               SSTs.flush(data, @flush_level, key_limit, fn -> Store.new_file(store) end),
+             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, &elem(&1, 0)), rotated_wal),
+             :ok <- WAL.clean(wal, rotated_wal),
+             :ok <- put_in_store(flushed, store) do
+          {:ok, :flushed}
+        end
       end)
 
     {ref, mem_table}
+  end
+
+  defp put_in_store([], _store), do: :ok
+
+  defp put_in_store([{file, {bloom_filter, priority, size, key_range}} | flushed], store) do
+    Store.put(store, file, @flush_level, bloom_filter, priority, size, key_range)
+    put_in_store(flushed, store)
   end
 
   defp maybe_rotate(nil, wal, manifest, seq) do

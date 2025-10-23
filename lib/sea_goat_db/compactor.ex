@@ -1,8 +1,12 @@
 defmodule SeaGoatDB.Compactor do
+  @moduledoc false
   use GenServer
-  alias __MODULE__.Entry
-  alias __MODULE__.Level
-  alias SeaGoatDB.Actions
+  alias SeaGoatDB.Compactor.Entry
+  alias SeaGoatDB.Compactor.Level
+  alias SeaGoatDB.SSTs
+  alias SeaGoatDB.Store
+  alias SeaGoatDB.Manifest
+  alias SeaGoatDB.RWLocks
 
   defstruct [
     :store,
@@ -10,6 +14,7 @@ defmodule SeaGoatDB.Compactor do
     :manifest,
     :key_limit,
     :level_limit,
+    :write_mod,
     levels: %{}
   ]
 
@@ -19,7 +24,16 @@ defmodule SeaGoatDB.Compactor do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:key_limit, :level_limit, :store, :rw_locks, :manifest])
+    args =
+      Keyword.take(opts, [
+        :key_limit,
+        :level_limit,
+        :write_mod,
+        :store,
+        :rw_locks,
+        :manifest
+      ])
+
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
@@ -36,7 +50,8 @@ defmodule SeaGoatDB.Compactor do
        rw_locks: args[:rw_locks],
        manifest: args[:manifest],
        key_limit: args[:key_limit],
-       level_limit: args[:level_limit]
+       level_limit: args[:level_limit],
+       write_mod: args[:write_mod]
      }}
   end
 
@@ -112,16 +127,7 @@ defmodule SeaGoatDB.Compactor do
         state
 
       exceeding_level_limit?(source_level, state.level_limit) ->
-        levels =
-          start_compaction(
-            state.levels,
-            source_level,
-            target_level,
-            state.key_limit,
-            {state.store, state.manifest, state.rw_locks}
-          )
-
-        %{state | levels: levels}
+        compact(state, source_level, target_level)
 
       true ->
         state
@@ -135,43 +141,71 @@ defmodule SeaGoatDB.Compactor do
     Level.get_total_size(source_level) >= level_limit(level_limit, source_level.level_key)
   end
 
-  defp start_compaction(levels, source_level, target_level, key_limit, pids) do
-    entries = Level.get_highest_prio_entries(source_level)
-    clean_tombstones? = clean_tombstones?(target_level, levels)
+  defp compact(state, source_level, target_level) do
+    key_limit = state.key_limit
 
-    ref =
-      compact(
-        Enum.map(entries, & &1.id),
-        source_level.level_key,
-        target_level,
-        clean_tombstones?,
-        key_limit,
-        pids
-      )
+    store = state.store
+    manifest = state.manifest
+    rw_locks = state.rw_locks
+
+    source_level_key = source_level.level_key
+
+    sources =
+      source_level
+      |> Level.get_highest_prio_entries()
+      |> Enum.map(& &1.id)
+
+    clean_tombstones? = clean_tombstones?(target_level, state.levels)
+
+    %{ref: ref} =
+      Task.async(fn ->
+        with {:ok, old, new} <-
+               SSTs.merge(
+                 sources,
+                 target_level,
+                 key_limit,
+                 clean_tombstones?,
+                 &Level.place_in_buffer(&2, &1),
+                 fn -> Store.new_file(store) end
+               ),
+             :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, &elem(&1, 0))),
+             :ok <- put_new_files_in_store(new, target_level.level_key, store),
+             :ok <- remove_old_files(sources ++ old, store, rw_locks) do
+          {:ok, sources ++ old, source_level_key, target_level.level_key}
+        end
+      end)
 
     source_level = %{source_level | compacting_ref: ref}
     target_level = %{target_level | compacting_ref: ref}
 
-    levels
-    |> Map.put(source_level.level_key, source_level)
-    |> Map.put(target_level.level_key, target_level)
+    levels =
+      state.levels
+      |> Map.put(source_level.level_key, source_level)
+      |> Map.put(target_level.level_key, target_level)
+
+    %{state | levels: levels}
   end
 
-  defp compact(files, source_level_key, target_level, clean_tombstones?, key_limit, pids) do
-    %{ref: ref} =
-      Task.async(fn ->
-        Actions.merge(
-          files,
-          source_level_key,
-          target_level,
-          &Level.place_in_buffer(&2, &1),
-          clean_tombstones?,
-          key_limit,
-          pids
-        )
-      end)
+  defp put_new_files_in_store([], _level_key, _store), do: :ok
 
-    ref
+  defp put_new_files_in_store(
+         [{file, {bloom_filter, priority, size, key_range}} | new],
+         level_key,
+         store
+       ) do
+    Store.put(store, file, level_key, bloom_filter, priority, size, key_range)
+    put_new_files_in_store(new, level_key, store)
+  end
+
+  defp remove_old_files([], _store, _rw_locks), do: :ok
+
+  defp remove_old_files([file | old], store, rw_locks) do
+    with :ok <- Store.remove(store, file),
+         :ok <- RWLocks.wlock(rw_locks, file),
+         :ok <- SSTs.delete(file),
+         :ok <- RWLocks.unlock(rw_locks, file) do
+      remove_old_files(old, store, rw_locks)
+    end
   end
 
   defp level_limit(level_limit, level_key), do: level_limit * :math.pow(10, level_key)

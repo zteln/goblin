@@ -30,7 +30,7 @@ defmodule SeaGoatDB.Reader do
   end
 
   defp try_store(store, key, timeout) do
-    ss_tables = Store.get_ss_tables(store, key)
+    ss_tables = Store.get(store, key)
 
     result =
       ss_tables
