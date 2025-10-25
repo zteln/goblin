@@ -41,15 +41,15 @@ defmodule SeaGoatDB.WAL do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:sync_interval, :log_name, :db_dir])
+    args = Keyword.take(opts, [:sync_interval, :wal_name, :db_dir])
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
   @impl GenServer
   def init(args) do
-    name = args[:log_name] || @log_name
+    name = args[:wal_name] || @log_name
     file = Path.join(args[:db_dir], @log_file)
-    sync_interval = (args[:sync_interval] || @default_sync_interval) * Integer.pow(10, 6)
+    sync_interval = args[:sync_interval] || @default_sync_interval
 
     case open_log(file, name) do
       {:ok, log} ->
@@ -121,8 +121,10 @@ defmodule SeaGoatDB.WAL do
 
   def handle_continue(:sync, state) do
     now = now()
+    last_sync = state.last_sync
+    sync_interval = state.sync_interval * Integer.pow(10, 6)
 
-    if now - state.last_sync >= state.sync_interval do
+    if now - last_sync >= sync_interval do
       append_and_sync_log(state.log, Enum.reverse(state.buffer))
       {:noreply, %{state | last_sync: now, buffer: []}}
     else
