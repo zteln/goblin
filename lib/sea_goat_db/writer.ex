@@ -3,7 +3,7 @@ defmodule SeaGoatDB.Writer do
   use GenServer
   alias SeaGoatDB.Writer.MemTable
   alias SeaGoatDB.Writer.Transaction
-  alias SeaGoatDB.Writer.FlushQueue
+  # alias SeaGoatDB.Writer.FlushQueue
   alias SeaGoatDB.Reader
   alias SeaGoatDB.Store
 
@@ -17,14 +17,13 @@ defmodule SeaGoatDB.Writer do
     :store,
     :manifest,
     :key_limit,
-    :flushing,
     :sst_mod,
     :wal_mod,
     :manifest_mod,
     seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
-    flush_queue: FlushQueue.new(),
+    flushing: [],
     subscribers: %{}
   ]
 
@@ -126,9 +125,11 @@ defmodule SeaGoatDB.Writer do
 
   @impl GenServer
   def handle_call({:get, key}, _from, state) do
-    flushing_mem_table = if state.flushing, do: [elem(state.flushing, 1)], else: []
-    queued_mem_tables = FlushQueue.to_data_list(state.flush_queue)
-    mem_tables = [state.mem_table | queued_mem_tables ++ flushing_mem_table]
+    flushing_mem_tables =
+      state.flushing
+      |> Enum.map(fn {_ref, mem_table} -> mem_table end)
+
+    mem_tables = [state.mem_table | flushing_mem_tables]
     reply = search_for_key(mem_tables, key)
     {:reply, reply, state}
   end
@@ -185,7 +186,7 @@ defmodule SeaGoatDB.Writer do
   end
 
   def handle_call(:is_flushing, _from, state) do
-    is_flushing = not is_nil(state.flushing)
+    is_flushing = length(state.flushing) != 0
     {:reply, is_flushing, state}
   end
 
@@ -211,8 +212,14 @@ defmodule SeaGoatDB.Writer do
   end
 
   @impl GenServer
-  def handle_info({_ref, {:ok, :flushed}}, state) do
-    {:noreply, %{state | flushing: nil}, {:continue, :flush}}
+  def handle_info({ref, {:ok, :flushed}}, state) do
+    flushing =
+      Enum.reject(state.flushing, fn
+        {^ref, _} -> true
+        _ -> false
+      end)
+
+    {:noreply, %{state | flushing: flushing}}
   end
 
   def handle_info(_msg, state) do
@@ -228,46 +235,17 @@ defmodule SeaGoatDB.Writer do
   defp advance_seq_in_write({seq1, :remove, k}, seq2), do: {seq1 + seq2, :remove, k}
 
   defp maybe_flush(state, rotated_wal \\ nil) do
-    cond do
-      queue_overflow?(state) -> queue_overflow(state, rotated_wal)
-      flush_from_queue?(state) -> flush_from_queue(state)
-      start_flush?(state) -> start_flush(state, rotated_wal)
-      true -> {:ok, state}
-    end
-  end
-
-  defp queue_overflow?(state) do
-    MemTable.has_overflow(state.mem_table, state.key_limit) and not is_nil(state.flushing)
-  end
-
-  defp queue_overflow(state, rotated_wal) do
-    with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
-      flush_queue = FlushQueue.push(state.flush_queue, state.mem_table, rotated_wal)
-      state = %{state | mem_table: MemTable.new(), flush_queue: flush_queue}
+    if MemTable.has_overflow(state.mem_table, state.key_limit) do
+      start_flush(state, rotated_wal)
+    else
       {:ok, state}
     end
-  end
-
-  defp flush_from_queue?(state) do
-    is_nil(state.flushing) and not FlushQueue.empty?(state.flush_queue)
-  end
-
-  defp flush_from_queue(state) do
-    {mem_table, rotated_wal, flush_queue} = FlushQueue.pop(state.flush_queue)
-    flushing = flush(state, rotated_wal, mem_table)
-    state = %{state | flushing: flushing, flush_queue: flush_queue}
-    {:ok, state}
-  end
-
-  defp start_flush?(state) do
-    MemTable.has_overflow(state.mem_table, state.key_limit) and
-      FlushQueue.empty?(state.flush_queue)
   end
 
   defp start_flush(state, rotated_wal) do
     with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
       flushing = flush(state, rotated_wal)
-      state = %{state | mem_table: MemTable.new(), flushing: flushing}
+      state = %{state | mem_table: MemTable.new(), flushing: [flushing | state.flushing]}
       {:ok, state}
     end
   end
