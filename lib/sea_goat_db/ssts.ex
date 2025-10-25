@@ -6,23 +6,140 @@ defmodule SeaGoatDB.SSTs do
 
   @tmp_suffix ".tmp"
 
+  def delete(file), do: Disk.rm(file)
+
+  def find(file, key) do
+    disk = Disk.open!(file)
+
+    result =
+      with :ok <- valid_ss_table(disk),
+           {:ok, {_, _, _, key_range_pos, key_range_size, _, _, no_of_blocks, _, _}} <-
+             read_metadata(disk),
+           {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
+           :ok <- key_in_range(key_range, key) do
+        binary_search(disk, key, 0, no_of_blocks)
+      end
+
+    Disk.close(disk)
+    result
+  end
+
+  @spec fetch_ss_table_info(SeaGoatDB.db_file()) ::
+          {:ok, {SeaGoatDB.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
+  def fetch_ss_table_info(file) do
+    disk = Disk.open!(file)
+
+    result =
+      with :ok <- valid_ss_table(disk),
+           {:ok,
+            {
+              level_key,
+              bf_pos,
+              bf_size,
+              key_range_pos,
+              key_range_size,
+              priority_pos,
+              priority_size,
+              _,
+              size,
+              _
+            }} <- read_metadata(disk),
+           {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size),
+           {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
+           {:ok, priority} <- read_priority(disk, priority_pos, priority_size) do
+        {:ok, bf, level_key, priority, size, key_range}
+      end
+
+    Disk.close(disk)
+    result
+  end
+
+  def stream!(file) do
+    Stream.resource(
+      fn ->
+        Disk.open!(file, start?: true)
+      end,
+      fn disk ->
+        case read_next_key(disk) do
+          {:ok, data, disk} ->
+            {[data], disk}
+
+          {:error, :eod} ->
+            {:halt, disk}
+
+          {:error, _reason} ->
+            Disk.close(disk)
+            raise "stream failed"
+        end
+      end,
+      fn disk -> Disk.close(disk) end
+    )
+  end
+
+  def iterate({:next, disk}) do
+    case read_next_key(disk) do
+      {:ok, data, disk} ->
+        {:ok, data, {:next, disk}}
+
+      {:error, :eod} ->
+        Disk.close(disk)
+        :ok
+
+      e ->
+        Disk.close(disk)
+        e
+    end
+  end
+
+  def iterate(file) do
+    disk = Disk.open!(file, start?: true)
+    {:next, disk}
+  end
+
   def flush(data, level_key, key_limit, file_getter) do
-    with {:ok, flushed} <- write_flush(data, level_key, key_limit, file_getter) do
+    stream = flush_stream(data, key_limit)
+
+    with {:ok, flushed} <- write_stream(stream, level_key, file_getter) do
       switch(flushed)
     end
   end
 
-  defp write_flush(data, level_key, key_limit, file_getter) do
-    data
-    |> flush_stream()
-    |> Stream.chunk_every(key_limit)
-    |> Enum.reduce_while({:ok, []}, fn chunk, {:ok, flushed} ->
+  def merge(sources, target, key_limit, clean_tombstones?, level_reducer, file_getter) do
+    %{
+      level_key: level_key,
+      entries: entries
+    } = deplete(sources, target, level_reducer)
+
+    old = Map.keys(entries)
+
+    streams =
+      Enum.map(entries, fn {_id, entry} ->
+        merge_stream(entry, clean_tombstones?, key_limit)
+      end)
+
+    with {:ok, merged} <- write_streams(streams, level_key, file_getter),
+         {:ok, merged} <- switch(merged) do
+      {:ok, old, merged}
+    end
+  end
+
+  defp write_streams(streams, level_key, file_getter, acc \\ [])
+  defp write_streams([], _level_key, _file_getter, acc), do: {:ok, acc}
+
+  defp write_streams([stream | rest], level_key, file_getter, acc) do
+    with {:ok, new} <- write_stream(stream, level_key, file_getter) do
+      write_streams(rest, level_key, file_getter, new ++ acc)
+    end
+  end
+
+  defp write_stream(stream, level_key, file_getter) do
+    Enum.reduce_while(stream, {:ok, []}, fn chunk, {:ok, acc} ->
       file = file_getter.()
       tmp_file = tmp_file(file)
 
       case write(tmp_file, level_key, chunk) do
         {:ok, bloom_filter, priority, size, key_range} ->
-          {:cont, {:ok, [{tmp_file, file, {bloom_filter, priority, size, key_range}} | flushed]}}
+          {:cont, {:ok, [{tmp_file, file, {bloom_filter, priority, size, key_range}} | acc]}}
 
         {:error, _reason} = error ->
           {:halt, error}
@@ -30,32 +147,17 @@ defmodule SeaGoatDB.SSTs do
     end)
   end
 
-  defp flush_stream(data) do
+  defp flush_stream(data, key_limit) do
     Stream.resource(
       fn -> data end,
       &iter_flush_data/1,
       &after_iter/1
     )
+    |> Stream.chunk_every(key_limit)
   end
 
   defp iter_flush_data([]), do: {:halt, :ok}
   defp iter_flush_data([next | data]), do: {[next], data}
-
-  def merge(sources, target, key_limit, clean_tombstones?, level_reducer, file_getter) do
-    target = deplete(sources, target, level_reducer)
-
-    with {:ok, old, new} <-
-           do_merge(
-             Enum.to_list(target.entries),
-             target.level_key,
-             clean_tombstones?,
-             key_limit,
-             file_getter
-           ),
-         {:ok, new} <- switch(new) do
-      {:ok, old, new}
-    end
-  end
 
   defp deplete([], level, _level_reducer), do: level
 
@@ -68,54 +170,7 @@ defmodule SeaGoatDB.SSTs do
     deplete(sources, level, level_reducer)
   end
 
-  defp do_merge(entries, level_key, clean_tombstones?, key_limit, file_getter, acc \\ {[], []})
-
-  defp do_merge([], _level_key, _clean_tombstones?, _key_limit, _file_getter, {old, new}),
-    do: {:ok, old, new}
-
-  defp do_merge(
-         [{_id, entry} | entries],
-         level_key,
-         clean_tombstones?,
-         key_limit,
-         file_getter,
-         {acc_old, acc_new}
-       ) do
-    with {:ok, old, new} <-
-           write_compaction(entry, level_key, clean_tombstones?, key_limit, file_getter) do
-      do_merge(
-        entries,
-        level_key,
-        clean_tombstones?,
-        key_limit,
-        file_getter,
-        {old ++ acc_old, new ++ acc_new}
-      )
-    end
-  end
-
-  defp write_compaction(%{buffer: []}, _level_key, _clean_tombstones?, _key_limit, _file_getter),
-    do: {:ok, [], []}
-
-  defp write_compaction(entry, level_key, clean_tombstones?, key_limit, file_getter) do
-    entry
-    |> merge_stream(clean_tombstones?)
-    |> Stream.chunk_every(key_limit)
-    |> Enum.reduce_while({:ok, List.wrap(entry.id), []}, fn chunk, {:ok, old, new} ->
-      file = file_getter.()
-      tmp_file = tmp_file(file)
-
-      case write(tmp_file, level_key, chunk) do
-        {:ok, bloom_filter, seq, size, key_range} ->
-          {:cont, {:ok, old, [{tmp_file, file, {bloom_filter, seq, size, key_range}} | new]}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
-  end
-
-  defp merge_stream(entry, clean_tombstones?) do
+  defp merge_stream(entry, clean_tombstones?, key_limit) do
     Stream.resource(
       fn ->
         sst_iter = init_sst_iter(entry.id)
@@ -125,6 +180,7 @@ defmodule SeaGoatDB.SSTs do
       &iter_merge_data/1,
       &after_iter/1
     )
+    |> Stream.chunk_every(key_limit)
   end
 
   defp init_sst_iter(nil), do: nil
@@ -176,7 +232,7 @@ defmodule SeaGoatDB.SSTs do
     end
   end
 
-  def write(file, level_key, data) do
+  defp write(file, level_key, data) do
     disk = Disk.open!(file, write?: true)
 
     result =
@@ -186,93 +242,6 @@ defmodule SeaGoatDB.SSTs do
       end
 
     Disk.sync(disk)
-    Disk.close(disk)
-    result
-  end
-
-  def find(file, key) do
-    disk = Disk.open!(file)
-
-    result =
-      with :ok <- valid_ss_table(disk),
-           {:ok, {_, _, _, key_range_pos, key_range_size, _, _, no_of_blocks, _, _}} <-
-             read_metadata(disk),
-           {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
-           :ok <- key_in_range(key_range, key) do
-        binary_search(disk, key, 0, no_of_blocks)
-      end
-
-    Disk.close(disk)
-    result
-  end
-
-  def stream!(file) do
-    Stream.resource(
-      fn ->
-        Disk.open!(file, start?: true)
-      end,
-      fn disk ->
-        case read_next_key(disk) do
-          {:ok, data, disk} ->
-            {[data], disk}
-
-          {:error, :eod} ->
-            {:halt, disk}
-
-          {:error, _reason} ->
-            raise "stream failed"
-        end
-      end,
-      fn disk -> Disk.close(disk) end
-    )
-  end
-
-  def iterate({:next, disk}) do
-    case read_next_key(disk) do
-      {:ok, data, disk} ->
-        {:ok, data, {:next, disk}}
-
-      {:error, :eod} ->
-        Disk.close(disk)
-        :ok
-
-      e ->
-        Disk.close(disk)
-        e
-    end
-  end
-
-  def iterate(file) do
-    disk = Disk.open!(file, start?: true)
-    {:next, disk}
-  end
-
-  @spec fetch_ss_table_info(SeaGoatDB.db_file()) ::
-          {:ok, {SeaGoatDB.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
-  def fetch_ss_table_info(file) do
-    disk = Disk.open!(file)
-
-    result =
-      with :ok <- valid_ss_table(disk),
-           {:ok,
-            {
-              level_key,
-              bf_pos,
-              bf_size,
-              key_range_pos,
-              key_range_size,
-              priority_pos,
-              priority_size,
-              _,
-              size,
-              _
-            }} <- read_metadata(disk),
-           {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size),
-           {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
-           {:ok, priority} <- read_priority(disk, priority_pos, priority_size) do
-        {:ok, bf, level_key, priority, size, key_range}
-      end
-
     Disk.close(disk)
     result
   end
@@ -428,10 +397,8 @@ defmodule SeaGoatDB.SSTs do
     end
   end
 
-  def key_in_range({smallest, largest}, key) when key >= smallest and key <= largest, do: :ok
-  def key_in_range(_, _), do: :error
-
-  def delete(file), do: Disk.rm(file)
+  defp key_in_range({smallest, largest}, key) when key >= smallest and key <= largest, do: :ok
+  defp key_in_range(_, _), do: :error
 
   defp switch(to_switch, acc \\ [])
   defp switch([], acc), do: {:ok, acc}
