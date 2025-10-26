@@ -2,6 +2,7 @@ defmodule SeaGoatDB.StoreTest do
   use ExUnit.Case, async: true
   use TestHelper
   alias SeaGoatDB.Store
+  alias SeaGoatDB.SSTs
 
   @moduletag :tmp_dir
   @db_opts [
@@ -15,40 +16,31 @@ defmodule SeaGoatDB.StoreTest do
   setup_db(@db_opts)
 
   test "put/4 puts new SST in store and adds to the compactor", c do
-    file = Path.join(c.tmp_dir, "foo.seagoat")
-
-    {:ok, bf, level_key, size, key_range} =
-      SeaGoatDB.SSTs.write(file, 0, [{0, :k1, :v1}, {1, :k2, :v2}])
-
-    assert :ok == Store.put(c.store, file, level_key, {bf, 0, size, key_range})
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
     assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
     assert %{
              levels: %{
-               0 => %{entries: %{^file => %{size: ^size, key_range: ^key_range, priority: 0}}}
+               0 => %{
+                 entries: %{^file => %{size: ^size, key_range: ^key_range, priority: ^priority}}
+               }
              }
            } = :sys.get_state(c.compactor)
   end
 
   test "put/4 preserves existing files when putting new files", c do
-    file1 = Path.join(c.tmp_dir, "foo.seagoat")
-    file2 = Path.join(c.tmp_dir, "foo.seagoat")
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
+    assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
-    {:ok, bf1, level_key1, size1, key_range1} =
-      SeaGoatDB.SSTs.write(file1, 0, [{0, :k1, :v1}, {1, :k2, :v2}])
-
-    {:ok, bf2, level_key2, size2, key_range2} =
-      SeaGoatDB.SSTs.write(file2, 0, [{0, :k2, :v2}, {2, :k2, :v2}])
-
-    assert :ok == Store.put(c.store, file1, level_key1, {bf1, 0, size1, key_range1})
-
-    assert %{ss_tables: [%{file: ^file1, bloom_filter: ^bf1}]} = :sys.get_state(c.store)
-
-    assert :ok == Store.put(c.store, file2, level_key2, {bf2, 0, size2, key_range2})
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
     assert %{
-             ss_tables: [%{file: ^file2, bloom_filter: ^bf2}, %{file: ^file1, bloom_filter: ^bf1}]
+             ss_tables: [%{file: ^file, bloom_filter: ^bf}, %{file: ^file, bloom_filter: ^bf}]
            } = :sys.get_state(c.store)
   end
 
@@ -61,12 +53,10 @@ defmodule SeaGoatDB.StoreTest do
   end
 
   test "remove/2 removes SST from the store", c do
-    file = Path.join(c.tmp_dir, "foo.seagoat")
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
 
-    {:ok, bf, level_key, size, key_range} =
-      SeaGoatDB.SSTs.write(file, 0, [{0, :k1, :v1}, {1, :k2, :v2}])
-
-    assert :ok == Store.put(c.store, file, level_key, {bf, 0, size, key_range})
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
     assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
     assert :ok == Store.remove(c.store, file)
     assert %{ss_tables: []} = :sys.get_state(c.store)
@@ -81,19 +71,17 @@ defmodule SeaGoatDB.StoreTest do
   end
 
   test "get_ss_tables/2 returns empty list if no files are stored", c do
-    assert [] == Store.get_ss_tables(c.store, :k)
+    assert [] == Store.get(c.store, :k)
   end
 
-  test "get_ss_tables/2 rlocks file when matched", c do
+  test "get/2 rlocks file when matched", c do
     self = self()
-    file = Path.join(c.tmp_dir, "foo.seagoat")
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
 
-    {:ok, bf, level_key, size, key_range} =
-      SeaGoatDB.SSTs.write(file, 0, [{0, :k1, :v1}, {1, :k2, :v2}])
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
-    assert :ok == Store.put(c.store, file, level_key, {bf, 0, size, key_range})
-
-    assert [{read_f, unlock_f}] = Store.get_ss_tables(c.store, :k1)
+    assert [{read_f, unlock_f}] = Store.get(c.store, :k1)
 
     assert %{
              locks: %{
@@ -116,30 +104,20 @@ defmodule SeaGoatDB.StoreTest do
   end
 
   test "get_ss_tables/2 returns empty list if Bloom filter does not match", c do
-    file = Path.join(c.tmp_dir, "foo.seagoat")
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
 
-    {:ok, bf, level_key, size, key_range} =
-      SeaGoatDB.SSTs.write(file, 0, [{0, :k1, :v1}, {1, :k2, :v2}])
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
-    assert :ok == Store.put(c.store, file, level_key, {bf, 0, size, key_range})
-
-    assert [] = Store.get_ss_tables(c.store, :k3)
-  end
-
-  test "tmp_file/1 adds .tmp suffix" do
-    assert Store.tmp_file("test.seagoat") == "test.seagoat.tmp"
-    assert Store.tmp_file("/path/to/file.seagoat") == "/path/to/file.seagoat.tmp"
-    assert Store.tmp_file("simple") == "simple.tmp"
+    assert [] = Store.get(c.store, :k3)
   end
 
   test "store gets state from manifest on start", c do
-    file = Path.join(c.tmp_dir, "foo.seagoat")
-
-    {:ok, bf, level_key, size, key_range} =
-      SeaGoatDB.SSTs.write(file, 0, [{0, :k1, :v1}, {1, :k2, :v2}])
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
 
     assert :ok == SeaGoatDB.Manifest.log_compaction(c.manifest, [], [file])
-    assert :ok == Store.put(c.store, file, level_key, {bf, 0, size, key_range})
+    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
     assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
     stop_supervised!(c.db_id)
