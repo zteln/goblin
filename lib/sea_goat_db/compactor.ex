@@ -1,6 +1,7 @@
 defmodule SeaGoatDB.Compactor do
   @moduledoc false
   use GenServer
+  require Logger
   alias SeaGoatDB.Compactor.Entry
   alias SeaGoatDB.Compactor.Level
   alias SeaGoatDB.SSTs
@@ -12,9 +13,10 @@ defmodule SeaGoatDB.Compactor do
     :store,
     :rw_locks,
     :manifest,
+    :task_sup,
+    :task_mod,
     :key_limit,
     :level_limit,
-    :write_mod,
     levels: %{}
   ]
 
@@ -28,10 +30,11 @@ defmodule SeaGoatDB.Compactor do
       Keyword.take(opts, [
         :key_limit,
         :level_limit,
-        :write_mod,
         :store,
         :rw_locks,
-        :manifest
+        :manifest,
+        :task_sup,
+        :task_mod
       ])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
@@ -46,12 +49,13 @@ defmodule SeaGoatDB.Compactor do
   def init(args) do
     {:ok,
      %__MODULE__{
-       store: args[:store],
-       rw_locks: args[:rw_locks],
-       manifest: args[:manifest],
        key_limit: args[:key_limit],
        level_limit: args[:level_limit],
-       write_mod: args[:write_mod]
+       rw_locks: args[:rw_locks],
+       store: args[:store],
+       manifest: args[:manifest],
+       task_sup: args[:task_sup],
+       task_mod: args[:task_mod] || Task.Supervisor
      }}
   end
 
@@ -105,10 +109,34 @@ defmodule SeaGoatDB.Compactor do
     {:noreply, state}
   end
 
-  def handle_info(_msg, state) do
-    # Handle error, retry compaction
-    {:noreply, state}
+  def handle_info({ref, {:error, reason}}, state) do
+    [{_, %{compacting_ref: {_, retry}} = source_level}, {_, target_level}] =
+      state.levels
+      |> Enum.filter(fn
+        {_level_key, %{compacting_ref: {^ref, _retry}}} -> true
+        _ -> false
+      end)
+      |> List.keysort(0)
+
+    case retry do
+      0 ->
+        Logger.error(fn ->
+          "Failed to compact after 5 attempts with reason: #{inspect(reason)}. Exiting."
+        end)
+
+        {:stop, {:error, :failed_to_compact}, state}
+
+      retry ->
+        Logger.warning(fn ->
+          "Failed to compact with reason: #{inspect(reason)}. Retrying..."
+        end)
+
+        state = compact(state, source_level, target_level, retry - 1)
+        {:noreply, state}
+    end
   end
+
+  def handle_info(_msg, state), do: {:noreply, state}
 
   defp process_level_after_compaction(levels, level_key, old_file) do
     level = Map.get(levels, level_key)
@@ -141,12 +169,16 @@ defmodule SeaGoatDB.Compactor do
     Level.get_total_size(source_level) >= level_limit(level_limit, source_level.level_key)
   end
 
-  defp compact(state, source_level, target_level) do
-    key_limit = state.key_limit
-
-    store = state.store
-    manifest = state.manifest
-    rw_locks = state.rw_locks
+  defp compact(state, source_level, target_level, retry \\ 5) do
+    %{
+      levels: levels,
+      key_limit: key_limit,
+      store: store,
+      manifest: manifest,
+      rw_locks: rw_locks,
+      task_sup: task_sup,
+      task_mod: task_mod
+    } = state
 
     source_level_key = source_level.level_key
 
@@ -155,10 +187,10 @@ defmodule SeaGoatDB.Compactor do
       |> Level.get_highest_prio_entries()
       |> Enum.map(& &1.id)
 
-    clean_tombstones? = clean_tombstones?(target_level, state.levels)
+    clean_tombstones? = clean_tombstones?(target_level, levels)
 
     %{ref: ref} =
-      Task.async(fn ->
+      task_mod.async(task_sup, fn ->
         with {:ok, old, new} <-
                SSTs.merge(
                  sources,
@@ -175,8 +207,8 @@ defmodule SeaGoatDB.Compactor do
         end
       end)
 
-    source_level = %{source_level | compacting_ref: ref}
-    target_level = %{target_level | compacting_ref: ref}
+    source_level = %{source_level | compacting_ref: {ref, retry}}
+    target_level = %{target_level | compacting_ref: {ref, retry}}
 
     levels =
       state.levels
