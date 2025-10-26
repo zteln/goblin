@@ -1,4 +1,5 @@
 defmodule Talon.SSTs.Disk do
+  @moduledoc false
   defstruct [
     :io,
     :offset
@@ -17,7 +18,6 @@ defmodule Talon.SSTs.Disk do
     end
   end
 
-  # check is valid SST first
   @spec open(Talon.db_file(), opts()) :: {:ok, t()} | {:error, term()}
   def open(file, opts \\ []) do
     open_opts = [:binary, :read, :raw] ++ if opts[:write?], do: [:append], else: []
@@ -62,25 +62,16 @@ defmodule Talon.SSTs.Disk do
 
   def start_of_file(disk), do: %{disk | offset: 0}
 
-  @doc """
-  Syncs the file.
-  """
   @spec sync(t()) :: :ok | {:error, term()}
   def sync(disk) do
     :file.datasync(disk.io)
   end
 
-  @doc """
-  Closes the file.
-  """
   @spec close(t()) :: :ok | {:error, term()}
   def close(disk) do
     :file.close(disk.io)
   end
 
-  @doc """
-  Renames `from` to `to`.
-  """
   @spec rename(Talon.db_file(), Talon.db_file()) :: :ok | {:error, term()}
   def rename(from, to) do
     case :file.rename(from, to) do
@@ -90,9 +81,6 @@ defmodule Talon.SSTs.Disk do
     end
   end
 
-  @doc """
-  Deletes `file`.
-  """
   @spec rm(Talon.db_file()) :: :ok | {:error, term()}
   def rm(file) do
     case :file.delete(file) do

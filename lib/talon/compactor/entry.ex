@@ -1,4 +1,6 @@
 defmodule Talon.Compactor.Entry do
+  @moduledoc false
+
   defstruct [
     :id,
     :priority,
