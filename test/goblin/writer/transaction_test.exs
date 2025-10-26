@@ -41,7 +41,7 @@ defmodule Goblin.Writer.TransactionTest do
   end
 
   test "has_conflict/2 returns true on read conflict" do
-    {:not_found, tx} = Transaction.new(:owner) |> Transaction.get(:k3)
+    {nil, tx} = Transaction.new(:owner) |> Transaction.get(:k3)
 
     mem_tables = [
       MemTable.upsert(MemTable.new(), 0, :k1, :v1),
@@ -69,7 +69,7 @@ defmodule Goblin.Writer.TransactionTest do
   end
 
   test "has_conflict/2 returns false on no conflicts" do
-    {:not_found, tx} =
+    {nil, tx} =
       Transaction.new(:owner)
       |> Transaction.put(:k1, :v0)
       |> Transaction.get(:k2)
@@ -78,13 +78,18 @@ defmodule Goblin.Writer.TransactionTest do
     refute Transaction.has_conflict(tx, [mem_table])
   end
 
-  test "get/2 updates read table and returns value" do
+  test "get/3 updates read table and returns value" do
     tx = Transaction.new(:owner) |> Transaction.put(:k, :v)
-    assert {{0, :v}, %{reads: %{k: {0, :v}}}} = Transaction.get(tx, :k)
+    assert {:v, %{reads: %{k: {0, :v}}}} = Transaction.get(tx, :k)
   end
 
-  test "get/2 returns value from fallback reader" do
-    tx = Transaction.new(:owner, & &1)
-    assert {:k, %{reads: %{k: :k}}} = Transaction.get(tx, :k)
+  test "get/3 returns value from fallback reader" do
+    tx = Transaction.new(:owner, &{0, &1})
+    assert {:k, %{reads: %{k: {0, :k}}}} = Transaction.get(tx, :k)
+  end
+
+  test "get/3 returns default if not found" do
+    tx = Transaction.new(:owner) 
+    assert {:w, %{reads: %{k: :not_found}}} = Transaction.get(tx, :k, :w)
   end
 end

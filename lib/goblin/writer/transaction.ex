@@ -32,18 +32,23 @@ defmodule Goblin.Writer.Transaction do
     %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
   end
 
-  @spec get(t(), Goblin.db_key()) ::
-          {{Goblin.db_sequence(), Goblin.db_value()} | :error, t()}
-  def get(tx, key) do
+  @spec get(t(), Goblin.db_key(), term()) :: {Goblin.db_value() | nil, t()}
+  def get(tx, key, default \\ nil) do
     read =
       case MemTable.read(tx.mem_table, key) do
         {:value, seq, value} -> {seq, value}
         :not_found -> tx.fallback_read.(key)
       end
 
+    val =
+      case read do
+        :not_found -> nil
+        {_seq, val} -> val
+      end
+
     reads = Map.put(tx.reads, key, read)
     tx = %{tx | reads: reads}
-    {read, tx}
+    {val || default, tx}
   end
 
   @spec has_conflict(t(), [MemTable.t()]) :: boolean()

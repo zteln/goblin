@@ -176,8 +176,8 @@ defmodule Goblin.WriterTest do
                tx = Writer.Transaction.put(tx, :k, :v)
                tx = Writer.Transaction.put(tx, :l, :w)
                tx = Writer.Transaction.remove(tx, :m)
-               assert {:not_found, tx} = Writer.Transaction.get(tx, :n)
-               assert {{0, :u}, tx} = Writer.Transaction.get(tx, :i)
+               assert {nil, tx} = Writer.Transaction.get(tx, :n)
+               assert {:u, tx} = Writer.Transaction.get(tx, :i)
                {:commit, tx, :ok}
              end)
 
@@ -195,7 +195,7 @@ defmodule Goblin.WriterTest do
                tx = Writer.Transaction.put(tx, :k, :v)
                tx = Writer.Transaction.put(tx, :l, :w)
                tx = Writer.Transaction.remove(tx, :m)
-               assert {:not_found, _tx} = Writer.Transaction.get(tx, :n)
+               assert {nil, _tx} = Writer.Transaction.get(tx, :n)
                :cancel
              end)
 
@@ -265,7 +265,7 @@ defmodule Goblin.WriterTest do
       assert {:error, :in_conflict} ==
                Writer.transaction(c.writer, fn tx ->
                  tx = Writer.Transaction.put(tx, :k2, :v2)
-                 assert {:not_found, tx} = Writer.Transaction.get(tx, :k1)
+                 assert {nil, tx} = Writer.Transaction.get(tx, :k1)
                  send(pid1, {:cont, self()})
 
                  receive do
@@ -481,10 +481,10 @@ defmodule Goblin.WriterTest do
     assert :ok ==
              Writer.transaction(c.writer, fn tx ->
                tx = Writer.Transaction.put(tx, :k1, :v1)
-               assert {{0, :v1}, tx} = Writer.Transaction.get(tx, :k1)
+               assert {:v1, tx} = Writer.Transaction.get(tx, :k1)
 
                tx = Writer.Transaction.put(tx, :k1, :v2)
-               assert {{1, :v2}, tx} = Writer.Transaction.get(tx, :k1)
+               assert {:v2, tx} = Writer.Transaction.get(tx, :k1)
 
                {:commit, tx, :ok}
              end)
@@ -497,7 +497,7 @@ defmodule Goblin.WriterTest do
 
     assert :ok ==
              Writer.transaction(c.writer, fn tx ->
-               assert {{0, :v}, tx} = Writer.Transaction.get(tx, :k)
+               assert {:v, tx} = Writer.Transaction.get(tx, :k)
                {:commit, tx, :ok}
              end)
   end

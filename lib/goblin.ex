@@ -79,35 +79,190 @@ defmodule Goblin do
   @default_key_limit 50_000
   @default_level_limit 128 * 1024 * 1024
 
-  @spec transaction(db_server(), (Goblin.Transaction.t() -> Goblin.Writer.transaction_return())) :: term() | :ok | {:error, term()}
+  @doc """
+  Executes a function within a database transaction.
+
+  Transactions provide snapshot isolation and atomic commits. The function
+  receives a transaction struct and must return either `{:commit, tx, result}`
+  to commit changes or `:cancel` to abort.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `f` - A function that takes a `Goblin.Transaction.t()` and returns a transaction result
+
+  ## Returns
+
+  - `result` - The value returned from the transaction function on successful commit
+  - `:ok` - When the transaction is cancelled
+  - `{:error, :in_conflict}` - When a write conflict is detected
+  - `{:error, term()}` - Other errors
+
+  ## Examples
+
+      Goblin.transaction(db, fn tx ->
+        count = Goblin.Tx.get(tx, :counter) || 0
+        tx = Goblin.Tx.put(tx, :counter, count + 1)
+        {:commit, tx, count + 1}
+      end)
+      # => 1
+
+      Goblin.transaction(db, fn _tx ->
+        :cancel
+      end)
+      # => :ok
+  """
+  @spec transaction(db_server(), (Goblin.Transaction.t() -> Goblin.Writer.transaction_return())) ::
+          term() | :ok | {:error, term()}
   def transaction(db, f) do
     writer = name(db, :writer)
     Goblin.Writer.transaction(writer, f)
   end
 
+  @doc """
+  Writes a key-value pair to the database.
+
+  This operation is atomic and durable. The write is first recorded in the
+  write-ahead log, then added to the in-memory MemTable.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `key` - Any Elixir term to use as the key
+  - `value` - Any Elixir term to store (will be serialized)
+
+  ## Returns
+
+  - `:ok`
+
+  ## Examples
+
+      Goblin.put(db, :user_123, %{name: "Alice", age: 30})
+      # => :ok
+
+      Goblin.put(db, "config:timeout", 5000)
+      # => :ok
+  """
   @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
     writer = name(db, :writer)
     Goblin.Writer.put(writer, key, value)
   end
 
+  @doc """
+  Writes multiple key-value pairs to the database in a single operation.
+
+  This is more efficient than calling `put/3` multiple times as it batches
+  the writes together.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `pairs` - A list of `{key, value}` tuples
+
+  ## Returns
+
+  - `:ok`
+
+  ## Examples
+
+      Goblin.put_multi(db, [
+        {:user_1, %{name: "Alice"}},
+        {:user_2, %{name: "Bob"}},
+        {:user_3, %{name: "Charlie"}}
+      ])
+      # => :ok
+  """
+  @spec put_multi(db_server(), [{db_key(), db_value()}]) :: :ok
   def put_multi(db, pairs) do
     writer = name(db, :writer)
     Goblin.Writer.put_multi(writer, pairs)
   end
 
+  @doc """
+  Removes a key from the database.
+
+  This operation writes a tombstone marker for the key. The actual data
+  is removed during compaction.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `key` - The key to remove
+
+  ## Returns
+
+  - `:ok`
+
+  ## Examples
+
+      Goblin.remove(db, :user_123)
+      # => :ok
+
+      Goblin.get(db, :user_123)
+      # => nil
+  """
   @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
     writer = name(db, :writer)
     Goblin.Writer.remove(writer, key)
   end
 
+  @doc """
+  Removes multiple keys from the database in a single operation.
+
+  This is more efficient than calling `remove/2` multiple times as it batches
+  the removals together.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `keys` - A list of keys to remove
+
+  ## Returns
+
+  - `:ok`
+
+  ## Examples
+
+      Goblin.remove_multi(db, [:user_1, :user_2, :user_3])
+      # => :ok
+  """
+  @spec remove_multi(db_server(), [db_key()]) :: :ok
   def remove_multi(db, keys) do
     writer = name(db, :writer)
     Goblin.Writer.remove_multi(writer, keys)
   end
 
-  @spec get(db_server(), db_key()) :: db_value() | nil
+  @doc """
+  Retrieves the value associated with a key from the database.
+
+  Searches the MemTable first, then SST files from newest to oldest.
+  Returns the default value if the key is not found.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `key` - The key to look up
+  - `default` - Value to return if key is not found (default: `nil`)
+
+  ## Returns
+
+  - The value associated with the key, or `default` if not found
+
+  ## Examples
+
+      Goblin.put(db, :user_123, %{name: "Alice"})
+      Goblin.get(db, :user_123)
+      # => %{name: "Alice"}
+
+      Goblin.get(db, :nonexistent)
+      # => nil
+
+      Goblin.get(db, :nonexistent, :not_found)
+      # => :not_found
+  """
+  @spec get(db_server(), db_key(), db_value()) :: db_value()
   def get(db, key, default \\ nil) do
     writer = name(db, :writer)
     store = name(db, :store)
@@ -134,6 +289,33 @@ defmodule Goblin do
   #
   # end
 
+  @doc """
+  Starts the Goblin database supervisor and all child processes.
+
+  Creates the database directory if it doesn't exist and initializes all
+  components including the Writer, Store, Compactor, WAL, and Manifest.
+
+  ## Options
+
+  - `:name` - Registered name for the supervisor (optional)
+  - `:db_dir` - Directory path for database files (required)
+  - `:key_limit` - Max keys in MemTable before flush (default: 50,000)
+  - `:level_limit` - Size threshold for level 0 compaction in bytes (default: 128 MB)
+
+  ## Returns
+
+  - `{:ok, pid}` - On successful start
+  - `{:error, reason}` - On failure
+
+  ## Examples
+
+      {:ok, db} = Goblin.start_link(
+        name: MyApp.DB,
+        db_dir: "/var/lib/myapp/db",
+        key_limit: 100_000,
+        level_limit: 256 * 1024 * 1024
+      )
+  """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     db_dir = opts[:db_dir] || raise "no db_dir provided."
