@@ -1,21 +1,26 @@
-# SeaGoat
+# Talon
 
-Embedded LSM-Tree database.
+An embedded LSM-Tree database.
 
-## Installation
+## Features
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `sea_goat` to your list of dependencies in `mix.exs`:
-
+## Usage
+Install by adding `:talon` as a dependecy:
 ```elixir
 def deps do
   [
-    {:sea_goat, "~> 0.1.0"}
+    {:talon, "~> 0.1.0"}
   ]
 end
 ```
+Then run `mix deps.get`.
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/sea_goat>.
+## How it works
 
+### Flushing
+
+### Compacting
+
+## SST file format
+
+## References
