@@ -5,126 +5,281 @@ defmodule SeaGoatDB.SSTsTest do
 
   @moduletag :tmp_dir
 
-  # test "delete/1 deletes files", c do
-  #   foo = Path.join(c.tmp_dir, "foo")
-  #   bar = Path.join(c.tmp_dir, "bar")
-  #   File.touch(foo)
-  #   assert File.exists?(foo)
-  #   assert :ok == SSTs.delete([foo])
-  #   assert :ok == SSTs.delete([bar])
-  #   refute File.exists?(foo)
-  #   File.touch(foo)
-  #   assert File.exists?(foo)
-  #   assert :ok == SSTs.delete([foo, bar])
-  #   assert :ok == SSTs.delete([])
-  #   refute File.exists?(foo)
-  # end
-  #
-  # test "switch/2 moves files", c do
-  #   foo = Path.join(c.tmp_dir, "foo")
-  #   bar = Path.join(c.tmp_dir, "bar")
-  #   File.write(foo, "foo")
-  #   File.write(bar, "bar")
-  #   assert File.exists?(foo)
-  #   assert File.exists?(bar)
-  #   assert :ok == SSTs.switch(foo, bar)
-  #   refute File.exists?(foo)
-  #   assert File.exists?(bar)
-  #   assert "foo" == File.read!(bar)
-  # end
-  #
-  # test "write/4 with MemTableIterator writes an SST file on disk", c do
-  #   file = Path.join(c.tmp_dir, "foo")
-  #
-  #   data =
-  #     for n <- 1..10, reduce: %{} do
-  #       acc ->
-  #         Map.put(acc, n, "v-#{n}")
-  #     end
-  #
-  #   level = 0
-  #
-  #   refute File.exists?(file)
-  #
-  #   assert {:ok, %BloomFilter{}, ^file, ^level} =
-  #            SSTs.write(%MemTableIterator{}, data, file, level)
-  #
-  #   for n <- 1..10 do
-  #     assert {:ok, {:value, "v-#{n}"}} == SSTs.read(file, n)
-  #   end
-  #
-  #   assert File.exists?(file)
-  # end
-  #
-  # test "write/4 with SSTsIterator writes an SST file on disk", c do
-  #   file = Path.join(c.tmp_dir, "foo")
-  #   level = 1
-  #
-  #   data =
-  #     for n <- 1..5 do
-  #       file = Path.join(c.tmp_dir, "ss_table_#{n}")
-  #
-  #       data =
-  #         for i <- 1..10, reduce: %{} do
-  #           acc ->
-  #             Map.put(acc, n * i, "v-#{n * i}")
-  #         end
-  #
-  #       SSTs.write(%MemTableIterator{}, data, file, 0)
-  #       file
-  #     end
-  #
-  #   refute File.exists?(file)
-  #
-  #   assert {:ok, %BloomFilter{}, ^file, ^level} =
-  #            SSTs.write(%SSTsIterator{}, data, file, level)
-  #
-  #   for i <- 1..5, j <- 1..10 do
-  #     assert {:ok, {:value, "v-#{i * j}"}} == SSTs.read(file, i * j)
-  #   end
-  #
-  #   assert File.exists?(file)
-  # end
-  #
-  # test "fetch_ss_table_info/1 returns Bloom filter and corresponding level in SST", c do
-  #   file = Path.join(c.tmp_dir, "foo")
-  #   level = 0
-  #
-  #   data =
-  #     for n <- 1..10, reduce: %{} do
-  #       acc ->
-  #         Map.put(acc, n, "v-#{n}")
-  #     end
-  #
-  #   SSTs.write(%MemTableIterator{}, data, file, level)
-  #
-  #   assert {:ok, %BloomFilter{}, ^level} = SSTs.fetch_ss_table_info(file)
-  # end
-  #
-  # test "fetch_ss_table_info/1 fails if file is not an SST", c do
-  #   file = Path.join(c.tmp_dir, "foo")
-  #   File.write(file, "not an SST")
-  #   assert {:error, :not_an_ss_table} == SSTs.fetch_ss_table_info(file)
-  # end
-  #
-  # test "read/2 finds key in file, returning :error if not found", c do
-  #   file = Path.join(c.tmp_dir, "foo")
-  #   level = 0
-  #
-  #   data =
-  #     for n <- 1..10, reduce: %{} do
-  #       acc ->
-  #         Map.put(acc, n, "v-#{n}")
-  #     end
-  #
-  #   SSTs.write(%MemTableIterator{}, data, file, level)
-  #
-  #   for n <- 1..10 do
-  #     assert {:ok, {:value, "v-#{n}"}} == SSTs.read(file, n)
-  #   end
-  #
-  #   for n <- 11..20 do
-  #     assert :error == SSTs.read(file, n)
-  #   end
-  # end
+  describe "flush/3 and find/2" do
+    test "writes SST file and can find keys", c do
+      file = Path.join(c.tmp_dir, "test.seagoat")
+      level_key = 0
+
+      data = [
+        {1, "key1", "value1"},
+        {2, "key2", "value2"},
+        {3, "key3", "value3"}
+      ]
+
+      assert {:ok, [{file, {bloom_filter, priority, size, key_range}}]} =
+               SSTs.flush(data, level_key, 10, fn -> file end)
+
+      assert %BloomFilter{} = bloom_filter
+      assert priority == 1
+      assert size > 0
+      assert key_range == {"key1", "key3"}
+      assert File.exists?(file)
+
+      assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
+      assert {:ok, {:value, 2, "value2"}} = SSTs.find(file, "key2")
+      assert {:ok, {:value, 3, "value3"}} = SSTs.find(file, "key3")
+    end
+
+    test "flushes data to multiple SST files when exceeding key_limit", c do
+      level_key = 0
+      key_limit = 5
+
+      data = [
+        {1, "key1", "value1"},
+        {2, "key2", "value2"},
+        {3, "key3", "value3"},
+        {4, "key4", "value4"},
+        {5, "key5", "value5"},
+        {6, "key6", "value6"},
+        {7, "key7", "value7"},
+        {8, "key8", "value8"}
+      ]
+
+      counter = :counters.new(1, [])
+
+      file_getter = fn ->
+        n = :counters.get(counter, 1)
+        :counters.add(counter, 1, 1)
+        Path.join(c.tmp_dir, "flush_#{n}.seagoat")
+      end
+
+      assert {:ok, flushed} = SSTs.flush(data, level_key, key_limit, file_getter)
+
+      assert length(flushed) == 2
+
+      for {file, {_bf, _priority, _size, _range}} <- flushed do
+        assert File.exists?(file)
+      end
+    end
+
+    test "find returns error for non-existent key", c do
+      file = Path.join(c.tmp_dir, "test.seagoat")
+      level_key = 0
+
+      data = [
+        {1, "key1", "value1"},
+        {2, "key2", "value2"}
+      ]
+
+      assert {:ok, [_]} = SSTs.flush(data, level_key, 10, fn -> file end)
+
+      assert :error = SSTs.find(file, "key3")
+      assert :error = SSTs.find(file, "key0")
+      assert :error = SSTs.find(file, "key99")
+    end
+
+    test "writes SST with large values spanning multiple blocks", c do
+      file = Path.join(c.tmp_dir, "large.seagoat")
+      level_key = 0
+
+      large_value = String.duplicate("x", 1000)
+
+      data = [
+        {1, "key1", large_value}
+      ]
+
+      assert {:ok, [{_, {_bf, _priority, _size, _key_range}}]} =
+               SSTs.flush(data, level_key, 10, fn -> file end)
+
+      assert {:ok, {:value, 1, ^large_value}} = SSTs.find(file, "key1")
+    end
+
+    test "writes SST with tombstone values", c do
+      file = Path.join(c.tmp_dir, "tombstone.seagoat")
+      level_key = 0
+
+      data = [
+        {1, "key1", "value1"},
+        {2, "key2", :tombstone},
+        {3, "key3", "value3"}
+      ]
+
+      assert {:ok, [{_, {_bf, _priority, _size, _key_range}}]} =
+               SSTs.flush(data, level_key, 10, fn -> file end)
+
+      assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
+      assert {:ok, {:value, 2, nil}} = SSTs.find(file, "key2")
+      assert {:ok, {:value, 3, "value3"}} = SSTs.find(file, "key3")
+    end
+
+    test "writes SST with many keys", c do
+      file = Path.join(c.tmp_dir, "many.seagoat")
+      level_key = 0
+
+      data =
+        for n <- 1..100 do
+          key = String.pad_leading("#{n}", 3, "0")
+          {n, key, "value#{n}"}
+        end
+
+      assert {:ok, [{_, {_bf, priority, _size, key_range}}]} =
+               SSTs.flush(data, level_key, 100, fn -> file end)
+
+      assert priority == 1
+      assert key_range == {"001", "100"}
+
+      for n <- 1..100 do
+        key = String.pad_leading("#{n}", 3, "0")
+        value = "value#{n}"
+        assert {:ok, {:value, ^n, ^value}} = SSTs.find(file, key)
+      end
+    end
+
+    test "writes SST with different level keys", c do
+      for level_key <- 0..3 do
+        file = Path.join(c.tmp_dir, "level#{level_key}.seagoat")
+
+        data = [
+          {1, "key1", "value1"}
+        ]
+
+        assert {:ok, [{_, {_bf, _priority, _size, _key_range}}]} =
+                 SSTs.flush(data, level_key, 100, fn -> file end)
+
+        assert {:ok, _bf, ^level_key, _priority, _size, _range} = SSTs.fetch_sst_info(file)
+      end
+    end
+  end
+
+  describe "fetch_sst_info/1" do
+    test "returns bloom filter and metadata", c do
+      file = Path.join(c.tmp_dir, "info.seagoat")
+      level_key = 2
+
+      data = [
+        {5, "key1", "value1"},
+        {6, "key2", "value2"}
+      ]
+
+      SSTs.flush(data, level_key, 100, fn -> file end)
+
+      assert {:ok, bloom_filter, ^level_key, priority, size, key_range} =
+               SSTs.fetch_sst_info(file)
+
+      assert %BloomFilter{} = bloom_filter
+      assert priority == 5
+      assert size > 0
+      assert key_range == {"key1", "key2"}
+    end
+
+    test "returns error for non-SST file", c do
+      file = Path.join(c.tmp_dir, "not_sst.txt")
+      File.write!(file, "not an SST")
+
+      assert {:error, :not_an_ss_table} = SSTs.fetch_sst_info(file)
+    end
+
+    test "returns error for non-existent file", c do
+      file = Path.join(c.tmp_dir, "nonexistent.seagoat")
+
+      assert_raise RuntimeError, fn ->
+        SSTs.fetch_sst_info(file)
+      end
+    end
+  end
+
+  describe "stream!/1" do
+    test "streams all keys in order", c do
+      file = Path.join(c.tmp_dir, "stream.seagoat")
+      level_key = 0
+
+      data = [
+        {1, "a", "value_a"},
+        {2, "b", "value_b"},
+        {3, "c", "value_c"}
+      ]
+
+      SSTs.flush(data, level_key, 100, fn -> file end)
+
+      result = SSTs.stream!(file) |> Enum.to_list()
+
+      assert result == data
+    end
+
+    test "streams large number of keys", c do
+      file = Path.join(c.tmp_dir, "stream_large.seagoat")
+      level_key = 0
+
+      data =
+        for n <- 1..50 do
+          {n, "key#{String.pad_leading("#{n}", 3, "0")}", "value#{n}"}
+        end
+
+      SSTs.flush(data, level_key, 100, fn -> file end)
+
+      result = SSTs.stream!(file) |> Enum.to_list()
+
+      assert length(result) == 50
+      assert result == data
+    end
+  end
+
+  describe "iterate/1" do
+    test "iterates through SST file", c do
+      file = Path.join(c.tmp_dir, "iterate.seagoat")
+      level_key = 0
+
+      data = [
+        {1, "key1", "value1"},
+        {2, "key2", "value2"},
+        {3, "key3", "value3"}
+      ]
+
+      SSTs.flush(data, level_key, 100, fn -> file end)
+
+      iter = SSTs.iterate(file)
+      assert {:ok, {1, "key1", "value1"}, iter} = SSTs.iterate(iter)
+      assert {:ok, {2, "key2", "value2"}, iter} = SSTs.iterate(iter)
+      assert {:ok, {3, "key3", "value3"}, iter} = SSTs.iterate(iter)
+      assert :ok = SSTs.iterate(iter)
+    end
+  end
+
+  describe "delete/1" do
+    test "deletes SST file", c do
+      file = Path.join(c.tmp_dir, "delete.seagoat")
+      level_key = 0
+
+      data = [{1, "key1", "value1"}]
+      SSTs.flush(data, level_key, 100, fn -> file end)
+
+      assert File.exists?(file)
+      assert :ok = SSTs.delete(file)
+      refute File.exists?(file)
+    end
+
+    test "delete non-existent file returns ok", c do
+      file = Path.join(c.tmp_dir, "nonexistent.seagoat")
+
+      refute File.exists?(file)
+      assert :ok = SSTs.delete(file)
+    end
+  end
+
+  describe "complex data types" do
+    test "writes and reads complex Elixir terms", c do
+      file = Path.join(c.tmp_dir, "complex.seagoat")
+      level_key = 0
+
+      data = [
+        {1, {:compound, "key"}, %{nested: [1, 2, 3]}},
+        {2, %{map: "key"}, [nested: %{data: "value"}]}
+      ]
+
+      SSTs.flush(data, level_key, 100, fn -> file end)
+
+      assert {:ok, {:value, 1, %{nested: [1, 2, 3]}}} = SSTs.find(file, {:compound, "key"})
+      assert {:ok, {:value, 2, [nested: %{data: "value"}]}} = SSTs.find(file, %{map: "key"})
+    end
+  end
 end
