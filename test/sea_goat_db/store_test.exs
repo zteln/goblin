@@ -17,7 +17,7 @@ defmodule SeaGoatDB.StoreTest do
 
   test "put/4 puts new SST in store and adds to the compactor", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
     assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
@@ -33,7 +33,7 @@ defmodule SeaGoatDB.StoreTest do
 
   test "put/4 preserves existing files when putting new files", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
     assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
@@ -54,7 +54,7 @@ defmodule SeaGoatDB.StoreTest do
 
   test "remove/2 removes SST from the store", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
     assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
@@ -77,7 +77,7 @@ defmodule SeaGoatDB.StoreTest do
   test "get/2 rlocks file when matched", c do
     self = self()
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
@@ -105,7 +105,7 @@ defmodule SeaGoatDB.StoreTest do
 
   test "get_ss_tables/2 returns empty list if Bloom filter does not match", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
@@ -114,7 +114,7 @@ defmodule SeaGoatDB.StoreTest do
 
   test "store gets state from manifest on start", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_ss_table_info(file)
+    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
     assert :ok == SeaGoatDB.Manifest.log_compaction(c.manifest, [], [file])
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)

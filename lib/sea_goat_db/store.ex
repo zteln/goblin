@@ -140,7 +140,7 @@ defmodule SeaGoatDB.Store do
 
   defp recover_ss_tables([file | files], compactor, acc) do
     with {:ok, bloom_filter, level_key, priority, size, key_range} <-
-           SSTs.fetch_ss_table_info(file) do
+           SSTs.fetch_sst_info(file) do
       Compactor.put(compactor, level_key, file, {priority, size, key_range})
       acc = [%{file: file, bloom_filter: bloom_filter} | acc]
       recover_ss_tables(files, compactor, acc)

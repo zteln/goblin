@@ -24,9 +24,9 @@ defmodule SeaGoatDB.SSTs do
     result
   end
 
-  @spec fetch_ss_table_info(SeaGoatDB.db_file()) ::
+  @spec fetch_sst_info(SeaGoatDB.db_file()) ::
           {:ok, {SeaGoatDB.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
-  def fetch_ss_table_info(file) do
+  def fetch_sst_info(file) do
     disk = Disk.open!(file)
 
     result =
@@ -283,6 +283,7 @@ defmodule SeaGoatDB.SSTs do
     with {:ok, seq, k, v} <- read_block(disk, position) do
       cond do
         key == k ->
+          v = if v == :tombstone, do: nil, else: v
           {:ok, {:value, seq, v}}
 
         key < k ->
