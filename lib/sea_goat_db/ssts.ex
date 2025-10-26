@@ -104,11 +104,11 @@ defmodule SeaGoatDB.SSTs do
     end
   end
 
-  def merge(sources, target, key_limit, clean_tombstones?, depleter, file_getter) do
+  def merge(target, key_limit, clean_tombstones?, file_getter) do
     %{
       level_key: level_key,
       entries: entries
-    } = deplete(sources, target, depleter)
+    } = target
 
     old = Map.keys(entries)
 
@@ -158,17 +158,6 @@ defmodule SeaGoatDB.SSTs do
 
   defp iter_flush_data([]), do: {:halt, :ok}
   defp iter_flush_data([next | data]), do: {[next], data}
-
-  defp deplete([], level, _depleter), do: level
-
-  defp deplete([source | sources], level, depleter) do
-    level =
-      source
-      |> stream!()
-      |> Enum.reduce(level, depleter)
-
-    deplete(sources, level, depleter)
-  end
 
   defp merge_stream(entry, clean_tombstones?, key_limit) do
     Stream.resource(
