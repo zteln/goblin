@@ -19,9 +19,10 @@ defmodule SeaGoatDB do
     SeaGoatDB.Writer.put(writer, key, value)
   end
 
-  # def put_multi do
-  #
-  # end
+  def put_multi(db, pairs) do
+    writer = name(db, :writer)
+    SeaGoatDB.Writer.put_multi(writer, pairs)
+  end
 
   @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
@@ -29,9 +30,10 @@ defmodule SeaGoatDB do
     SeaGoatDB.Writer.remove(writer, key)
   end
 
-  # def remove_multi do
-  #
-  # end
+  def remove_multi(db, keys) do
+    writer = name(db, :writer)
+    SeaGoatDB.Writer.remove_multi(writer, keys)
+  end
 
   @spec get(db_server(), db_key()) :: db_value() | nil
   def get(db, key, default \\ nil) do
@@ -71,6 +73,7 @@ defmodule SeaGoatDB do
     db_dir = args[:db_dir]
     key_limit = args[:key_limit] || @default_key_limit
     level_limit = args[:level_limit] || @default_level_limit
+    task_sup_name = name(args[:name], :task_sup)
     rw_locks_name = name(args[:name], :rw_locks)
     manifest_name = name(args[:name], :manifest)
     wal_name = name(args[:name], :wal)
@@ -79,6 +82,7 @@ defmodule SeaGoatDB do
     store_name = name(args[:name], :store)
 
     children = [
+      {Task.Supervisor, name: task_sup_name},
       {SeaGoatDB.RWLocks, Keyword.merge(args, name: rw_locks_name)},
       {SeaGoatDB.Manifest, Keyword.merge(args, name: manifest_name, db_dir: db_dir)},
       {SeaGoatDB.WAL, Keyword.merge(args, name: wal_name, db_dir: db_dir)},
@@ -90,7 +94,8 @@ defmodule SeaGoatDB do
          store: store_name,
          rw_locks: rw_locks_name,
          level_limit: level_limit,
-         manifest: args[:manifest] || manifest_name
+         manifest: manifest_name,
+         task_sup: task_sup_name
        )},
       {SeaGoatDB.Store,
        Keyword.merge(args,
@@ -99,15 +104,16 @@ defmodule SeaGoatDB do
          writer: writer_name,
          rw_locks: rw_locks_name,
          compactor: compactor_name,
-         manifest: args[:manifest] || manifest_name
+         manifest: manifest_name
        )},
       {SeaGoatDB.Writer,
        Keyword.merge(args,
          name: writer_name,
          key_limit: key_limit,
          store: store_name,
-         wal: args[:wal] || wal_name,
-         manifest: args[:manifest] || manifest_name
+         wal: wal_name,
+         manifest: manifest_name,
+         task_sup: task_sup_name
        )}
     ]
 
