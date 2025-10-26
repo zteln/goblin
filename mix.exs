@@ -1,9 +1,9 @@
-defmodule SeaGoatDB.MixProject do
+defmodule Talon.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :sea_goat_db,
+      app: :talon,
       version: "0.1.0",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
