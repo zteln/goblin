@@ -36,7 +36,7 @@ defmodule SeaGoatDB.ManifestTest do
     wal_file = "wal.seagoat.rot.1"
     sst_file = "0.seagoat"
     assert :ok == Manifest.log_rotation(c.manifest, wal_file)
-    assert :ok == Manifest.log_flush(c.manifest, sst_file, wal_file)
+    assert :ok == Manifest.log_flush(c.manifest, [sst_file], wal_file)
 
     assert %{wals: [], files: [sst_file]} == Manifest.get_version(c.manifest, [:wals, :files])
 
