@@ -12,7 +12,7 @@ defmodule TestHelper do
   defmacro setup_db(opts \\ []) do
     quote do
       setup c do
-        start_db(c.tmp_dir, unquote(opts))
+        start_db(c.tmp_dir, Keyword.merge(unquote(opts), Map.get(c, :db_opts, [])))
       end
     end
   end
@@ -32,7 +32,8 @@ defmodule TestHelper do
       {SeaGoatDB.Compactor, compactor, _, _},
       {SeaGoatDB.WAL, wal, _, _},
       {SeaGoatDB.Manifest, manifest, _, _},
-      {SeaGoatDB.RWLocks, rw_locks, _, _}
+      {SeaGoatDB.RWLocks, rw_locks, _, _},
+      {_, _, _, _}
     ] = Supervisor.which_children(db)
 
     %{
@@ -70,12 +71,6 @@ defmodule TestHelper do
         Process.sleep(step)
         assert_eventually(f, timeout - step, step)
     end
-  end
-
-  def write_sst(dir, name, level_key, data) do
-    file = Path.join(dir, "#{name}.seagoat")
-    SeaGoatDB.SSTs.write(file, level_key, data)
-    file
   end
 end
 
