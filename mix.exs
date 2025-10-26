@@ -1,25 +1,50 @@
-defmodule Talon.MixProject do
+defmodule Goblin.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :talon,
+      app: :goblin,
       version: "0.1.0",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      name: "Goblin",
+      deps: deps(),
+      package: package(),
+      description: description(),
+      docs: &docs/0,
+      source_url: "https://github.com/zteln/goblin"
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       extra_applications: [:logger]
     ]
   end
 
-  # Run "mix help deps" to learn about dependencies.
   defp deps do
-    []
+    [
+      {:ex_doc, "~> 0.39.1", only: :dev, runtime: :false, warn_if_outdated: true}
+    ]
+  end
+
+  defp package do
+    [
+      name: "goblin",
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE),
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/zteln/goblin"}
+    ]
+  end
+
+  defp description do
+    "An embedded LSM-Tree database for Elixir."
+  end
+
+  defp docs do
+    [
+      main: "Goblin",
+      extras: ["README.md", "LICENSE"]
+    ]
   end
 end

@@ -1,4 +1,4 @@
-# Talon
+# Goblin
 
 An embedded LSM-Tree database for Elixir.
 
@@ -14,11 +14,11 @@ An embedded LSM-Tree database for Elixir.
 
 ## Usage
 
-Install by adding `:talon` as a dependency:
+Install by adding `:goblin` as a dependency:
 ```elixir
 def deps do
   [
-    {:talon, "~> 0.1.0"}
+    {:goblin, "~> 0.1.0"}
   ]
 end
 ```
@@ -27,7 +27,7 @@ Then run `mix deps.get`.
 ### Starting a database
 
 ```elixir
-{:ok, db} = Talon.start_link(
+{:ok, db} = Goblin.start_link(
   name: MyApp.DB,
   db_dir: "/path/to/db",
   key_limit: 50_000,
@@ -44,36 +44,36 @@ Options:
 ### Basic operations
 
 ```elixir
-Talon.put(db, :user_123, %{name: "Alice", age: 30})
+Goblin.put(db, :user_123, %{name: "Alice", age: 30})
 
-Talon.get(db, :user_123)
+Goblin.get(db, :user_123)
 
-Talon.remove(db, :user_123)
+Goblin.remove(db, :user_123)
 ```
 
 ### Batch operations
 
 ```elixir
-Talon.put_multi(db, [
+Goblin.put_multi(db, [
   {:user_1, %{name: "Alice"}},
   {:user_2, %{name: "Bob"}},
   {:user_3, %{name: "Charlie"}}
 ])
 
-Talon.remove_multi(db, [:user_1, :user_2])
+Goblin.remove_multi(db, [:user_1, :user_2])
 ```
 
 ### Transactions
 
 ```elixir
-Talon.transaction(db, fn tx ->
-  case Talon.Tx.get(tx, :counter) do
+Goblin.transaction(db, fn tx ->
+  case Goblin.Tx.get(tx, :counter) do
     nil ->
-      tx = Talon.Tx.put(tx, :counter, 1)
+      tx = Goblin.Tx.put(tx, :counter, 1)
       {:commit, tx, 1}
     
     count ->
-      tx = Talon.Tx.put(tx, :counter, count + 1)
+      tx = Goblin.Tx.put(tx, :counter, count + 1)
       {:commit, tx, count + 1}
   end
 end)
@@ -89,7 +89,7 @@ defmodule MyApp.Application do
 
   def start(_type, _args) do
     children = [
-      {Talon, name: MyApp.DB, db_dir: "/var/lib/myapp/db"}
+      {Goblin, name: MyApp.DB, db_dir: "/var/lib/myapp/db"}
     ]
 
     opts = [strategy: :one_for_one, name: MyApp.Supervisor]
@@ -97,12 +97,12 @@ defmodule MyApp.Application do
   end
 end
 
-Talon.put(MyApp.DB, :key, "value")
+Goblin.put(MyApp.DB, :key, "value")
 ```
 
 ## How it works
 
-Talon implements a Log-Structured Merge-Tree (LSM-Tree) with the following components:
+Goblin implements a Log-Structured Merge-Tree (LSM-Tree) with the following components:
 
 - **Writer**: Manages in-memory MemTable and coordinates writes
 - **Store**: Tracks SST files and provides read access
@@ -142,7 +142,7 @@ Compaction runs asynchronously and retries up to 5 times on failure. The compact
 
 ## SST file format
 
-SST files use the `.talon` extension and follow this binary structure:
+SST files use the `.goblin` extension and follow this binary structure:
 
 ```
 ┌─────────────────┬──────────────┬─────────────────┐

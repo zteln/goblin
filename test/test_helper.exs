@@ -22,17 +22,17 @@ defmodule TestHelper do
 
     db =
       ExUnit.Callbacks.start_link_supervised!(
-        {Talon, [db_dir: db_dir] ++ opts},
+        {Goblin, [db_dir: db_dir] ++ opts},
         id: id
       )
 
     [
-      {Talon.Writer, writer, _, _},
-      {Talon.Store, store, _, _},
-      {Talon.Compactor, compactor, _, _},
-      {Talon.WAL, wal, _, _},
-      {Talon.Manifest, manifest, _, _},
-      {Talon.RWLocks, rw_locks, _, _},
+      {Goblin.Writer, writer, _, _},
+      {Goblin.Store, store, _, _},
+      {Goblin.Compactor, compactor, _, _},
+      {Goblin.WAL, wal, _, _},
+      {Goblin.Manifest, manifest, _, _},
+      {Goblin.RWLocks, rw_locks, _, _},
       {_, _, _, _}
     ] = Supervisor.which_children(db)
 
@@ -75,8 +75,8 @@ defmodule TestHelper do
   end
 
   def write_sst(dir, name, level_key, key_limit, data) do
-    file_getter = fn -> Path.join(dir, "#{name}.talon") end
-    Talon.SSTs.flush(data, level_key, key_limit, file_getter)
+    file_getter = fn -> Path.join(dir, "#{name}.goblin") end
+    Goblin.SSTs.flush(data, level_key, key_limit, file_getter)
     file_getter.()
   end
 end
