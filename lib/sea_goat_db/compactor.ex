@@ -82,24 +82,10 @@ defmodule SeaGoatDB.Compactor do
   def handle_info({_ref, {:ok, compacted_away_files, source_level_key, target_level_key}}, state) do
     state =
       Enum.reduce(compacted_away_files, state, fn compacted_away_file, acc ->
-        source_level =
-          process_level_after_compaction(
-            acc.levels,
-            source_level_key,
-            compacted_away_file
-          )
-
-        target_level =
-          process_level_after_compaction(
-            acc.levels,
-            target_level_key,
-            compacted_away_file
-          )
-
         levels =
           acc.levels
-          |> Map.put(source_level_key, source_level)
-          |> Map.put(target_level_key, target_level)
+          |> process_level_after_compaction(source_level_key, compacted_away_file)
+          |> process_level_after_compaction(target_level_key, compacted_away_file)
 
         %{acc | levels: levels}
       end)
@@ -138,11 +124,20 @@ defmodule SeaGoatDB.Compactor do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp process_level_after_compaction(levels, level_key, old_file) do
+  defp process_level_after_compaction(levels, level_key, old_file)
+       when is_map_key(levels, level_key) do
     level = Map.get(levels, level_key)
     level_entries = Map.delete(level.entries, old_file)
-    %{level | entries: level_entries, compacting_ref: nil}
+
+    if map_size(level_entries) == 0 do
+      Map.delete(levels, level_key)
+    else
+      level = %{level | entries: level_entries, compacting_ref: nil}
+      Map.put(levels, level_key, level)
+    end
   end
+
+  defp process_level_after_compaction(levels, _, _), do: levels
 
   defp maybe_compact(state, source_level_key) do
     source_level = Map.get(state.levels, source_level_key)
@@ -187,17 +182,17 @@ defmodule SeaGoatDB.Compactor do
       |> Level.get_highest_prio_entries()
       |> Enum.map(& &1.id)
 
-    clean_tombstones? = clean_tombstones?(target_level, levels)
-
     %{ref: ref} =
       task_mod.async(task_sup, fn ->
+        target_level = deplete(sources, target_level)
+        levels = Map.put(levels, target_level.level_key, target_level)
+        clean_tombstones? = clean_tombstones?(target_level, levels)
+
         with {:ok, old, new} <-
                SSTs.merge(
-                 sources,
                  target_level,
                  key_limit,
                  clean_tombstones?,
-                 &Level.place_in_buffer(&2, &1),
                  fn -> Store.new_file(store) end
                ),
              :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, &elem(&1, 0))),
@@ -216,6 +211,17 @@ defmodule SeaGoatDB.Compactor do
       |> Map.put(target_level.level_key, target_level)
 
     %{state | levels: levels}
+  end
+
+  defp deplete([], level), do: level
+
+  defp deplete([source | sources], level) do
+    level =
+      source
+      |> SSTs.stream!()
+      |> Enum.reduce(level, &Level.place_in_buffer(&2, &1))
+
+    deplete(sources, level)
   end
 
   defp put_new_files_in_store([], _level_key, _store), do: :ok
@@ -243,7 +249,7 @@ defmodule SeaGoatDB.Compactor do
   defp level_limit(level_limit, level_key), do: level_limit * :math.pow(10, level_key)
 
   defp clean_tombstones?(target_level, levels) do
-    has_virtual_entry(target_level) && max_level(levels) == target_level.level_key
+    has_virtual_entry(target_level) and max_level(levels) == target_level.level_key
   end
 
   defp has_virtual_entry(%{entries: %{nil => %{is_virtual: true}} = entries})
