@@ -3,9 +3,9 @@ defmodule Talon.Manifest do
   use GenServer
 
   @manifest_name :talon_manifest
-  @manifest_file "manifest.seagoat"
-  @wal_file "wal.seagoat"
-  @tmp_suffix ".seagoat.tmp"
+  @manifest_file "manifest.talon"
+  @wal_file "wal.talon"
+  @tmp_suffix ".talon.tmp"
   @rotated_manifest_suffix ".rot"
   @manifest_max_size 1024 * 1024
 

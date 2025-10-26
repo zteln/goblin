@@ -7,7 +7,7 @@ defmodule Talon.SSTsTest do
 
   describe "flush/3 and find/2" do
     test "writes SST file and can find keys", c do
-      file = Path.join(c.tmp_dir, "test.seagoat")
+      file = Path.join(c.tmp_dir, "test.talon")
       level_key = 0
 
       data = [
@@ -50,7 +50,7 @@ defmodule Talon.SSTsTest do
       file_getter = fn ->
         n = :counters.get(counter, 1)
         :counters.add(counter, 1, 1)
-        Path.join(c.tmp_dir, "flush_#{n}.seagoat")
+        Path.join(c.tmp_dir, "flush_#{n}.talon")
       end
 
       assert {:ok, flushed} = SSTs.flush(data, level_key, key_limit, file_getter)
@@ -63,7 +63,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "find returns error for non-existent key", c do
-      file = Path.join(c.tmp_dir, "test.seagoat")
+      file = Path.join(c.tmp_dir, "test.talon")
       level_key = 0
 
       data = [
@@ -79,7 +79,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "writes SST with large values spanning multiple blocks", c do
-      file = Path.join(c.tmp_dir, "large.seagoat")
+      file = Path.join(c.tmp_dir, "large.talon")
       level_key = 0
 
       large_value = String.duplicate("x", 1000)
@@ -95,7 +95,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "writes SST with tombstone values", c do
-      file = Path.join(c.tmp_dir, "tombstone.seagoat")
+      file = Path.join(c.tmp_dir, "tombstone.talon")
       level_key = 0
 
       data = [
@@ -113,7 +113,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "writes SST with many keys", c do
-      file = Path.join(c.tmp_dir, "many.seagoat")
+      file = Path.join(c.tmp_dir, "many.talon")
       level_key = 0
 
       data =
@@ -137,7 +137,7 @@ defmodule Talon.SSTsTest do
 
     test "writes SST with different level keys", c do
       for level_key <- 0..3 do
-        file = Path.join(c.tmp_dir, "level#{level_key}.seagoat")
+        file = Path.join(c.tmp_dir, "level#{level_key}.talon")
 
         data = [
           {1, "key1", "value1"}
@@ -153,7 +153,7 @@ defmodule Talon.SSTsTest do
 
   describe "fetch_sst_info/1" do
     test "returns bloom filter and metadata", c do
-      file = Path.join(c.tmp_dir, "info.seagoat")
+      file = Path.join(c.tmp_dir, "info.talon")
       level_key = 2
 
       data = [
@@ -180,7 +180,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "returns error for non-existent file", c do
-      file = Path.join(c.tmp_dir, "nonexistent.seagoat")
+      file = Path.join(c.tmp_dir, "nonexistent.talon")
 
       assert_raise RuntimeError, fn ->
         SSTs.fetch_sst_info(file)
@@ -190,7 +190,7 @@ defmodule Talon.SSTsTest do
 
   describe "stream!/1" do
     test "streams all keys in order", c do
-      file = Path.join(c.tmp_dir, "stream.seagoat")
+      file = Path.join(c.tmp_dir, "stream.talon")
       level_key = 0
 
       data = [
@@ -207,7 +207,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "streams large number of keys", c do
-      file = Path.join(c.tmp_dir, "stream_large.seagoat")
+      file = Path.join(c.tmp_dir, "stream_large.talon")
       level_key = 0
 
       data =
@@ -226,7 +226,7 @@ defmodule Talon.SSTsTest do
 
   describe "iterate/1" do
     test "iterates through SST file", c do
-      file = Path.join(c.tmp_dir, "iterate.seagoat")
+      file = Path.join(c.tmp_dir, "iterate.talon")
       level_key = 0
 
       data = [
@@ -247,7 +247,7 @@ defmodule Talon.SSTsTest do
 
   describe "delete/1" do
     test "deletes SST file", c do
-      file = Path.join(c.tmp_dir, "delete.seagoat")
+      file = Path.join(c.tmp_dir, "delete.talon")
       level_key = 0
 
       data = [{1, "key1", "value1"}]
@@ -259,7 +259,7 @@ defmodule Talon.SSTsTest do
     end
 
     test "delete non-existent file returns ok", c do
-      file = Path.join(c.tmp_dir, "nonexistent.seagoat")
+      file = Path.join(c.tmp_dir, "nonexistent.talon")
 
       refute File.exists?(file)
       assert :ok = SSTs.delete(file)
@@ -268,7 +268,7 @@ defmodule Talon.SSTsTest do
 
   describe "complex data types" do
     test "writes and reads complex Elixir terms", c do
-      file = Path.join(c.tmp_dir, "complex.seagoat")
+      file = Path.join(c.tmp_dir, "complex.talon")
       level_key = 0
 
       data = [

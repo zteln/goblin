@@ -7,7 +7,7 @@ defmodule Talon.Store do
   alias Talon.RWLocks
   alias Talon.SSTs
 
-  @file_suffix ".seagoat"
+  @file_suffix ".talon"
 
   @type store :: GenServer.server()
   @type data ::

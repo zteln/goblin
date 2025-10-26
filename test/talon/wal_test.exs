@@ -6,7 +6,7 @@ defmodule Talon.WALTest do
   @wal_id :wal_test_id
   @sync_interval 200
   @wal_name :wal_test
-  @wal_file "wal.seagoat"
+  @wal_file "wal.talon"
   @moduletag :tmp_dir
 
   setup c do

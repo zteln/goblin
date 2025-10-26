@@ -5,7 +5,7 @@ defmodule Talon.WAL do
   @default_sync_interval 200
   @log_name :talon_wal
   @ro_log_name :talon_wal_ro
-  @log_file "wal.seagoat"
+  @log_file "wal.talon"
   @rotated_log_suffix ".rot"
 
   defstruct [

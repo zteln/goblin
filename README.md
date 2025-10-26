@@ -142,7 +142,7 @@ Compaction runs asynchronously and retries up to 5 times on failure. The compact
 
 ## SST file format
 
-SST files use the `.seagoat` extension and follow this binary structure:
+SST files use the `.talon` extension and follow this binary structure:
 
 ```
 ┌─────────────────┬──────────────┬─────────────────┐

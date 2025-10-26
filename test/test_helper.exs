@@ -75,7 +75,7 @@ defmodule TestHelper do
   end
 
   def write_sst(dir, name, level_key, key_limit, data) do
-    file_getter = fn -> Path.join(dir, "#{name}.seagoat") end
+    file_getter = fn -> Path.join(dir, "#{name}.talon") end
     Talon.SSTs.flush(data, level_key, key_limit, file_getter)
     file_getter.()
   end

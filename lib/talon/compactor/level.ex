@@ -1,6 +1,5 @@
 defmodule Talon.Compactor.Level do
   @moduledoc false
-
   alias Talon.Compactor.Entry
 
   defstruct [
