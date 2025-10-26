@@ -1,14 +1,61 @@
-dir = "/tmp/sea_goat_test/"
+db_dir = "/tmp/talon_test/"
 # File.rm_rf!(dir)
 # File.mkdir(dir)
 
-{:ok, db} = SeaGoat.start_link(dir: dir, limit: 10_000, sync_interval: 50)
+{:ok, db} = Talon.start_link(db_dir: db_dir, sync_interval: 50)
 
-timer_f = fn ->
+put_small = fn ->
   :timer.tc(
     fn ->
-      for n <- 1..1_000_000 do
-        SeaGoat.put(db, n, "v-#{n}")
+      for n <- Enum.shuffle(1..1000) do
+        Talon.put(db, n, "v1-#{n}")
+      end
+    end,
+    :millisecond
+  )
+end
+
+put_medium = fn ->
+  :timer.tc(
+    fn ->
+      for n <- Enum.shuffle(1..10_000) do
+        Talon.put(db, n, "v2-#{n}")
+      end
+    end,
+    :millisecond
+  )
+end
+
+put_large = fn ->
+  :timer.tc(
+    fn ->
+      for n <- Enum.shuffle(1..100_000) do
+        Talon.put(db, n, "v3-#{n}")
+      end
+    end,
+    :millisecond
+  )
+end
+
+put_huge = fn ->
+  :timer.tc(
+    fn ->
+      pairs =
+        1..1_000_000
+        |> Enum.shuffle()
+        |> Enum.map(fn n -> {n, "v4-#{n}"} end)
+
+      Talon.put_multi(db, pairs)
+    end,
+    :millisecond
+  )
+end
+
+ltimer_f = fn ->
+  :timer.tc(
+    fn ->
+      for n <- 1..10_000 do
+        Talon.put(db, n, "v-" <> String.duplicate(to_string(n), 511))
       end
     end,
     :millisecond
