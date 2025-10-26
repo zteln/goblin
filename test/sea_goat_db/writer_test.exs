@@ -1,11 +1,18 @@
 defmodule SeaGoatDB.WriterTest do
   use ExUnit.Case, async: true
   use TestHelper
+  import ExUnit.CaptureLog
   alias SeaGoatDB.Writer
   alias SeaGoatDB.WAL
 
-  defmodule SleepingSSTs do
-    def flush(_, _, _, _), do: Process.sleep(:infinity)
+  defmodule FakeTask do
+    def async(_sup, _f), do: %{ref: make_ref()}
+  end
+
+  defmodule FailingTask do
+    def async(_sup, _f) do
+      Task.async(fn -> {:error, :failed_to_flush} end)
+    end
   end
 
   @moduletag :tmp_dir
@@ -78,28 +85,38 @@ defmodule SeaGoatDB.WriterTest do
     assert no_of_files + 1 == length(File.ls!(c.tmp_dir))
   end
 
-  @tag db_opts: [sst_mod: SleepingSSTs]
+  @tag db_opts: [task_mod: FakeTask]
   test "recovers flushes after restart", c do
     for n <- 1..20 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{flushing: [{_, mem_table1}, {_, mem_table2}]} = :sys.get_state(c.writer)
+    assert %{
+             flushing: [
+               {_, mem_table1, rotated_wal1, _},
+               {_, mem_table2, rotated_wal2, _}
+             ]
+           } = :sys.get_state(c.writer)
 
     WAL.sync(c.wal)
     stop_supervised!(c.db_id)
     %{writer: writer} = start_db(c.tmp_dir, @db_opts)
 
-    assert %{flushing: [{_, ^mem_table1}, {_, ^mem_table2}]} = :sys.get_state(writer)
+    assert %{
+             flushing: [
+               {_, ^mem_table1, ^rotated_wal1, _},
+               {_, ^mem_table2, ^rotated_wal2, _}
+             ]
+           } = :sys.get_state(writer)
   end
 
-  @tag db_opts: [sst_mod: SleepingSSTs]
+  @tag db_opts: [task_mod: FakeTask]
   test "able to read data inbetween flush and flushed", c do
     for n <- 1..10 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{mem_table: mem_table, flushing: [{_, _}]} = :sys.get_state(c.writer)
+    assert %{mem_table: mem_table, flushing: [{_, _, _, _}]} = :sys.get_state(c.writer)
     assert %{} == mem_table
 
     for n <- 1..10 do
@@ -107,20 +124,20 @@ defmodule SeaGoatDB.WriterTest do
     end
   end
 
-  @tag db_opts: [sst_mod: SleepingSSTs]
+  @tag db_opts: [task_mod: FakeTask]
   test "able to read data from flushing MemTables", c do
     for n <- 1..30 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")
     end
 
-    assert %{flushing: [{_, _}, {_, _}, {_, _}]} = :sys.get_state(c.writer)
+    assert %{flushing: [{_, _, _, _}, {_, _, _, _}, {_, _, _, _}]} = :sys.get_state(c.writer)
 
     for n <- 1..30 do
       assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
     end
   end
 
-  @tag db_opts: [sst_mod: SleepingSSTs]
+  @tag db_opts: [task_mod: FakeTask]
   test "reads from latest write", c do
     for i <- 1..3 do
       for n <- 1..10 do
@@ -131,6 +148,24 @@ defmodule SeaGoatDB.WriterTest do
     for n <- 1..10 do
       assert {:ok, {:value, n + 20 - 1, "v3-#{n}"}} == Writer.get(c.writer, n)
     end
+  end
+
+  @tag db_opts: [task_mod: FailingTask]
+  test "failing flushes are retried until Writer exits", c do
+    Process.flag(:trap_exit, true)
+
+    log =
+      capture_log(fn ->
+        for n <- 1..10 do
+          assert :ok == Writer.put(c.writer, n, "v-#{n}")
+        end
+
+        assert_receive {:EXIT, _pid, :shutdown}
+      end)
+
+    assert log =~ "Flush failed with reason: :failed_to_flush. Retrying..."
+    assert log =~ "Flush failed after 5 attempts with reason: :failed_to_flush. Exiting."
+    assert log =~ "GenServer :writer_test_writer terminating"
   end
 
   test "merges MemTable with transactions writes after commit", c do
@@ -385,7 +420,7 @@ defmodule SeaGoatDB.WriterTest do
     refute Writer.is_flushing(c.writer)
   end
 
-  @tag db_opts: [sst_mod: SleepingSSTs]
+  @tag db_opts: [task_mod: FakeTask]
   test "is_flushing returns true when flushing", c do
     for n <- 1..10 do
       assert :ok == Writer.put(c.writer, n, "v-#{n}")

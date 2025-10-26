@@ -140,7 +140,7 @@ defmodule SeaGoatDB.Writer do
   def handle_call({:get, key}, _from, state) do
     flushing_mem_tables =
       state.flushing
-      |> Enum.map(fn {_ref, mem_table} -> mem_table end)
+      |> Enum.map(fn {_, mem_table, _, _} -> mem_table end)
 
     mem_tables = [state.mem_table | flushing_mem_tables]
     reply = search_for_key(mem_tables, key)
@@ -249,7 +249,7 @@ defmodule SeaGoatDB.Writer do
 
         state = clean_flush(state, ref)
         flush = flush(state, rotated_wal, mem_table, retry - 1)
-        %{state | flushing: [flush | state.flushing]}
+        state = %{state | flushing: [flush | state.flushing]}
         {:noreply, state}
 
       _ ->
