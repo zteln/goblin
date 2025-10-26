@@ -1,4 +1,70 @@
 defmodule Talon do
+  @moduledoc """
+  An embedded LSM-Tree database for Elixir.
+
+  Talon provides a persistent key-value store with ACID transactions,
+  automatic compaction, and crash recovery. It uses a Log-Structured
+  Merge-Tree architecture optimized for write-heavy workloads.
+
+  ## Starting a database
+
+      {:ok, db} = Talon.start_link(
+        name: MyApp.DB,
+        db_dir: "/path/to/db",
+        key_limit: 50_000,
+        level_limit: 128 * 1024 * 1024
+      )
+
+  ## Basic operations
+
+      Talon.put(db, :user_123, %{name: "Alice", age: 30})
+      Talon.get(db, :user_123)
+      # => %{name: "Alice", age: 30}
+
+      Talon.remove(db, :user_123)
+      Talon.get(db, :user_123)
+      # => nil
+
+  ## Batch operations
+
+      Talon.put_multi(db, [
+        {:user_1, %{name: "Alice"}},
+        {:user_2, %{name: "Bob"}}
+      ])
+
+      Talon.remove_multi(db, [:user_1, :user_2])
+
+  ## Transactions
+
+      alias Talon.Tx
+
+      Talon.transaction(db, fn tx ->
+        count = Tx.get(tx, :counter) || 0
+        tx = Tx.put(tx, :counter, count + 1)
+        {:commit, tx, count + 1}
+      end)
+
+  Transactions provide snapshot isolation. If a conflict is detected,
+  the transaction returns `{:error, :in_conflict}`.
+
+  ## Configuration
+
+  - `name` - Registered name for the database supervisor (optional)
+  - `db_dir` - Directory path for storing database files (required)
+  - `key_limit` - Maximum keys in MemTable before flushing (default: 50,000)
+  - `level_limit` - Size threshold in bytes for level 0 compaction (default: 128 MB)
+
+  ## Architecture
+
+  Talon consists of several supervised components:
+
+  - **Writer** - Manages in-memory MemTable and coordinates writes
+  - **Store** - Tracks SST files and provides read access
+  - **Compactor** - Merges SST files across levels
+  - **WAL** - Write-ahead log for durability
+  - **Manifest** - Tracks database state and file metadata
+  - **RWLocks** - Coordinates concurrent access to SST files
+  """
   use Supervisor
 
   @type db_key_limit :: non_neg_integer()
@@ -12,6 +78,12 @@ defmodule Talon do
 
   @default_key_limit 50_000
   @default_level_limit 128 * 1024 * 1024
+
+  @spec transaction(db_server(), (Talon.Transaction.t() -> Talon.Writer.transaction_return())) :: term() | :ok | {:error, term()}
+  def transaction(db, f) do
+    writer = name(db, :writer)
+    Talon.Writer.transaction(writer, f)
+  end
 
   @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
@@ -64,7 +136,8 @@ defmodule Talon do
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    opts[:db_dir] || raise "no db_dir provided."
+    db_dir = opts[:db_dir] || raise "no db_dir provided."
+    File.exists?(db_dir) || File.mkdir_p!(db_dir)
     Supervisor.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
   end
 

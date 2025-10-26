@@ -66,16 +66,14 @@ Talon.remove_multi(db, [:user_1, :user_2])
 ### Transactions
 
 ```elixir
-alias Talon.Writer.Transaction
-
-Talon.Writer.transaction(db, fn tx ->
-  case Transaction.get(tx, :counter) do
+Talon.transaction(db, fn tx ->
+  case Talon.Tx.get(tx, :counter) do
     nil ->
-      tx = Transaction.put(tx, :counter, 1)
+      tx = Talon.Tx.put(tx, :counter, 1)
       {:commit, tx, 1}
     
     count ->
-      tx = Transaction.put(tx, :counter, count + 1)
+      tx = Talon.Tx.put(tx, :counter, count + 1)
       {:commit, tx, count + 1}
   end
 end)

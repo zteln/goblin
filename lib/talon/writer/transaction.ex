@@ -1,13 +1,5 @@
 defmodule Talon.Writer.Transaction do
   @moduledoc false
-  # A transaction keeps an internal MemTable that is merged into the main MemTable when committed as long as it is conflict-free.
-  # The transaction tracks what is written and read and checks for eventual conflicts.
-  #
-  # There are two possible conflicts:
-  # 1. read conflict: the transaction reads a value corresponding to a key that has changed since the read. E.g. transaction A reads `key` with value `val1`, then transaction B writes `val2` to `key` and commits. Transaction A has then a read conflict.
-  # 2. write conflict: a concurrent transaction commits a change to a key before this transaction. E.g. two transactions, A and B, write to `key` values `val1` and `val2`, respectively. A commits before B, then B has a write conflict.
-  #
-  # Reading a key in a transaction first searches for the key-value pair in its internal MemTable before calling the `:fallback_read` function.
   alias Talon.Writer.MemTable
 
   defstruct [
@@ -21,20 +13,11 @@ defmodule Talon.Writer.Transaction do
 
   @type t :: %__MODULE__{}
 
-  # @doc """
-  # Returns a new `Transaction` structure.
-  # Each transaction keeps track of its owner (the process executing the transaction), the writer (the process that commits the transactions), and the store (the process responsible for on-disk storage).
-  # The writer pid is used for reading from the in-memory MemTable.
-  # The store pid is used to reading the on-disk SSTs.
-  # """
   @spec new(pid(), (term() -> term())) :: t()
   def new(pid, fallback_read \\ fn _ -> :not_found end) do
     %__MODULE__{owner: pid, fallback_read: fallback_read}
   end
 
-  # @doc """
-  # Puts the key-value pair in the transactions MemTable, overriding `key` if it exists.
-  # """
   @spec put(t(), Talon.db_key(), Talon.db_value()) :: t()
   def put(tx, key, value) do
     write = {tx.seq, :put, key, value}
@@ -42,9 +25,6 @@ defmodule Talon.Writer.Transaction do
     %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
   end
 
-  # @doc """
-  # Removes `key` and corresponding value in the transactions MemTable.
-  # """
   @spec remove(t(), Talon.db_key()) :: t()
   def remove(tx, key) do
     write = {tx.seq, :remove, key}
@@ -52,9 +32,6 @@ defmodule Talon.Writer.Transaction do
     %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
   end
 
-  # @doc """
-  # Reads `key` from either its own MemTable or via its `fallback_read` function if `:not_found` is returned from its own MemTable..
-  # """
   @spec get(t(), Talon.db_key()) ::
           {{Talon.db_sequence(), Talon.db_value()} | :error, t()}
   def get(tx, key) do
@@ -69,12 +46,6 @@ defmodule Talon.Writer.Transaction do
     {read, tx}
   end
 
-  # @doc """
-  # Checks whether the transaction has any conflicts with other MemTables.
-  # A conflict can arise two ways:
-  # - if the transaction has read a key with a value differing to the value found under the same in one of the MemTables.
-  # - if the transaction attempts to write to a key already existing in one of the MemTables.
-  # """
   @spec has_conflict(t(), [MemTable.t()]) :: boolean()
   def has_conflict(tx, mem_tables) do
     has_read_conflict(tx.reads, mem_tables) || has_write_conflict(tx.mem_table, mem_tables)
