@@ -273,9 +273,46 @@ defmodule Goblin do
     end
   end
 
-  # def get_multi do
-  #
-  # end
+  @doc """
+  Retrieves values for multiple keys from the database in a single operation.
+
+  This is more efficient than calling `get/3` multiple times as it batches
+  the reads together. Only returns key-value pairs for keys that exist.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `keys` - A list of keys to look up
+
+  ## Returns
+
+  - A list of `{key, value}` tuples for found keys, sorted by key
+
+  ## Examples
+
+      Goblin.put_multi(db, [
+        {:user_1, %{name: "Alice"}},
+        {:user_2, %{name: "Bob"}}
+      ])
+
+      Goblin.get_multi(db, [:user_1, :user_2, :user_3])
+      # => [{:user_1, %{name: "Alice"}}, {:user_2, %{name: "Bob"}}]
+
+      Goblin.get_multi(db, [:nonexistent])
+      # => []
+  """
+  @spec get_multi(db_server(), [db_key()]) :: [{db_key(), db_value()}]
+  def get_multi(db, keys) when is_list(keys) do
+    writer = name(db, :writer)
+    store = name(db, :store)
+
+    Goblin.Reader.get_multi(keys, writer, store)
+    |> Enum.reject(&(&1 == :not_found))
+    |> Enum.map(fn {key, _, value} -> {key, value} end)
+    |> List.keysort(0)
+  end
+
+  def get_multi(_, _), do: raise("`keys` not a list.")
 
   # def select do
   #

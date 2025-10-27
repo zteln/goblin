@@ -41,12 +41,14 @@ defmodule Goblin.Store do
     GenServer.call(store, {:remove, file})
   end
 
-  @spec get(store(), Goblin.db_key()) :: [
+  @spec get(store(), Goblin.db_key() | [Goblin.db_key()]) :: [
           {(-> Goblin.db_value()), (-> :ok)}
         ]
-  def get(store, key) do
-    GenServer.call(store, {:get, key})
+  def get(store, keys) when is_list(keys) do
+    GenServer.call(store, {:get, keys})
   end
+
+  def get(store, key), do: get(store, [key])
 
   @spec new_file(store()) :: Goblin.db_file()
   def new_file(store) do
@@ -93,19 +95,15 @@ defmodule Goblin.Store do
     {:reply, :ok, %{state | ss_tables: ss_tables}}
   end
 
-  def handle_call({:get, key}, {pid, _ref}, state) do
-    rw_locks = state.rw_locks
+  def handle_call({:get, keys}, {caller, _ref}, state) do
+    %{
+      ss_tables: ss_tables,
+      rw_locks: rw_locks
+    } = state
 
     ss_tables =
-      state.ss_tables
-      |> Enum.filter(&BloomFilter.is_member(&1.bloom_filter, key))
-      |> Enum.map(fn ss_table ->
-        RWLocks.rlock(rw_locks, ss_table.file, pid)
-
-        {
-          fn -> SSTs.find(ss_table.file, key) end,
-          fn -> RWLocks.unlock(rw_locks, ss_table.file, pid) end
-        }
+      Enum.map(keys, fn key ->
+        {key, get_sst(key, caller, ss_tables, rw_locks)}
       end)
 
     {:reply, ss_tables, state}
@@ -133,6 +131,25 @@ defmodule Goblin.Store do
       {:error, _reason} = error ->
         {:stop, error, state}
     end
+  end
+
+  defp get_sst(key, caller, ssts, rw_locks) do
+    ssts
+    |> Enum.filter(&BloomFilter.is_member(&1.bloom_filter, key))
+    |> Enum.flat_map(fn sst ->
+      case RWLocks.rlock(rw_locks, sst.file, caller) do
+        :ok ->
+          [
+            {
+              fn -> SSTs.find(sst.file, key) end,
+              fn -> RWLocks.unlock(rw_locks, sst.file, caller) end
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
   end
 
   defp recover_ss_tables(files, compactor, acc \\ [])

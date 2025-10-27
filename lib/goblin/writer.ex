@@ -48,9 +48,14 @@ defmodule Goblin.Writer do
   #   GenServer.call(server, {:subscribe, pid})
   # end
 
-  @spec get(writer(), key :: Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
+  @spec get(writer(), Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
   def get(writer, key) do
     GenServer.call(writer, {:get, key})
+  end
+
+  @spec get_multi(writer(), [Goblin.db_key()]) :: {:ok, Goblin.db_value()} | :error
+  def get_multi(writer, keys) do
+    GenServer.call(writer, {:get_multi, keys})
   end
 
   @spec put(writer(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
@@ -144,6 +149,24 @@ defmodule Goblin.Writer do
 
     mem_tables = [state.mem_table | flushing_mem_tables]
     reply = search_for_key(mem_tables, key)
+    {:reply, reply, state}
+  end
+
+  def handle_call({:get_multi, keys}, _from, state) do
+    flushing_mem_tables =
+      state.flushing
+      |> Enum.map(fn {_, mem_table, _, _} -> mem_table end)
+
+    mem_tables = [state.mem_table | flushing_mem_tables]
+
+    reply =
+      Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
+        case search_for_key(mem_tables, key) do
+          :not_found -> {found, [key | not_found]}
+          {:ok, {:value, seq, value}} -> {[{key, seq, value} | found], not_found}
+        end
+      end)
+
     {:reply, reply, state}
   end
 

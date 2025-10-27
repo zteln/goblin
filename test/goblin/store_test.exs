@@ -70,8 +70,8 @@ defmodule Goblin.StoreTest do
     assert %{max_file_count: 2} = :sys.get_state(c.store)
   end
 
-  test "get_ss_tables/2 returns empty list if no files are stored", c do
-    assert [] == Store.get(c.store, :k)
+  test "get/2 returns empty list if no files are stored", c do
+    assert [{:k, []}] == Store.get(c.store, :k)
   end
 
   test "get/2 rlocks file when matched", c do
@@ -81,7 +81,7 @@ defmodule Goblin.StoreTest do
 
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
-    assert [{read_f, unlock_f}] = Store.get(c.store, :k1)
+    assert [{_, [{read_f, unlock_f}]}] = Store.get(c.store, :k1)
 
     assert %{
              locks: %{
@@ -103,13 +103,13 @@ defmodule Goblin.StoreTest do
     assert %{} == locks
   end
 
-  test "get_ss_tables/2 returns empty list if Bloom filter does not match", c do
+  test "get/2 returns empty list if Bloom filter does not match", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
     {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
     assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
-    assert [] = Store.get(c.store, :k3)
+    assert [{:k3, []}] = Store.get(c.store, :k3)
   end
 
   test "store gets state from manifest on start", c do
