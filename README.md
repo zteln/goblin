@@ -153,21 +153,21 @@ SST files use the `.goblin` extension and follow this binary structure:
 
 ### Data blocks
 
-Each block is 512 bytes and contains:
-- **Block ID** (16 bytes): `"TALONBLOCK000000"`
+Each block is a multiple of 512 bytes and contains:
+- **Block ID** (16 bytes): `"GOBLINBLOCK00000"`
 - **Span** (2 bytes): Number of blocks this entry spans
 - **Data** (variable): Erlang term encoding of `{sequence, key, value}`
-- **Padding** (variable): Zero-filled to reach 512 bytes
+- **Padding** (variable): Zero-filled to reach n * 512 bytes
 
 ### Footer
 
 The footer contains metadata for efficient lookups:
-- **Separator** (16 bytes): `"TALONSEP00000000"`
+- **Separator** (16 bytes): `"GOBLINSEP0000000"`
 - **Bloom filter** (variable): Encoded bloom filter for membership testing
 - **Key range** (variable): Min and max keys in the SST
 - **Priority** (variable): Sequence number for ordering
 - **Metadata** (56 bytes): Positions and sizes of footer components
-- **Magic** (16 bytes): `"TALONFILE0000000"`
+- **Magic** (16 bytes): `"GOBLINFILE000000"`
 
 The metadata section stores:
 - Level key (4 bytes)
@@ -181,3 +181,7 @@ The metadata section stores:
 ## References
 
 - [RocksDB Documentation](https://github.com/facebook/rocksdb/wiki) - Facebook's fork of LevelDB with extensive optimizations
+
+## Inspiration
+
+- [CubDB](https://github.com/lucaong/cubdb) - Embedded COW B+Tree database
