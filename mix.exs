@@ -31,7 +31,7 @@ defmodule Goblin.MixProject do
   defp package do
     [
       name: "goblin",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE),
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/zteln/goblin"}
     ]
