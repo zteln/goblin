@@ -2,8 +2,6 @@ defmodule Goblin.SSTs.SST do
   @moduledoc false
   alias Goblin.BloomFilter
 
-  @type range :: {term(), term()}
-  @type level :: non_neg_integer()
   @type size :: non_neg_integer()
   @type position :: non_neg_integer()
   @type offset :: non_neg_integer()
@@ -53,7 +51,7 @@ defmodule Goblin.SSTs.SST do
   def size(:metadata), do: @metadata_size
   def size(:block_header), do: @block_header_size
 
-  # @spec encode_block(term(), term()) :: binary()
+  @spec encode_block(Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()) :: binary()
   def encode_block(seq, key, value) do
     encoded = encode({seq, key, value})
     block_size = byte_size(<<@block_id::binary, 0::integer-16, encoded::binary>>)
@@ -62,15 +60,15 @@ defmodule Goblin.SSTs.SST do
     <<@block_id::binary, span::integer-16, encoded::binary, 0::size(padding)-unit(8)>>
   end
 
-  # @spec encode_footer(
-  #         level(),
-  #         BloomFilter.t(),
-  #         range(),
-  #         non_neg_integer(),
-  #         non_neg_integer(),
-  #         offset(),
-  #         no_of_blocks()
-  #       ) :: binary()
+  @spec encode_footer(
+          Goblin.db_level_key(),
+          BloomFilter.t(),
+          {Goblin.db_key(), Goblin.db_key()},
+          Goblin.db_sequence(),
+          offset(),
+          no_of_blocks(),
+          size()
+        ) :: binary()
   def encode_footer(
         level_key,
         %BloomFilter{} = bloom_filter,
@@ -130,9 +128,11 @@ defmodule Goblin.SSTs.SST do
 
   def decode_block(_), do: {:error, :invalid_block}
 
-  # @spec decode_metadata(binary()) ::
-  #         {:ok, {level(), size(), position(), size(), position(), no_of_blocks(), offset()}}
-  #         | {:error, :invalid_metadata}
+  @spec decode_metadata(binary()) ::
+          {:ok,
+           {Goblin.db_level_key(), size(), position(), size(), position(), size(), position(),
+            no_of_blocks(), size(), offset()}}
+          | {:error, :invalid_metadata}
   def decode_metadata(<<
         level_key::integer-32,
         bf_pos::integer-64,
@@ -171,9 +171,8 @@ defmodule Goblin.SSTs.SST do
     end
   end
 
-  # @spec decode_range(binary()) ::
-  #         {:ok, range()}
-  #         | {:error, :invalid_range}
+  @spec decode_key_range(binary()) ::
+          {:ok, {Goblin.db_key(), Goblin.db_key()}} | {:error, :invalid_range}
   def decode_key_range(encoded) do
     case decode(encoded) do
       {:key_range, {_, _} = key_range} -> {:ok, key_range}
@@ -181,6 +180,8 @@ defmodule Goblin.SSTs.SST do
     end
   end
 
+  @spec decode_priority(binary()) ::
+          {:ok, Goblin.db_sequence()} | {:error, :invalid_range}
   def decode_priority(encoded) do
     case decode(encoded) do
       {:priority, priority} -> {:ok, priority}
