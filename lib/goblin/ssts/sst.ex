@@ -2,6 +2,16 @@ defmodule Goblin.SSTs.SST do
   @moduledoc false
   alias Goblin.BloomFilter
 
+  defstruct [
+    :file,
+    :level_key,
+    :priority,
+    :key_range,
+    :bloom_filter,
+    :size
+  ]
+
+  @type t :: %__MODULE__{}
   @type size :: non_neg_integer()
   @type position :: non_neg_integer()
   @type offset :: non_neg_integer()

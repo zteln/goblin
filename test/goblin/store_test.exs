@@ -15,12 +15,22 @@ defmodule Goblin.StoreTest do
 
   setup_db(@db_opts)
 
-  test "put/4 puts new SST in store and adds to the compactor", c do
+  test "put/2 puts new SST in store and adds to the compactor", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
 
-    assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
+    {:ok,
+     %{
+       file: file,
+       priority: priority,
+       key_range: key_range,
+       size: size,
+       bloom_filter: bf
+     } = sst} =
+      SSTs.fetch_sst(file)
+
+    assert :ok == Store.put(c.store, sst)
+
+    assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
     assert %{
              levels: %{
@@ -31,35 +41,48 @@ defmodule Goblin.StoreTest do
            } = :sys.get_state(c.compactor)
   end
 
-  test "put/4 preserves existing files when putting new files", c do
+  test "put/2 preserves existing files when putting new files", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
-    assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
+    {:ok,
+     %{
+       file: file,
+       bloom_filter: bf
+     } = sst} =
+      SSTs.fetch_sst(file)
+
+    assert :ok == Store.put(c.store, sst)
+    assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
+
+    assert :ok == Store.put(c.store, sst)
 
     assert %{
-             ss_tables: [%{file: ^file, bloom_filter: ^bf}, %{file: ^file, bloom_filter: ^bf}]
+             ssts: [%{file: ^file, bloom_filter: ^bf}, %{file: ^file, bloom_filter: ^bf}]
            } = :sys.get_state(c.store)
   end
 
   test "remove/2 is idempotent", c do
-    assert %{ss_tables: []} = :sys.get_state(c.store)
+    assert %{ssts: []} = :sys.get_state(c.store)
     assert :ok == Store.remove(c.store, "foo")
     assert :ok == Store.remove(c.store, "foo")
     assert :ok == Store.remove(c.store, "foo")
-    assert %{ss_tables: []} = :sys.get_state(c.store)
+    assert %{ssts: []} = :sys.get_state(c.store)
   end
 
   test "remove/2 removes SST from the store", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
-    assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
+    {:ok,
+     %{
+       file: file,
+       bloom_filter: bf
+     } = sst} =
+      SSTs.fetch_sst(file)
+
+    assert :ok == Store.put(c.store, sst)
+    assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
     assert :ok == Store.remove(c.store, file)
-    assert %{ss_tables: []} = :sys.get_state(c.store)
+    assert %{ssts: []} = :sys.get_state(c.store)
   end
 
   test "new_file/1 increments store file counter", c do
@@ -77,9 +100,10 @@ defmodule Goblin.StoreTest do
   test "get/2 rlocks file when matched", c do
     self = self()
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
 
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
+    {:ok, %{file: file} = sst} = SSTs.fetch_sst(file)
+
+    assert :ok == Store.put(c.store, sst)
 
     assert [{_, [{read_f, unlock_f}]}] = Store.get(c.store, :k1)
 
@@ -105,24 +129,21 @@ defmodule Goblin.StoreTest do
 
   test "get/2 returns empty list if Bloom filter does not match", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
-
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
-
+    {:ok, sst} = SSTs.fetch_sst(file)
+    assert :ok == Store.put(c.store, sst)
     assert [{:k3, []}] = Store.get(c.store, :k3)
   end
 
   test "store gets state from manifest on start", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
-    {:ok, bf, level_key, priority, size, key_range} = SSTs.fetch_sst_info(file)
-
+    {:ok, %{file: file, bloom_filter: bf} = sst} = SSTs.fetch_sst(file)
     assert :ok == Goblin.Manifest.log_compaction(c.manifest, [], [file])
-    assert :ok == Store.put(c.store, file, level_key, bf, priority, size, key_range)
-    assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
+    assert :ok == Store.put(c.store, sst)
+    assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
     stop_supervised!(c.db_id)
     %{store: store} = start_db(c.tmp_dir, @db_opts)
 
-    assert %{ss_tables: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(store)
+    assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(store)
   end
 end

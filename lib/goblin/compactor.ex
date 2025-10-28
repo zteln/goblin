@@ -21,8 +21,12 @@ defmodule Goblin.Compactor do
   ]
 
   @type compactor :: GenServer.server()
-  @type data ::
-          {Goblin.db_sequence(), non_neg_integer(), {Goblin.db_key(), Goblin.db_key()}}
+  @type data :: {
+          Goblin.db_file(),
+          Goblin.db_sequence(),
+          non_neg_integer(),
+          {Goblin.db_key(), Goblin.db_key()}
+        }
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -40,9 +44,9 @@ defmodule Goblin.Compactor do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec put(compactor(), Goblin.db_level_key(), Goblin.db_file(), data()) :: :ok
-  def put(compactor, level_key, file, data) do
-    GenServer.call(compactor, {:put, level_key, file, data})
+  @spec put(compactor(), Goblin.db_level_key(), data()) :: :ok
+  def put(compactor, level_key, data) do
+    GenServer.call(compactor, {:put, level_key, data})
   end
 
   @impl GenServer
@@ -60,10 +64,10 @@ defmodule Goblin.Compactor do
   end
 
   @impl GenServer
-  def handle_call({:put, level_key, file, {seq, size, key_range}}, _from, state) do
+  def handle_call({:put, level_key, {file, priority, size, key_range}}, _from, state) do
     entry = %Entry{
       id: file,
-      priority: seq,
+      priority: priority,
       size: size,
       key_range: key_range
     }
@@ -195,7 +199,7 @@ defmodule Goblin.Compactor do
                  clean_tombstones?,
                  fn -> Store.new_file(store) end
                ),
-             :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, &elem(&1, 0))),
+             :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, & &1.file)),
              :ok <- put_new_files_in_store(new, target_level.level_key, store),
              :ok <- remove_old_files(sources ++ old, store, rw_locks) do
           {:ok, sources ++ old, source_level_key, target_level.level_key}
@@ -226,13 +230,9 @@ defmodule Goblin.Compactor do
 
   defp put_new_files_in_store([], _level_key, _store), do: :ok
 
-  defp put_new_files_in_store(
-         [{file, {bloom_filter, priority, size, key_range}} | new],
-         level_key,
-         store
-       ) do
-    Store.put(store, file, level_key, bloom_filter, priority, size, key_range)
-    put_new_files_in_store(new, level_key, store)
+  defp put_new_files_in_store([sst | ssts], level_key, store) do
+    Store.put(store, sst)
+    put_new_files_in_store(ssts, level_key, store)
   end
 
   defp remove_old_files([], _store, _rw_locks), do: :ok

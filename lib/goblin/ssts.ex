@@ -24,9 +24,9 @@ defmodule Goblin.SSTs do
     result
   end
 
-  @spec fetch_sst_info(Goblin.db_file()) ::
+  @spec fetch_sst(Goblin.db_file()) ::
           {:ok, {Goblin.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
-  def fetch_sst_info(file) do
+  def fetch_sst(file) do
     disk = Disk.open!(file)
 
     result =
@@ -47,7 +47,15 @@ defmodule Goblin.SSTs do
            {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size),
            {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
            {:ok, priority} <- read_priority(disk, priority_pos, priority_size) do
-        {:ok, bf, level_key, priority, size, key_range}
+        {:ok,
+         %SST{
+           file: file,
+           bloom_filter: bf,
+           level_key: level_key,
+           priority: priority,
+           key_range: key_range,
+           size: size
+         }}
       end
 
     Disk.close(disk)
@@ -138,8 +146,8 @@ defmodule Goblin.SSTs do
       tmp_file = tmp_file(file)
 
       case write(tmp_file, level_key, chunk) do
-        {:ok, bloom_filter, priority, size, key_range} ->
-          {:cont, {:ok, [{tmp_file, file, {bloom_filter, priority, size, key_range}} | acc]}}
+        {:ok, sst} ->
+          {:cont, {:ok, [{tmp_file, file, sst} | acc]}}
 
         {:error, _reason} = error ->
           {:halt, error}
@@ -227,7 +235,14 @@ defmodule Goblin.SSTs do
     result =
       with {:ok, _disk, bloom_filter, priority, size, key_range} <-
              write_sst(disk, level_key, data) do
-        {:ok, bloom_filter, priority, size, key_range}
+        {:ok,
+         %SST{
+           bloom_filter: bloom_filter,
+           level_key: level_key,
+           priority: priority,
+           size: size,
+           key_range: key_range
+         }}
       end
 
     Disk.sync(disk)
@@ -393,9 +408,9 @@ defmodule Goblin.SSTs do
   defp switch(to_switch, acc \\ [])
   defp switch([], acc), do: {:ok, acc}
 
-  defp switch([{from, to, write_data} | to_switch], acc) do
+  defp switch([{from, to, sst} | to_switch], acc) do
     with :ok <- Disk.rename(from, to) do
-      switch(to_switch, [{to, write_data} | acc])
+      switch(to_switch, [%{sst | file: to} | acc])
     end
   end
 

@@ -16,7 +16,16 @@ defmodule Goblin.SSTsTest do
         {3, "key3", "value3"}
       ]
 
-      assert {:ok, [{file, {bloom_filter, priority, size, key_range}}]} =
+      assert {:ok,
+              [
+                %{
+                  file: file,
+                  bloom_filter: bloom_filter,
+                  priority: priority,
+                  size: size,
+                  key_range: key_range
+                }
+              ]} =
                SSTs.flush(data, level_key, 10, fn -> file end)
 
       assert %BloomFilter{} = bloom_filter
@@ -88,7 +97,7 @@ defmodule Goblin.SSTsTest do
         {1, "key1", large_value}
       ]
 
-      assert {:ok, [{_, {_bf, _priority, _size, _key_range}}]} =
+      assert {:ok, [_sst]} =
                SSTs.flush(data, level_key, 10, fn -> file end)
 
       assert {:ok, {:value, 1, ^large_value}} = SSTs.find(file, "key1")
@@ -104,8 +113,7 @@ defmodule Goblin.SSTsTest do
         {3, "key3", "value3"}
       ]
 
-      assert {:ok, [{_, {_bf, _priority, _size, _key_range}}]} =
-               SSTs.flush(data, level_key, 10, fn -> file end)
+      assert {:ok, [_sst]} = SSTs.flush(data, level_key, 10, fn -> file end)
 
       assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
       assert {:ok, {:value, 2, nil}} = SSTs.find(file, "key2")
@@ -122,7 +130,7 @@ defmodule Goblin.SSTsTest do
           {n, key, "value#{n}"}
         end
 
-      assert {:ok, [{_, {_bf, priority, _size, key_range}}]} =
+      assert {:ok, [%{priority: priority, key_range: key_range}]} =
                SSTs.flush(data, level_key, 100, fn -> file end)
 
       assert priority == 1
@@ -142,16 +150,13 @@ defmodule Goblin.SSTsTest do
         data = [
           {1, "key1", "value1"}
         ]
-
-        assert {:ok, [{_, {_bf, _priority, _size, _key_range}}]} =
-                 SSTs.flush(data, level_key, 100, fn -> file end)
-
-        assert {:ok, _bf, ^level_key, _priority, _size, _range} = SSTs.fetch_sst_info(file)
+        assert {:ok, [_sst]} = SSTs.flush(data, level_key, 100, fn -> file end)
+        assert {:ok, %{level_key: ^level_key}} = SSTs.fetch_sst(file)
       end
     end
   end
 
-  describe "fetch_sst_info/1" do
+  describe "fetch_sst/1" do
     test "returns bloom filter and metadata", c do
       file = Path.join(c.tmp_dir, "info.goblin")
       level_key = 2
@@ -163,8 +168,15 @@ defmodule Goblin.SSTsTest do
 
       SSTs.flush(data, level_key, 100, fn -> file end)
 
-      assert {:ok, bloom_filter, ^level_key, priority, size, key_range} =
-               SSTs.fetch_sst_info(file)
+      assert {:ok,
+              %{
+                level_key: ^level_key,
+                priority: priority,
+                size: size,
+                key_range: key_range,
+                bloom_filter: bloom_filter
+              }} =
+               SSTs.fetch_sst(file)
 
       assert %BloomFilter{} = bloom_filter
       assert priority == 5
@@ -176,14 +188,14 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "not_sst.txt")
       File.write!(file, "not an SST")
 
-      assert {:error, :not_an_ss_table} = SSTs.fetch_sst_info(file)
+      assert {:error, :not_an_ss_table} = SSTs.fetch_sst(file)
     end
 
     test "returns error for non-existent file", c do
       file = Path.join(c.tmp_dir, "nonexistent.goblin")
 
       assert_raise RuntimeError, fn ->
-        SSTs.fetch_sst_info(file)
+        SSTs.fetch_sst(file)
       end
     end
   end

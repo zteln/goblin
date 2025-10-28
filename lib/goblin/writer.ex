@@ -58,6 +58,10 @@ defmodule Goblin.Writer do
     GenServer.call(writer, {:get_multi, keys})
   end
 
+  def get_all(writer) do
+    GenServer.call(writer, :get_all)
+  end
+
   @spec put(writer(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
   def put(writer, key, value) do
     transaction(writer, fn tx ->
@@ -169,6 +173,18 @@ defmodule Goblin.Writer do
 
     {:reply, reply, state}
   end
+
+  # def handle_call(:get_all, _from, state) do
+  #   flushing_mem_tables =
+  #     state.flushing
+  #     |> Enum.flat_map(fn {_, mem_table, _, _} ->
+  #       MemTable.flatten(mem_table)
+  #     end)
+  #
+  #   mem_tables = MemTable.flatten(mem_table) ++ flushing_mem_tables
+  #
+  #   {:reply, mem_tables, state}
+  # end
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
@@ -335,7 +351,7 @@ defmodule Goblin.Writer do
 
         with {:ok, flushed} <-
                SSTs.flush(data, @flush_level, key_limit, fn -> Store.new_file(store) end),
-             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, &elem(&1, 0)), rotated_wal),
+             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, & &1.file), rotated_wal),
              :ok <- WAL.clean(wal, rotated_wal),
              :ok <- put_in_store(flushed, store) do
           {:ok, :flushed}
@@ -347,9 +363,9 @@ defmodule Goblin.Writer do
 
   defp put_in_store([], _store), do: :ok
 
-  defp put_in_store([{file, {bloom_filter, priority, size, key_range}} | flushed], store) do
-    Store.put(store, file, @flush_level, bloom_filter, priority, size, key_range)
-    put_in_store(flushed, store)
+  defp put_in_store([sst | ssts], store) do
+    Store.put(store, sst)
+    put_in_store(ssts, store)
   end
 
   defp maybe_rotate(state, nil) do
