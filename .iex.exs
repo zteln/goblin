@@ -4,12 +4,21 @@ db_dir = "/tmp/goblin_test/"
 
 {:ok, db} = Goblin.start_link(db_dir: db_dir, sync_interval: 50)
 
+shuffler = fn range, version ->
+  range
+  |> Enum.shuffle()
+  |> Enum.map(fn n -> {n, "v#{version}-#{n}"} end)
+end
+
+small = shuffler.(1..1000, 1)
+medium = shuffler.(1..10_000, 2)
+large = shuffler.(1..100_000, 3)
+huge = shuffler.(1..1_000_000, 4)
+
 put_small = fn ->
   :timer.tc(
     fn ->
-      for n <- Enum.shuffle(1..1000) do
-        Goblin.put(db, n, "v1-#{n}")
-      end
+      Goblin.put_multi(db, small)
     end,
     :millisecond
   )
@@ -18,9 +27,7 @@ end
 put_medium = fn ->
   :timer.tc(
     fn ->
-      for n <- Enum.shuffle(1..10_000) do
-        Goblin.put(db, n, "v2-#{n}")
-      end
+      Goblin.put_multi(db, medium)
     end,
     :millisecond
   )
@@ -29,9 +36,7 @@ end
 put_large = fn ->
   :timer.tc(
     fn ->
-      for n <- Enum.shuffle(1..100_000) do
-        Goblin.put(db, n, "v3-#{n}")
-      end
+      Goblin.put_multi(db, large)
     end,
     :millisecond
   )
@@ -40,23 +45,7 @@ end
 put_huge = fn ->
   :timer.tc(
     fn ->
-      pairs =
-        1..1_000_000
-        |> Enum.shuffle()
-        |> Enum.map(fn n -> {n, "v4-#{n}"} end)
-
-      Goblin.put_multi(db, pairs)
-    end,
-    :millisecond
-  )
-end
-
-ltimer_f = fn ->
-  :timer.tc(
-    fn ->
-      for n <- 1..10_000 do
-        Goblin.put(db, n, "v-" <> String.duplicate(to_string(n), 511))
-      end
+      Goblin.put_multi(db, huge)
     end,
     :millisecond
   )
