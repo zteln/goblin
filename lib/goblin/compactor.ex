@@ -188,13 +188,24 @@ defmodule Goblin.Compactor do
 
     %{ref: ref} =
       task_mod.async(task_sup, fn ->
-        target_level = deplete(sources, target_level)
-        levels = Map.put(levels, target_level.level_key, target_level)
-        clean_tombstones? = clean_tombstones?(target_level, levels)
+        %{
+          entries: entries,
+          level_key: level_key
+        } = target_level = deplete(sources, target_level)
 
-        with {:ok, old, new} <-
+        levels = Map.put(levels, level_key, target_level)
+        clean_tombstones? = clean_tombstones?(target_level, levels)
+        old = Map.keys(entries)
+
+        data =
+          Enum.map(entries, fn {id, %{buffer: buffer}} ->
+            {id, buffer}
+          end)
+
+        with {:ok, new} <-
                SSTs.merge(
-                 target_level,
+                 data,
+                 level_key,
                  key_limit,
                  clean_tombstones?,
                  fn -> Store.new_file(store) end

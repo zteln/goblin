@@ -8,8 +8,11 @@ defmodule Goblin.SSTs do
 
   @type iterator :: {:next, Disk.t()}
 
+  @spec delete(Goblin.db_file()) :: :ok | {:error, term()}
   def delete(file), do: Disk.rm(file)
 
+  @spec find(Goblin.db_file(), Goblin.db_key()) ::
+          {:ok, {:value, Goblin.db_sequence(), Goblin.db_value()}} | :not_found | {:error, term()}
   def find(file, key) do
     disk = Disk.open!(file)
 
@@ -64,6 +67,7 @@ defmodule Goblin.SSTs do
     result
   end
 
+  @spec stream!(Goblin.db_file()) :: Stream.t()
   def stream!(file) do
     Stream.resource(
       fn ->
@@ -86,11 +90,10 @@ defmodule Goblin.SSTs do
     )
   end
 
-  # raise on error?
+  @spec iterate(Goblin.db_file() | iterator()) :: iterator()
   def iterate({:next, disk}) do
     case read_next_key(disk) do
       {:ok, data, disk} ->
-        # {:ok, data, {:next, disk}}
         {data, {:next, disk}}
 
       {:error, :eod} ->
@@ -100,7 +103,6 @@ defmodule Goblin.SSTs do
       _e ->
         Disk.close(disk)
         raise "Iteration failed."
-        # e
     end
   end
 
@@ -109,6 +111,8 @@ defmodule Goblin.SSTs do
     {:next, disk}
   end
 
+  @spec flush([Goblin.triple()], Goblin.level_key(), Goblin.key_limit(), (-> Goblin.db_file())) ::
+          {:ok, [SST.t()]} | {:error, term()}
   def flush(data, level_key, key_limit, file_getter) do
     stream = flush_stream(data, key_limit)
 
@@ -117,22 +121,21 @@ defmodule Goblin.SSTs do
     end
   end
 
-  def merge(target, key_limit, clean_tombstones?, file_getter) do
-    %{
-      level_key: level_key,
-      entries: entries
-    } = target
-
-    old = Map.keys(entries)
-
+  @spec merge(
+          [{Goblin.db_file(), [Goblin.triple()]}],
+          Goblin.db_level_key(),
+          Goblin.key_limit(),
+          boolean(),
+          (-> Goblin.db_file())
+        ) :: {:ok, [SST.t()]} | {:error, term()}
+  def merge(data, level_key, key_limit, clean_tombstones?, file_getter) do
     streams =
-      Enum.map(entries, fn {_id, entry} ->
-        merge_stream(entry, clean_tombstones?, key_limit)
+      Enum.map(data, fn {id, buffer} ->
+        merge_stream(id, buffer, clean_tombstones?, key_limit)
       end)
 
-    with {:ok, merged} <- write_streams(streams, level_key, file_getter),
-         {:ok, merged} <- switch(merged) do
-      {:ok, old, merged}
+    with {:ok, merged} <- write_streams(streams, level_key, file_getter) do
+      switch(merged)
     end
   end
 
@@ -172,11 +175,11 @@ defmodule Goblin.SSTs do
   defp iter_flush_data([]), do: {:halt, :ok}
   defp iter_flush_data([next | data]), do: {[next], data}
 
-  defp merge_stream(entry, clean_tombstones?, key_limit) do
+  defp merge_stream(id, buffer, clean_tombstones?, key_limit) do
     Stream.resource(
       fn ->
-        sst_iter = init_sst_iter(entry.id)
-        buffer = init_buffer(entry.buffer, clean_tombstones?)
+        sst_iter = init_sst_iter(id)
+        buffer = init_buffer(buffer, clean_tombstones?)
         {sst_iter, buffer, nil}
       end,
       &iter_merge_data/1,
