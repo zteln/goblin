@@ -25,13 +25,99 @@ defmodule Goblin.Reader do
     found ++ try_store(store, not_found, timeout)
   end
 
-  # def select(writer, store, min, max) do
-  #   Stream.resource(
-  #     fn -> :ok end,
-  #     fn _ -> :ok end,
-  #     fn _ -> :ok end
-  #   )
-  # end
+  @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, Writer.writer(), Store.store()) ::
+          Stream.t()
+  def select(min, max, writer, store) do
+    Stream.resource(
+      fn ->
+        mem_iterators = init_mem_iterators(writer)
+        {level_iterators, defer} = init_store_iterators(store, min, max)
+        iterators = mem_iterators ++ Enum.reverse(level_iterators)
+
+        case take_smallest(iterators) do
+          nil -> {iterators, nil, defer}
+          {_, k, v} -> {iterators, {k, v}, defer}
+        end
+      end,
+      fn
+        {[], _, defer} ->
+          {:halt, defer}
+
+        {_iterators, {prev_min, _}, defer} when not is_nil(max) and prev_min >= max ->
+          {:halt, defer}
+
+        {iterators, {prev_min, _}, defer} when not is_nil(min) and prev_min < min ->
+          {_, next_min, next_val} = take_smallest(iterators)
+          iterators = advance(iterators, next_min)
+          put = if next_min == min, do: [{next_min, next_val}], else: []
+          {put, {iterators, {next_min, next_val}, defer}}
+
+        {iterators, _prev, defer} ->
+          {_, next_min, next_val} = take_smallest(iterators)
+          iterators = advance(iterators, next_min)
+          {[{next_min, next_val}], {iterators, {next_min, next_val}, defer}}
+      end,
+      fn defer ->
+        Enum.each(defer, & &1.())
+      end
+    )
+  end
+
+  defp init_mem_iterators(writer) do
+    writer
+    |> Writer.get_iterators()
+    |> Enum.flat_map(fn {start_f, iter_f} ->
+      iter = start_f.()
+
+      case iter_f.(iter) do
+        :ok -> []
+        {next, iter} -> [{next, iter, iter_f}]
+      end
+    end)
+  end
+
+  defp init_store_iterators(store, min, max) do
+    store
+    |> Store.get_iterators(min, max)
+    |> Enum.reduce({[], []}, fn {{start_f, iter_f}, unlock_f}, {level_iterators, defer} ->
+      iter = start_f.()
+
+      case iter_f.(iter) do
+        :ok -> {level_iterators, [unlock_f | defer]}
+        {next, iter} -> {[{next, iter, iter_f} | level_iterators], [unlock_f | defer]}
+      end
+    end)
+  end
+
+  defp take_smallest(iterators) do
+    iterators
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.reduce(nil, &choose_smallest/2)
+  end
+
+  defp choose_smallest(next, nil), do: next
+
+  defp choose_smallest({p1, k1, _} = next, {p2, k2, _} = prev) do
+    cond do
+      k1 == k2 and p1 > p2 -> next
+      k1 < k2 -> next
+      true -> prev
+    end
+  end
+
+  defp advance(iterators, min, acc \\ [])
+  defp advance([], _, acc), do: Enum.reverse(acc)
+
+  defp advance([{{_, k, _}, iter, iter_f} = iterator | iterators], min, acc) do
+    if k <= min do
+      case iter_f.(iter) do
+        :ok -> advance(iterators, min, acc)
+        {next, iter} -> advance([{next, iter, iter_f} | iterators], min, acc)
+      end
+    else
+      advance(iterators, min, [iterator | acc])
+    end
+  end
 
   defp try_writer(writer, keys) when is_list(keys), do: Writer.get_multi(writer, keys)
   defp try_writer(writer, key), do: Writer.get(writer, key)

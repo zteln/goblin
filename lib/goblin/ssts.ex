@@ -6,6 +6,8 @@ defmodule Goblin.SSTs do
 
   @tmp_suffix ".tmp"
 
+  @type iterator :: {:next, Disk.t()}
+
   def delete(file), do: Disk.rm(file)
 
   def find(file, key) do
@@ -84,18 +86,21 @@ defmodule Goblin.SSTs do
     )
   end
 
+  # raise on error?
   def iterate({:next, disk}) do
     case read_next_key(disk) do
       {:ok, data, disk} ->
-        {:ok, data, {:next, disk}}
+        # {:ok, data, {:next, disk}}
+        {data, {:next, disk}}
 
       {:error, :eod} ->
         Disk.close(disk)
         :ok
 
-      e ->
+      _e ->
         Disk.close(disk)
-        e
+        raise "Iteration failed."
+        # e
     end
   end
 
@@ -201,7 +206,7 @@ defmodule Goblin.SSTs do
   defp iter_merge_data({iter, [], nil}) do
     case iterate(iter) do
       :ok -> {:halt, :ok}
-      {:ok, data, iter} -> {[data], {iter, [], nil}}
+      {data, iter} -> {[data], {iter, [], nil}}
     end
   end
 
@@ -210,7 +215,7 @@ defmodule Goblin.SSTs do
   defp iter_merge_data({iter, [next | buffer], nil}) do
     case iterate(iter) do
       :ok -> {[next], {nil, buffer, nil}}
-      {:ok, data, iter} -> iter_merge_data({iter, [next | buffer], data})
+      {data, iter} -> iter_merge_data({iter, [next | buffer], data})
     end
   end
 

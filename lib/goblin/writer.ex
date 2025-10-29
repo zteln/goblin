@@ -58,8 +58,12 @@ defmodule Goblin.Writer do
     GenServer.call(writer, {:get_multi, keys})
   end
 
-  def get_all(writer) do
-    GenServer.call(writer, :get_all)
+  @spec get_iterators(writer()) :: [
+          {(-> [Goblin.triple()]),
+           ([Goblin.triple()] -> :ok | {Goblin.triple(), [Goblin.triple()]})}
+        ]
+  def get_iterators(writer) do
+    GenServer.call(writer, :get_iterators)
   end
 
   @spec put(writer(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
@@ -174,17 +178,17 @@ defmodule Goblin.Writer do
     {:reply, reply, state}
   end
 
-  # def handle_call(:get_all, _from, state) do
-  #   flushing_mem_tables =
-  #     state.flushing
-  #     |> Enum.flat_map(fn {_, mem_table, _, _} ->
-  #       MemTable.flatten(mem_table)
-  #     end)
-  #
-  #   mem_tables = MemTable.flatten(mem_table) ++ flushing_mem_tables
-  #
-  #   {:reply, mem_tables, state}
-  # end
+  def handle_call(:get_iterators, _from, state) do
+    current_iterator = into_iterator(state.mem_table)
+
+    flushing_iterators =
+      state.flushing
+      |> Enum.map(fn {_, mem_table, _, _} ->
+        into_iterator(mem_table)
+      end)
+
+    {:reply, [current_iterator | flushing_iterators], state}
+  end
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
@@ -394,6 +398,14 @@ defmodule Goblin.Writer do
       :not_found ->
         search_for_key(mem_tables, key)
     end
+  end
+
+  defp into_iterator(mem_table) do
+    {fn -> mem_table |> MemTable.sort() |> MemTable.flatten() end,
+     fn
+       [] -> :ok
+       [next | data] -> {next, data}
+     end}
   end
 
   defp recover_writes(state) do

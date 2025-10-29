@@ -42,22 +42,20 @@ defmodule Goblin.Store do
 
   def get(store, key), do: get(store, [key])
 
-  def get(store) do
-    GenServer.call(store, :get)
+  @spec get_iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
+          {{
+             (-> SSTs.iterator()),
+             (SSTs.iterator() -> :ok | {Goblin.triple(), SSTs.iterator()})
+           }, (-> :ok)}
+        ]
+  def get_iterators(store, min, max) do
+    GenServer.call(store, {:get_iterators, min, max})
   end
 
   @spec new_file(store()) :: Goblin.db_file()
   def new_file(store) do
     GenServer.call(store, :new_file)
   end
-
-  # def get_ssts(store) do
-  #   GenServer.call(store, :get_ssts)
-  # end
-
-  # def get_ssts(store, min, max) do
-  #   GenServer.call(store, {:get_ssts, min, max})
-  # end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -87,21 +85,28 @@ defmodule Goblin.Store do
     {:reply, :ok, %{state | ssts: ssts}}
   end
 
-  def handle_call(:get, {caller, _ref}, state) do
-    %{rw_locks: rw_locks} = state
+  def handle_call({:get_iterators, min, max}, {caller, _ref}, state) do
+    %{
+      ssts: ssts,
+      rw_locks: rw_locks
+    } = state
 
-    ssts =
-      state.ssts
-      |> Enum.flat_map(fn sst ->
-        %{file: file} = sst
+    iterators =
+      ssts
+      |> Enum.filter(fn sst ->
+        %{key_range: {sst_min, sst_max}} = sst
 
-        case read_pair(file, caller, rw_locks, fn -> file end) do
-          {:ok, read_pair} -> [read_pair]
-          _ -> []
+        cond do
+          is_nil(min) and is_nil(max) -> true
+          is_nil(min) and sst_min > max -> false
+          is_nil(max) and sst_max < min -> false
+          sst_max < min or sst_min > max -> false
+          true -> true
         end
       end)
+      |> Enum.flat_map(&into_iterator(&1, caller, rw_locks))
 
-    {:reply, ssts, state}
+    {:reply, iterators, state}
   end
 
   def handle_call({:get, keys}, {caller, _ref}, state) do
@@ -110,12 +115,12 @@ defmodule Goblin.Store do
       rw_locks: rw_locks
     } = state
 
-    ssts =
+    read_pairs =
       Enum.map(keys, fn key ->
-        {key, get_sst(key, caller, ssts, rw_locks)}
+        {key, filter_ssts(ssts, key, caller, rw_locks)}
       end)
 
-    {:reply, ssts, state}
+    {:reply, read_pairs, state}
   end
 
   def handle_call(:new_file, _from, state) do
@@ -150,11 +155,23 @@ defmodule Goblin.Store do
     end
   end
 
-  defp get_sst(key, caller, ssts, rw_locks) do
+  defp into_iterator(sst, caller, rw_locks) do
+    %{file: file} = sst
+    reader = {fn -> SSTs.iterate(file) end, fn iter -> SSTs.iterate(iter) end}
+
+    case read_pair(file, caller, rw_locks, reader) do
+      {:ok, read_pair} -> [read_pair]
+      _ -> []
+    end
+  end
+
+  defp filter_ssts(ssts, key, caller, rw_locks) do
     ssts
     |> Enum.filter(&BloomFilter.is_member(&1.bloom_filter, key))
     |> Enum.flat_map(fn sst ->
-      case read_pair(sst.file, caller, rw_locks, fn -> SSTs.find(sst.file, key) end) do
+      reader = fn -> SSTs.find(sst.file, key) end
+
+      case read_pair(sst.file, caller, rw_locks, reader) do
         {:ok, read_pair} -> [read_pair]
         _ -> []
       end

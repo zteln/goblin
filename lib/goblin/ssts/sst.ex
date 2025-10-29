@@ -16,7 +16,6 @@ defmodule Goblin.SSTs.SST do
   @type position :: non_neg_integer()
   @type offset :: non_neg_integer()
   @type no_of_blocks :: non_neg_integer()
-  @type triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
 
   @magic "GOBLINFILE000000"
   @magic_size byte_size(@magic)
@@ -131,7 +130,7 @@ defmodule Goblin.SSTs.SST do
     >>
   end
 
-  @spec decode_block(binary()) :: {:ok, triple()} | {:error, :invalid_block}
+  @spec decode_block(binary()) :: {:ok, Goblin.triple()} | {:error, :invalid_block}
   def decode_block(<<@block_id, _span::integer-16, triple::binary>>) do
     {:ok, decode(triple)}
   end

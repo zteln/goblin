@@ -150,6 +150,7 @@ defmodule Goblin.SSTsTest do
         data = [
           {1, "key1", "value1"}
         ]
+
         assert {:ok, [_sst]} = SSTs.flush(data, level_key, 100, fn -> file end)
         assert {:ok, %{level_key: ^level_key}} = SSTs.fetch_sst(file)
       end
@@ -250,9 +251,9 @@ defmodule Goblin.SSTsTest do
       SSTs.flush(data, level_key, 100, fn -> file end)
 
       iter = SSTs.iterate(file)
-      assert {:ok, {1, "key1", "value1"}, iter} = SSTs.iterate(iter)
-      assert {:ok, {2, "key2", "value2"}, iter} = SSTs.iterate(iter)
-      assert {:ok, {3, "key3", "value3"}, iter} = SSTs.iterate(iter)
+      assert {{1, "key1", "value1"}, iter} = SSTs.iterate(iter)
+      assert {{2, "key2", "value2"}, iter} = SSTs.iterate(iter)
+      assert {{3, "key3", "value3"}, iter} = SSTs.iterate(iter)
       assert :ok = SSTs.iterate(iter)
     end
   end

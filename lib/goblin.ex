@@ -73,6 +73,7 @@ defmodule Goblin do
   @type db_value :: term() | nil
   @type db_level_key :: non_neg_integer()
   @type db_sequence :: non_neg_integer()
+  @type triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
   @type db_file :: String.t()
   @type db_server :: GenServer.server()
 
@@ -314,9 +315,14 @@ defmodule Goblin do
 
   def get_multi(_, _), do: raise("`keys` not a list.")
 
-  # def select do
-  #
-  # end
+  def select(db, opts \\ []) do
+    writer = name(db, :writer)
+    store = name(db, :store)
+    min = opts[:min]
+    max = opts[:max]
+
+    Goblin.Reader.select(min, max, writer, store)
+  end
 
   # def is_compacting do
   #
