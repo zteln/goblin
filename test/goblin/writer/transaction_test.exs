@@ -89,7 +89,7 @@ defmodule Goblin.Writer.TransactionTest do
   end
 
   test "get/3 returns default if not found" do
-    tx = Transaction.new(:owner) 
+    tx = Transaction.new(:owner)
     assert {:w, %{reads: %{k: :not_found}}} = Transaction.get(tx, :k, :w)
   end
 end

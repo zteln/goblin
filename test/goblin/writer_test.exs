@@ -150,6 +150,18 @@ defmodule Goblin.WriterTest do
     end
   end
 
+  @tag db_opts: [task_mod: FakeTask]
+  test "get_iterators/1 gets iterator over current and flushing MemTables", c do
+    for i <- 1..3 do
+      for n <- 1..10 do
+        assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
+      end
+    end
+
+    assert iterators = Writer.get_iterators(c.writer)
+    assert length(iterators) == 4
+  end
+
   @tag db_opts: [task_mod: FailingTask]
   test "failing flushes are retried until Writer exits", c do
     Process.flag(:trap_exit, true)
