@@ -315,6 +315,46 @@ defmodule Goblin do
 
   def get_multi(_, _), do: raise("`keys` not a list.")
 
+  @doc """
+  Retrieves all key-value pairs within a specified range from the database.
+
+  Returns entries sorted by key in ascending order. Both `min` and `max` are
+  inclusive. If neither bound is specified, returns all entries in the database.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `opts` - Keyword list of options:
+    - `:min` - Minimum key (inclusive, optional)
+    - `:max` - Maximum key (inclusive, optional)
+
+  ## Returns
+
+  - A list of `{key, value}` tuples sorted by key
+
+  ## Examples
+
+      Goblin.put_multi(db, [
+        {1, "one"},
+        {2, "two"},
+        {3, "three"},
+        {4, "four"},
+        {5, "five"}
+      ])
+
+      Goblin.select(db, min: 2, max: 4)
+      # => [{2, "two"}, {3, "three"}, {4, "four"}]
+
+      Goblin.select(db, min: 3)
+      # => [{3, "three"}, {4, "four"}, {5, "five"}]
+
+      Goblin.select(db, max: 2)
+      # => [{1, "one"}, {2, "two"}]
+
+      Goblin.select(db)
+      # => [{1, "one"}, {2, "two"}, {3, "three"}, {4, "four"}, {5, "five"}]
+  """
+  @spec select(db_server(), keyword()) :: [{db_key(), db_value()}]
   def select(db, opts \\ []) do
     writer = name(db, :writer)
     store = name(db, :store)

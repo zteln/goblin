@@ -2,6 +2,10 @@
 
 An embedded LSM-Tree database for Elixir.
 
+## What is an LSM-Tree?
+
+A Log-Structured Merge-Tree (LSM-Tree) is a data structure optimized for write-heavy workloads. Instead of updating data in place, writes are first appended to an in-memory structure (MemTable) and a write-ahead log (WAL) for durability. When the MemTable fills up, it's flushed to disk as an immutable sorted file (SST). Reads check the MemTable first, then search SST files from newest to oldest. Background compaction merges SST files to reduce read amplification and reclaim space from deleted entries. This design provides excellent write throughput while maintaining reasonable read performance through bloom filters and sorted data structures.
+
 ## Features
 
 - **LSM-Tree architecture**: Write-optimized storage with efficient compaction
@@ -45,10 +49,19 @@ Options:
 
 ```elixir
 Goblin.put(db, :user_123, %{name: "Alice", age: 30})
+# => :ok
 
 Goblin.get(db, :user_123)
+# => %{name: "Alice", age: 30}
+
+Goblin.get(db, :nonexistent)
+# => nil
+
+Goblin.get(db, :nonexistent, :not_found)
+# => :not_found
 
 Goblin.remove(db, :user_123)
+# => :ok
 ```
 
 ### Batch operations
@@ -59,24 +72,59 @@ Goblin.put_multi(db, [
   {:user_2, %{name: "Bob"}},
   {:user_3, %{name: "Charlie"}}
 ])
+# => :ok
+
+Goblin.get_multi(db, [:user_1, :user_2, :user_3])
+# => [{:user_1, %{name: "Alice"}}, {:user_2, %{name: "Bob"}}, {:user_3, %{name: "Charlie"}}]
 
 Goblin.remove_multi(db, [:user_1, :user_2])
+# => :ok
+```
+
+### Range queries
+
+```elixir
+Goblin.put_multi(db, [
+  {1, "one"},
+  {2, "two"},
+  {3, "three"},
+  {4, "four"},
+  {5, "five"}
+])
+
+Goblin.select(db, min: 2, max: 4)
+# => [{2, "two"}, {3, "three"}, {4, "four"}]
+
+Goblin.select(db, min: 3)
+# => [{3, "three"}, {4, "four"}, {5, "five"}]
+
+Goblin.select(db, max: 2)
+# => [{1, "one"}, {2, "two"}]
 ```
 
 ### Transactions
 
 ```elixir
+alias Goblin.Tx
+
 Goblin.transaction(db, fn tx ->
-  case Goblin.Tx.get(tx, :counter) do
-    nil ->
-      tx = Goblin.Tx.put(tx, :counter, 1)
-      {:commit, tx, 1}
-    
-    count ->
-      tx = Goblin.Tx.put(tx, :counter, count + 1)
-      {:commit, tx, count + 1}
+  count = Tx.get(tx, :counter) || 0
+  tx = Tx.put(tx, :counter, count + 1)
+  {:commit, tx, count + 1}
+end)
+# => 1
+
+Goblin.transaction(db, fn tx ->
+  balance = Tx.get(tx, :account_balance) || 0
+  
+  if balance >= 100 do
+    tx = Tx.put(tx, :account_balance, balance - 100)
+    {:commit, tx, :ok}
+  else
+    :cancel
   end
 end)
+# => :ok (if cancelled) or :ok (if committed)
 ```
 
 Transactions provide snapshot isolation. If a conflict is detected (another transaction modified the same keys), the transaction returns `{:error, :in_conflict}`.
@@ -98,6 +146,10 @@ defmodule MyApp.Application do
 end
 
 Goblin.put(MyApp.DB, :key, "value")
+# => :ok
+
+Goblin.get(MyApp.DB, :key)
+# => "value"
 ```
 
 ## How it works
@@ -180,7 +232,7 @@ The metadata section stores:
 
 ## References
 
-- [RocksDB Documentation](https://github.com/facebook/rocksdb/wiki) - Facebook's fork of LevelDB with extensive optimizations
+- [RocksDB Documentation](https://github.com/facebook/rocksdb/wiki) - Facebook's LSM key-value store
 
 ## Inspiration
 
