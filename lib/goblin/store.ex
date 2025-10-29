@@ -100,7 +100,7 @@ defmodule Goblin.Store do
           is_nil(min) and is_nil(max) -> true
           is_nil(min) and sst_min > max -> false
           is_nil(max) and sst_max < min -> false
-          sst_max < min or sst_min > max -> false
+          not (is_nil(min) or is_nil(max)) and (sst_max < min or sst_min > max) -> false
           true -> true
         end
       end)

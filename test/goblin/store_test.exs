@@ -134,6 +134,54 @@ defmodule Goblin.StoreTest do
     assert [{:k3, []}] = Store.get(c.store, :k3)
   end
 
+  test "get_iterators/3 returns iterators within key_range", c do
+    pid = self()
+    assert [] == Store.get_iterators(c.store, nil, nil)
+
+    file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
+    {:ok, sst} = SSTs.fetch_sst(file)
+    assert :ok == Store.put(c.store, sst)
+
+    assert [{{_, _}, unlock_f}] = Store.get_iterators(c.store, nil, nil)
+
+    assert %{locks: %{^file => %{current: [rlock: {^pid, _, _}]}}} = :sys.get_state(c.rw_locks)
+    assert :ok == unlock_f.()
+
+    assert %{locks: locks} = :sys.get_state(c.rw_locks)
+    assert locks == %{}
+
+    assert [] = Store.get_iterators(c.store, nil, :k0)
+    assert [{{_, _}, _}] = Store.get_iterators(c.store, nil, :k2)
+    assert [{{_, _}, _}] = Store.get_iterators(c.store, :k1, nil)
+    assert [{{_, _}, _}] = Store.get_iterators(c.store, :k0, :k3)
+  end
+
+  test "get_iterators/3 returns multiple iterators for multiple SSTs", c do
+    file1 = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :a, :v1}, {1, :b, :v2}])
+    file2 = write_sst(c.tmp_dir, "bar", 0, 20, [{2, :c, :v3}, {3, :d, :v4}])
+    file3 = write_sst(c.tmp_dir, "baz", 0, 30, [{4, :e, :v5}, {5, :f, :v6}])
+
+    {:ok, sst1} = SSTs.fetch_sst(file1)
+    {:ok, sst2} = SSTs.fetch_sst(file2)
+    {:ok, sst3} = SSTs.fetch_sst(file3)
+
+    assert :ok == Store.put(c.store, sst1)
+    assert :ok == Store.put(c.store, sst2)
+    assert :ok == Store.put(c.store, sst3)
+
+    iterators = Store.get_iterators(c.store, nil, nil)
+    assert length(iterators) == 3
+
+    iterators = Store.get_iterators(c.store, :b, :e)
+    assert length(iterators) == 3
+
+    iterators = Store.get_iterators(c.store, :a, :b)
+    assert length(iterators) == 1
+
+    iterators = Store.get_iterators(c.store, :g, :z)
+    assert length(iterators) == 0
+  end
+
   test "store gets state from manifest on start", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
     {:ok, %{file: file, bloom_filter: bf} = sst} = SSTs.fetch_sst(file)
