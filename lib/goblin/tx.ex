@@ -34,6 +34,9 @@ defmodule Goblin.Tx do
   - `{:commit, tx, result}` - Commits the transaction and returns `result`
   - `:cancel` - Cancels the transaction and returns `:ok`
   """
+
+  @opaque t :: Goblin.Writer.Transaction.t()
+
   @doc """
   Writes a key-value pair within a transaction.
 

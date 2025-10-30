@@ -76,7 +76,7 @@ defmodule Goblin do
   @type triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
   @type db_file :: String.t()
   @type db_server :: GenServer.server()
-  @type transaction_return :: {:commit, Transaction.t(), term()} | :cancel
+  @type transaction_return :: {:commit, Tx.t(), term()} | :cancel
 
   @default_key_limit 50_000
   @default_level_limit 128 * 1024 * 1024
@@ -91,7 +91,7 @@ defmodule Goblin do
   ## Parameters
 
   - `db` - The database server (PID or registered name)
-  - `f` - A function that takes a `Goblin.Transaction.t()` and returns a transaction result
+  - `f` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
 
   ## Returns
 
@@ -114,7 +114,7 @@ defmodule Goblin do
       end)
       # => :ok
   """
-  @spec transaction(db_server(), (Goblin.Transaction.t() -> Goblin.transaction_return())) ::
+  @spec transaction(db_server(), (Goblin.Tx.t() -> Goblin.transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(db, f) do
     writer = name(db, :writer)
