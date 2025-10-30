@@ -364,13 +364,39 @@ defmodule Goblin do
     Goblin.Reader.select(min, max, writer, store)
   end
 
-  # def is_compacting do
-  #
-  # end
-  #
-  # def is_flushing do
-  #
-  # end
+  @doc """
+  Checks whether the database is currently compacting or not.
+
+  ## Parameters
+
+  - `db` - The dabase server (PID or registered name)
+
+  ## Returns
+
+  - A boolean indicating whether the database is compacting or not
+  """
+  @spec is_compacting(db_server()) :: boolean()
+  def is_compacting(db) do
+    compactor = name(db, :compactor)
+    Goblin.Compactor.is_compacting(compactor)
+  end
+
+  @doc """
+  Checks whether the database is currently flushing or not.
+
+  ## Parameters
+
+  - `db` - The dabase server (PID or registered name)
+
+  ## Returns
+
+  - A boolean indicating whether the database is flushing or not
+  """
+  @spec is_flushing(db_server()) :: boolean()
+  def is_flushing(db) do
+    writer = name(db, :writer)
+    Goblin.Writer.is_flushing(writer)
+  end
 
   @doc """
   Starts the Goblin database supervisor and all child processes.

@@ -419,4 +419,14 @@ defmodule Goblin.CompactorTest do
     assert %{priority: 100} = Map.get(entries, "high_prio")
     assert %{priority: 50} = Map.get(entries, "low_prio")
   end
+
+  @tag db_opts: [task_mod: FakeTask]
+  test "is_compacting/1 returns true when compacting, false otherwise", c do
+    refute Compactor.is_compacting(c.compactor)
+
+    assert :ok == Compactor.put(c.compactor, 0, {"foo", 0, 50, {2, 3}})
+    assert :ok == Compactor.put(c.compactor, 0, {"bar", 1, 50, {5, 7}})
+
+    assert Compactor.is_compacting(c.compactor)
+  end
 end

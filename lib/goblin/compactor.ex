@@ -49,6 +49,11 @@ defmodule Goblin.Compactor do
     GenServer.call(compactor, {:put, level_key, data})
   end
 
+  @spec is_compacting(compactor()) :: boolean()
+  def is_compacting(compactor) do
+    GenServer.call(compactor, :is_compacting)
+  end
+
   @impl GenServer
   def init(args) do
     {:ok,
@@ -80,6 +85,15 @@ defmodule Goblin.Compactor do
     levels = Map.put(state.levels, level_key, level)
     state = maybe_compact(%{state | levels: levels}, level_key)
     {:reply, :ok, state}
+  end
+
+  def handle_call(:is_compacting, _from, state) do
+    is_compacting =
+      Enum.any?(state.levels, fn {_level_key, level} ->
+        level.compacting_ref
+      end)
+
+    {:reply, is_compacting, state}
   end
 
   @impl GenServer

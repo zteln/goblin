@@ -99,6 +99,7 @@ defmodule Goblin.Writer do
     end)
   end
 
+  @spec is_flushing(writer()) :: boolean()
   def is_flushing(writer), do: GenServer.call(writer, :is_flushing)
 
   @spec transaction(writer(), (Transaction.t() -> transaction_return())) ::
