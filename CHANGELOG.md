@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.3 (2025-10-29)
+* Enhancements
+    * Add `is_flushing/1` and `is_compacting/1` functions
+    * Refactor `Reader.select/4` stream
+
 ## v0.1.2 (2025-10-29)
 * Enhancements
     * Add `select/1/2` for range queries
