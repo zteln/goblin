@@ -330,7 +330,7 @@ defmodule Goblin do
 
   ## Returns
 
-  - A list of `{key, value}` tuples sorted by key
+  - A stream over the key-value pairs in the range
 
   ## Examples
 
@@ -342,19 +342,19 @@ defmodule Goblin do
         {5, "five"}
       ])
 
-      Goblin.select(db, min: 2, max: 4)
+      Goblin.select(db, min: 2, max: 4) |> Enum.to_list()
       # => [{2, "two"}, {3, "three"}, {4, "four"}]
 
-      Goblin.select(db, min: 3)
+      Goblin.select(db, min: 3) |> Enum.to_list()
       # => [{3, "three"}, {4, "four"}, {5, "five"}]
 
-      Goblin.select(db, max: 2)
+      Goblin.select(db, max: 2) |> Enum.to_list()
       # => [{1, "one"}, {2, "two"}]
 
-      Goblin.select(db)
+      Goblin.select(db) |> Enum.to_list()
       # => [{1, "one"}, {2, "two"}, {3, "three"}, {4, "four"}, {5, "five"}]
   """
-  @spec select(db_server(), keyword()) :: [{db_key(), db_value()}]
+  @spec select(db_server(), keyword()) :: Stream.t()
   def select(db, opts \\ []) do
     writer = name(db, :writer)
     store = name(db, :store)
