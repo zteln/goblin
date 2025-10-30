@@ -67,16 +67,16 @@ defmodule Goblin do
   """
   use Supervisor
 
-  @type db_key_limit :: non_neg_integer()
-  @type db_level_limit :: non_neg_integer()
+  @typep db_key_limit :: non_neg_integer()
+  @typep db_level_limit :: non_neg_integer()
+  @typep db_level_key :: non_neg_integer()
+  @typep db_sequence :: non_neg_integer()
+  @typep triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
+  @typep db_file :: String.t()
   @type db_key :: term()
   @type db_value :: term() | nil
-  @type db_level_key :: non_neg_integer()
-  @type db_sequence :: non_neg_integer()
-  @type triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
-  @type db_file :: String.t()
   @type db_server :: GenServer.server()
-  @type transaction_return :: {:commit, Tx.t(), term()} | :cancel
+  @type transaction_return :: {:commit, Goblin.Tx.t(), term()} | :cancel
 
   @default_key_limit 50_000
   @default_level_limit 128 * 1024 * 1024
