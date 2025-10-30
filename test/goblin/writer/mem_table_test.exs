@@ -43,13 +43,13 @@ defmodule Goblin.Writer.MemTableTest do
     assert :not_found == MemTable.read(MemTable.new(), "key")
   end
 
-  test "read/2 returns {:value, seq, nil} for deleted key" do
+  test "read/2 returns {:value, seq, :tombstone} for deleted key" do
     mem_table =
       MemTable.new()
       |> MemTable.upsert(0, "key", "value")
       |> MemTable.delete(1, "key")
 
-    assert {:value, 1, nil} == MemTable.read(mem_table, "key")
+    assert {:value, 1, :tombstone} == MemTable.read(mem_table, "key")
   end
 
   test "has_overflow/2 returns boolean on overflow" do

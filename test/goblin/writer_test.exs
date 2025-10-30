@@ -51,11 +51,11 @@ defmodule Goblin.WriterTest do
 
   test "writer can remove key-value pairs", c do
     assert :ok == Writer.remove(c.writer, :k)
-    assert {:ok, {:value, 0, nil}} == Writer.get(c.writer, :k)
+    assert {:ok, {:value, 0, :tombstone}} == Writer.get(c.writer, :k)
     assert :ok == Writer.put(c.writer, :k, :v)
     assert {:ok, {:value, 1, :v}} == Writer.get(c.writer, :k)
     assert :ok == Writer.remove(c.writer, :k)
-    assert {:ok, {:value, 2, nil}} == Writer.get(c.writer, :k)
+    assert {:ok, {:value, 2, :tombstone}} == Writer.get(c.writer, :k)
   end
 
   test "writer recovers memory after restart", c do
@@ -67,7 +67,7 @@ defmodule Goblin.WriterTest do
     %{writer: writer} = start_db(c.tmp_dir, @db_opts)
     assert {:ok, {:value, 0, :v1}} == Writer.get(writer, :k1)
     assert {:ok, {:value, 1, :v2}} == Writer.get(writer, :k2)
-    assert {:ok, {:value, 2, nil}} == Writer.get(writer, :k3)
+    assert {:ok, {:value, 2, :tombstone}} == Writer.get(writer, :k3)
   end
 
   test "overflowing the MemTable causes a flush and writes data to disk", c do
@@ -196,7 +196,7 @@ defmodule Goblin.WriterTest do
     assert {:ok, {:value, 0, :u}} == Writer.get(c.writer, :i)
     assert {:ok, {:value, 1, :v}} == Writer.get(c.writer, :k)
     assert {:ok, {:value, 2, :w}} == Writer.get(c.writer, :l)
-    assert {:ok, {:value, 3, nil}} == Writer.get(c.writer, :m)
+    assert {:ok, {:value, 3, :tombstone}} == Writer.get(c.writer, :m)
   end
 
   test "does not merge with MemTable after a transaction cancels", c do
@@ -471,7 +471,7 @@ defmodule Goblin.WriterTest do
                {:commit, tx, :ok}
              end)
 
-    assert {:ok, {:value, 1, nil}} == Writer.get(c.writer, :k)
+    assert {:ok, {:value, 1, :tombstone}} == Writer.get(c.writer, :k)
   end
 
   test "multiple sequential flushes maintain correct state", c do

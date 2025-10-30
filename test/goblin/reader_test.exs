@@ -123,4 +123,24 @@ defmodule Goblin.ReaderTest do
 
     assert range == Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
   end
+
+  test "select/4 skips :tombstone entries", c do
+    for n <- 1..20 do
+      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+    end
+
+    for n <- 5..10 do
+      assert :ok == Goblin.Writer.remove(c.writer, n)
+    end
+
+    assert for(n <- 1..4, do: {n, "v-#{n}"}) ++ for(n <- 11..20, do: {n, "v-#{n}"}) ==
+             Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+
+    for n <- 1..5 do
+      assert :ok == Goblin.Writer.remove(c.writer, n)
+    end
+
+    assert for(n <- 11..20, do: {n, "v-#{n}"}) ==
+             Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+  end
 end

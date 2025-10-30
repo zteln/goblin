@@ -9,6 +9,9 @@ defmodule Goblin.Reader do
           Goblin.db_value() | :not_found
   def get(key, writer, store, timeout \\ @task_timeout) do
     case try_writer(writer, key) do
+      {:ok, {:value, _seq, :tombstone}} ->
+        :not_found
+
       {:ok, {:value, seq, value}} ->
         {seq, value}
 
@@ -43,6 +46,11 @@ defmodule Goblin.Reader do
 
         {_iterators, {_, prev_min, _}, defer} when not is_nil(max) and prev_min > max ->
           {:halt, defer}
+
+        {iterators, {_, _, :tombstone}, defer} ->
+          next = take_smallest(iterators)
+          iterators = advance(iterators, next)
+          {[], {iterators, next, defer}}
 
         {[], {_, last_min, last_val}, defer} ->
           {[{last_min, last_val}], {[], nil, defer}}
@@ -143,8 +151,8 @@ defmodule Goblin.Reader do
     keys_and_ssts
     |> Task.async_stream(fn {key, ssts} ->
       case async_read_ssts(ssts, timeout) do
-        [] -> :not_found
-        [{:value, seq, value}] -> {key, seq, value}
+        :not_found -> :not_found
+        {seq, value} -> {key, seq, value}
       end
     end)
     |> Stream.filter(&match?({:ok, _}, &1))
@@ -154,11 +162,7 @@ defmodule Goblin.Reader do
 
   defp try_store(store, key, timeout) do
     [{_key, ssts}] = Store.get(store, key)
-
-    case async_read_ssts(ssts, timeout) do
-      [] -> :not_found
-      [{:value, seq, value}] -> {seq, value}
-    end
+    async_read_ssts(ssts, timeout)
   end
 
   defp async_read_ssts(ssts, timeout) do
@@ -180,6 +184,11 @@ defmodule Goblin.Reader do
       |> Enum.take(1)
 
     Enum.each(ssts, &elem(&1, 1).())
-    result
+
+    case result do
+      [] -> :not_found
+      [{:value, _seq, :tombstone}] -> :not_found
+      [{:value, seq, value}] -> {seq, value}
+    end
   end
 end

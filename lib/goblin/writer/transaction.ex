@@ -43,6 +43,7 @@ defmodule Goblin.Writer.Transaction do
     val =
       case read do
         :not_found -> nil
+        {_seq, :tombstone} -> nil
         {_seq, val} -> val
       end
 

@@ -213,6 +213,13 @@ defmodule Goblin.Compactor do
 
         data =
           Enum.map(entries, fn {id, %{buffer: buffer}} ->
+            buffer =
+              if clean_tombstones? do
+                Enum.reject(buffer, fn {_, {_, v}} -> v == :tombstone end)
+              else
+                buffer
+              end
+
             {id, buffer}
           end)
 
@@ -221,7 +228,6 @@ defmodule Goblin.Compactor do
                  data,
                  level_key,
                  key_limit,
-                 clean_tombstones?,
                  fn -> Store.new_file(store) end
                ),
              :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, & &1.file)),

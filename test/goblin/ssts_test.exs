@@ -116,7 +116,7 @@ defmodule Goblin.SSTsTest do
       assert {:ok, [_sst]} = SSTs.flush(data, level_key, 10, fn -> file end)
 
       assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
-      assert {:ok, {:value, 2, nil}} = SSTs.find(file, "key2")
+      assert {:ok, {:value, 2, :tombstone}} = SSTs.find(file, "key2")
       assert {:ok, {:value, 3, "value3"}} = SSTs.find(file, "key3")
     end
 

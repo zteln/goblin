@@ -23,7 +23,6 @@ defmodule Goblin.Writer.MemTable do
   def read(mem_table, key) do
     case Map.get(mem_table, key) do
       nil -> :not_found
-      {seq, :tombstone} -> {:value, seq, nil}
       {seq, value} -> {:value, seq, value}
     end
   end

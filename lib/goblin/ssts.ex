@@ -125,13 +125,12 @@ defmodule Goblin.SSTs do
           [{Goblin.db_file(), [Goblin.triple()]}],
           Goblin.db_level_key(),
           Goblin.key_limit(),
-          boolean(),
           (-> Goblin.db_file())
         ) :: {:ok, [SST.t()]} | {:error, term()}
-  def merge(data, level_key, key_limit, clean_tombstones?, file_getter) do
+  def merge(data, level_key, key_limit, file_getter) do
     streams =
       Enum.map(data, fn {id, buffer} ->
-        merge_stream(id, buffer, clean_tombstones?, key_limit)
+        merge_stream(id, buffer, key_limit)
       end)
 
     with {:ok, merged} <- write_streams(streams, level_key, file_getter) do
@@ -175,11 +174,11 @@ defmodule Goblin.SSTs do
   defp iter_flush_data([]), do: {:halt, :ok}
   defp iter_flush_data([next | data]), do: {[next], data}
 
-  defp merge_stream(id, buffer, clean_tombstones?, key_limit) do
+  defp merge_stream(id, buffer, key_limit) do
     Stream.resource(
       fn ->
         sst_iter = init_sst_iter(id)
-        buffer = init_buffer(buffer, clean_tombstones?)
+        buffer = init_buffer(buffer)
         {sst_iter, buffer, nil}
       end,
       &iter_merge_data/1,
@@ -191,13 +190,7 @@ defmodule Goblin.SSTs do
   defp init_sst_iter(nil), do: nil
   defp init_sst_iter(id), do: iterate(id)
 
-  defp init_buffer(buffer, true) do
-    buffer
-    |> Enum.reject(fn {_key, {_seq, value}} -> value == :tombstone end)
-    |> init_buffer(false)
-  end
-
-  defp init_buffer(buffer, false) do
+  defp init_buffer(buffer) do
     buffer
     |> Enum.map(fn {key, {seq, value}} -> {seq, key, value} end)
     |> Enum.sort_by(fn {_seq, key, _value} -> key end, :asc)
@@ -306,7 +299,6 @@ defmodule Goblin.SSTs do
     with {:ok, seq, k, v} <- read_block(disk, position) do
       cond do
         key == k ->
-          v = if v == :tombstone, do: nil, else: v
           {:ok, {:value, seq, v}}
 
         key < k ->
