@@ -67,15 +67,15 @@ defmodule Goblin do
   """
   use Supervisor
 
-  @type db_key_limit :: non_neg_integer()
-  @type db_level_limit :: non_neg_integer()
-  @type db_level_key :: non_neg_integer()
-  @type db_sequence :: non_neg_integer()
-  @type triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
-  @type db_file :: String.t()
+  @opaque db_key_limit :: non_neg_integer()
+  @opaque db_level_limit :: non_neg_integer()
+  @opaque db_level_key :: non_neg_integer()
+  @opaque db_sequence :: non_neg_integer()
+  @opaque triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
+  @opaque db_file :: String.t()
   @type db_key :: term()
   @type db_value :: term() | nil
-  @type db_server :: GenServer.server()
+  @type db_server :: Supervisor.supervisor()
   @type transaction_return :: {:commit, Goblin.Tx.t(), term()} | :cancel
 
   @default_key_limit 50_000
@@ -114,7 +114,7 @@ defmodule Goblin do
       end)
       # => :ok
   """
-  @spec transaction(db_server(), (Goblin.Tx.t() -> Goblin.transaction_return())) ::
+  @spec transaction(db_server(), (Goblin.Tx.t() -> transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(db, f) do
     writer = name(db, :writer)
