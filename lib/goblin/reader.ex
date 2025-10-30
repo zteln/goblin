@@ -3,11 +3,9 @@ defmodule Goblin.Reader do
   alias Goblin.Writer
   alias Goblin.Store
 
-  @task_timeout :timer.minutes(1)
-
-  @spec get(Goblin.db_key(), Writer.writer(), Store.store(), non_neg_integer()) ::
+  @spec get(Goblin.db_key(), Writer.writer(), Store.store()) ::
           Goblin.db_value() | :not_found
-  def get(key, writer, store, timeout \\ @task_timeout) do
+  def get(key, writer, store) do
     case try_writer(writer, key) do
       {:ok, {:value, _seq, :tombstone}} ->
         :not_found
@@ -16,16 +14,16 @@ defmodule Goblin.Reader do
         {seq, value}
 
       :not_found ->
-        try_store(store, key, timeout)
+        try_store(store, key)
     end
   end
 
-  @spec get_multi([Goblin.db_key()], Writer.writer(), Store.store(), non_neg_integer()) :: [
+  @spec get_multi([Goblin.db_key()], Writer.writer(), Store.store()) :: [
           {Goblin.db_key(), Goblin.db_sequence(), Goblin.db_value()} | :not_found
         ]
-  def get_multi(keys, writer, store, timeout \\ @task_timeout) do
+  def get_multi(keys, writer, store) do
     {found, not_found} = try_writer(writer, keys)
-    found ++ try_store(store, not_found, timeout)
+    found ++ try_store(store, not_found)
   end
 
   @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, Writer.writer(), Store.store()) ::
@@ -145,12 +143,12 @@ defmodule Goblin.Reader do
   defp try_writer(writer, keys) when is_list(keys), do: Writer.get_multi(writer, keys)
   defp try_writer(writer, key), do: Writer.get(writer, key)
 
-  defp try_store(store, keys, timeout) when is_list(keys) do
+  defp try_store(store, keys) when is_list(keys) do
     keys_and_ssts = Store.get(store, keys)
 
     keys_and_ssts
     |> Task.async_stream(fn {key, ssts} ->
-      case async_read_ssts(ssts, timeout) do
+      case async_read_ssts(ssts) do
         :not_found -> :not_found
         {seq, value} -> {key, seq, value}
       end
@@ -160,16 +158,16 @@ defmodule Goblin.Reader do
     |> Enum.to_list()
   end
 
-  defp try_store(store, key, timeout) do
+  defp try_store(store, key) do
     [{_key, ssts}] = Store.get(store, key)
-    async_read_ssts(ssts, timeout)
+    async_read_ssts(ssts)
   end
 
-  defp async_read_ssts(ssts, timeout) do
+  defp async_read_ssts(ssts) do
     result =
       ssts
       |> Stream.map(&elem(&1, 0))
-      |> Task.async_stream(& &1.(), timeout: timeout)
+      |> Task.async_stream(& &1.())
       |> Stream.map(fn {:ok, res} -> res end)
       |> Stream.map(fn
         {:error, reason} ->
