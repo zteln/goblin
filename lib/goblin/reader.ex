@@ -26,7 +26,7 @@ defmodule Goblin.Reader do
   end
 
   @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, Writer.writer(), Store.store()) ::
-          Stream.t()
+          Enumerable.t()
   def select(min, max, writer, store) do
     Stream.resource(
       fn ->

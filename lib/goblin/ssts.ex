@@ -67,7 +67,7 @@ defmodule Goblin.SSTs do
     result
   end
 
-  @spec stream!(Goblin.db_file()) :: Stream.t()
+  @spec stream!(Goblin.db_file()) :: Enumerable.t()
   def stream!(file) do
     Stream.resource(
       fn ->

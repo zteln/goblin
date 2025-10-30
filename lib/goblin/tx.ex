@@ -2,9 +2,6 @@ defmodule Goblin.Tx do
   @moduledoc """
   Transaction helpers for working with Goblin database transactions.
 
-  This module provides a simplified API for transaction operations,
-  delegating to `Goblin.Writer.Transaction` internally.
-
   ## Usage
 
       alias Goblin.Tx

@@ -11,7 +11,6 @@ defmodule Goblin.Writer do
   alias Goblin.SSTs
 
   @type writer :: GenServer.server()
-  @type transaction_return :: {:commit, Transaction.t(), term()} | :cancel
 
   @flush_level 0
 
@@ -102,7 +101,7 @@ defmodule Goblin.Writer do
   @spec is_flushing(writer()) :: boolean()
   def is_flushing(writer), do: GenServer.call(writer, :is_flushing)
 
-  @spec transaction(writer(), (Transaction.t() -> transaction_return())) ::
+  @spec transaction(writer(), (Transaction.t() -> Goblin.transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(writer, f) do
     with {:ok, tx} <- start_transaction(writer, self()),

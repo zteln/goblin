@@ -76,6 +76,7 @@ defmodule Goblin do
   @type triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
   @type db_file :: String.t()
   @type db_server :: GenServer.server()
+  @type transaction_return :: {:commit, Transaction.t(), term()} | :cancel
 
   @default_key_limit 50_000
   @default_level_limit 128 * 1024 * 1024
@@ -113,7 +114,7 @@ defmodule Goblin do
       end)
       # => :ok
   """
-  @spec transaction(db_server(), (Goblin.Transaction.t() -> Goblin.Writer.transaction_return())) ::
+  @spec transaction(db_server(), (Goblin.Transaction.t() -> Goblin.transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(db, f) do
     writer = name(db, :writer)
@@ -354,7 +355,7 @@ defmodule Goblin do
       Goblin.select(db) |> Enum.to_list()
       # => [{1, "one"}, {2, "two"}, {3, "three"}, {4, "four"}, {5, "five"}]
   """
-  @spec select(db_server(), keyword()) :: Stream.t()
+  @spec select(db_server(), keyword()) :: Enumerable.t()
   def select(db, opts \\ []) do
     writer = name(db, :writer)
     store = name(db, :store)
