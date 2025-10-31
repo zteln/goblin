@@ -10,7 +10,6 @@ defmodule Goblin.Store do
 
   @file_suffix ".goblin"
 
-  @type store :: GenServer.server()
   @type data ::
           {BloomFilter.t(), Goblin.db_sequence(), non_neg_integer(),
            {Goblin.db_key(), Goblin.db_key()}}
@@ -22,17 +21,24 @@ defmodule Goblin.Store do
     max_file_count: 0
   ]
 
-  @spec put(store(), SSTs.SST.t()) :: :ok
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    registry = opts[:registry]
+    args = Keyword.take(opts, [:registry, :dir, :manifest, :compactor, :rw_locks])
+    GenServer.start_link(__MODULE__, args, name: via(registry))
+  end
+
+  @spec put(Goblin.registry(), SSTs.SST.t()) :: :ok
   def put(registry, sst) do
     GenServer.call(via(registry), {:put, sst})
   end
 
-  @spec remove(store(), Goblin.db_file()) :: :ok
+  @spec remove(Goblin.registry(), Goblin.db_file()) :: :ok
   def remove(registry, file) do
     GenServer.call(via(registry), {:remove, file})
   end
 
-  @spec get(store(), Goblin.db_key() | [Goblin.db_key()]) :: [
+  @spec get(Goblin.registry(), Goblin.db_key() | [Goblin.db_key()]) :: [
           {(-> Goblin.db_value()), (-> :ok)}
         ]
   def get(registry, keys) when is_list(keys) do
@@ -41,7 +47,7 @@ defmodule Goblin.Store do
 
   def get(registry, key), do: get(registry, [key])
 
-  @spec get_iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
+  @spec get_iterators(Goblin.registry(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
           {{
              (-> SSTs.iterator()),
              (SSTs.iterator() -> :ok | {Goblin.triple(), SSTs.iterator()})
@@ -51,16 +57,9 @@ defmodule Goblin.Store do
     GenServer.call(via(registry), {:get_iterators, min, max})
   end
 
-  @spec new_file(store()) :: Goblin.db_file()
+  @spec new_file(Goblin.registry()) :: Goblin.db_file()
   def new_file(registry) do
     GenServer.call(via(registry), :new_file)
-  end
-
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    registry = opts[:registry]
-    args = Keyword.take(opts, [:registry, :dir, :manifest, :compactor, :rw_locks])
-    GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
   @impl GenServer

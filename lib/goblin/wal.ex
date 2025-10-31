@@ -20,31 +20,37 @@ defmodule Goblin.WAL do
     waiting_for_sync?: false
   ]
 
-  def sync(registry) do
-    GenServer.call(via(registry), :sync_now)
-  end
-
-  def append(registry, buffer) do
-    GenServer.call(via(registry), {:append, buffer})
-  end
-
-  def rotate(registry) do
-    GenServer.call(via(registry), :rotate)
-  end
-
-  def clean(registry, rotated_file) do
-    GenServer.call(via(registry), {:clean, rotated_file})
-  end
-
-  def recover(registry) do
-    GenServer.call(via(registry), :recover)
-  end
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     registry = opts[:registry]
     args = Keyword.take(opts, [:sync_interval, :wal_name, :db_dir])
     GenServer.start_link(__MODULE__, args, name: via(registry))
+  end
+
+  @spec sync(Goblin.registry()) :: :ok
+  def sync(registry) do
+    GenServer.call(via(registry), :sync_now)
+  end
+
+  @spec append(Goblin.registry(), [term()]) :: :ok
+  def append(registry, buffer) do
+    GenServer.call(via(registry), {:append, buffer})
+  end
+
+  @spec rotate(Goblin.registry()) :: Goblin.db_file()
+  def rotate(registry) do
+    GenServer.call(via(registry), :rotate)
+  end
+
+  @spec clean(Goblin.registry(), Goblin.db_file()) :: :ok | {:error, term()}
+  def clean(registry, rotated_file) do
+    GenServer.call(via(registry), {:clean, rotated_file})
+  end
+
+  @spec recover(Goblin.registry()) ::
+          {:ok, [{Goblin.db_file() | nil, [term()]}]} | {:error, term()}
+  def recover(registry) do
+    GenServer.call(via(registry), :recover)
   end
 
   @impl GenServer

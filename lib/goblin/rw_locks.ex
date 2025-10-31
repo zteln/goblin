@@ -4,7 +4,6 @@ defmodule Goblin.RWLocks do
   import Goblin.ProcessRegistry, only: [via: 1]
   alias __MODULE__.Lock
 
-  @type rw_locks :: GenServer.server()
   @type resource :: term()
 
   defstruct locks: %{}
@@ -14,17 +13,17 @@ defmodule Goblin.RWLocks do
     GenServer.start_link(__MODULE__, nil, name: via(opts[:registry]))
   end
 
-  @spec wlock(rw_locks(), resource()) :: :ok | {:error, :lock_in_use}
+  @spec wlock(Goblin.registry(), resource()) :: :ok | {:error, :lock_in_use}
   def wlock(registry, resource) do
     GenServer.call(via(registry), {:wlock, resource}, :infinity)
   end
 
-  @spec rlock(rw_locks(), resource()) :: :ok | {:error, :lock_in_use}
+  @spec rlock(Goblin.registry(), resource(), pid()) :: :ok | {:error, :lock_in_use}
   def rlock(registry, resource, pid \\ self()) do
     GenServer.call(via(registry), {:rlock, resource, pid})
   end
 
-  @spec unlock(rw_locks(), resource()) :: :ok
+  @spec unlock(Goblin.registry(), resource(), pid()) :: :ok
   def unlock(registry, resource, pid \\ self()) do
     GenServer.call(via(registry), {:unlock, resource, pid})
   end

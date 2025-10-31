@@ -10,9 +10,9 @@ defmodule Goblin.Manifest do
   @rotated_manifest_suffix ".rot"
   @manifest_max_size 1024 * 1024
 
-  @type manifest :: GenServer.server()
   @type version :: %{
-          files: MapSet.t(Goblin.db_file()),
+          files: [Goblin.db_file()],
+          wals: [Goblin.db_file()],
           count: non_neg_integer(),
           seq: Goblin.db_sequence()
         }
@@ -25,30 +25,6 @@ defmodule Goblin.Manifest do
     :version,
     size: 0
   ]
-
-  def log_rotation(registry, wal) do
-    GenServer.call(via(registry), {:log_edit, {:wal_added, wal}})
-  end
-
-  def log_flush(registry, files, wal) do
-    added_edits = Enum.map(files, &{:file_added, &1})
-    removed_edit = {:wal_removed, wal}
-    GenServer.call(via(registry), {:log_edit, added_edits ++ [removed_edit]})
-  end
-
-  def log_sequence(registry, seq) do
-    GenServer.call(via(registry), {:log_edit, {:seq, seq}})
-  end
-
-  def log_compaction(registry, rotated_files, new_files) do
-    added_edits = Enum.map(new_files, &{:file_added, &1})
-    removed_edits = Enum.map(rotated_files, &{:file_removed, &1})
-    GenServer.call(via(registry), {:log_edit, added_edits ++ removed_edits})
-  end
-
-  def get_version(registry, keys \\ []) do
-    GenServer.call(via(registry), {:get_version, keys})
-  end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -63,6 +39,37 @@ defmodule Goblin.Manifest do
       ])
 
     GenServer.start_link(__MODULE__, args, name: via(registry))
+  end
+
+  @spec log_rotation(Goblin.registry(), Goblin.db_file()) :: :ok | {:error, term()}
+  def log_rotation(registry, wal) do
+    GenServer.call(via(registry), {:log_edit, {:wal_added, wal}})
+  end
+
+  @spec log_flush(Goblin.registry(), [Goblin.db_file()], Goblin.db_file()) ::
+          :ok | {:error, term()}
+  def log_flush(registry, files, wal) do
+    added_edits = Enum.map(files, &{:file_added, &1})
+    removed_edit = {:wal_removed, wal}
+    GenServer.call(via(registry), {:log_edit, added_edits ++ [removed_edit]})
+  end
+
+  @spec log_sequence(Goblin.registry(), Goblin.db_sequence()) :: :ok | {:error, term()}
+  def log_sequence(registry, seq) do
+    GenServer.call(via(registry), {:log_edit, {:seq, seq}})
+  end
+
+  @spec log_compaction(Goblin.registry(), [Goblin.db_file()], [Goblin.db_file()]) ::
+          :ok | {:error, term()}
+  def log_compaction(registry, rotated_files, new_files) do
+    added_edits = Enum.map(new_files, &{:file_added, &1})
+    removed_edits = Enum.map(rotated_files, &{:file_removed, &1})
+    GenServer.call(via(registry), {:log_edit, added_edits ++ removed_edits})
+  end
+
+  @spec get_version(Goblin.registry(), [:files | :wals | :count | :seq]) :: version()
+  def get_version(registry, keys \\ []) do
+    GenServer.call(via(registry), {:get_version, keys})
   end
 
   @impl GenServer

@@ -11,8 +11,6 @@ defmodule Goblin.Writer do
   alias Goblin.Manifest
   alias Goblin.SSTs
 
-  @type writer :: GenServer.server()
-
   @flush_level 0
 
   defstruct [
@@ -46,17 +44,17 @@ defmodule Goblin.Writer do
   #   GenServer.call(server, {:subscribe, pid})
   # end
 
-  @spec get(writer(), Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
+  @spec get(Goblin.registry(), Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
   def get(registry, key) do
     GenServer.call(via(registry), {:get, key})
   end
 
-  @spec get_multi(writer(), [Goblin.db_key()]) :: {:ok, Goblin.db_value()} | :error
+  @spec get_multi(Goblin.registry(), [Goblin.db_key()]) :: {:ok, Goblin.db_value()} | :error
   def get_multi(registry, keys) do
     GenServer.call(via(registry), {:get_multi, keys})
   end
 
-  @spec get_iterators(writer()) :: [
+  @spec get_iterators(Goblin.registry()) :: [
           {(-> [Goblin.triple()]),
            ([Goblin.triple()] -> :ok | {Goblin.triple(), [Goblin.triple()]})}
         ]
@@ -64,7 +62,7 @@ defmodule Goblin.Writer do
     GenServer.call(via(registry), :get_iterators)
   end
 
-  @spec put(writer(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
+  @spec put(Goblin.registry(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
   def put(registry, key, value) do
     transaction(registry, fn tx ->
       tx = Transaction.put(tx, key, value)
@@ -72,7 +70,7 @@ defmodule Goblin.Writer do
     end)
   end
 
-  @spec put_multi(writer(), [{Goblin.db_key(), Goblin.db_value()}]) ::
+  @spec put_multi(Goblin.registry(), [{Goblin.db_key(), Goblin.db_value()}]) ::
           :ok | {:error, term()}
   def put_multi(registry, pairs) do
     transaction(registry, fn tx ->
@@ -81,7 +79,7 @@ defmodule Goblin.Writer do
     end)
   end
 
-  @spec remove(writer(), Goblin.db_key()) :: :ok | {:error, term()}
+  @spec remove(Goblin.registry(), Goblin.db_key()) :: :ok | {:error, term()}
   def remove(registry, key) do
     transaction(registry, fn tx ->
       tx = Transaction.remove(tx, key)
@@ -89,7 +87,7 @@ defmodule Goblin.Writer do
     end)
   end
 
-  @spec remove_multi(writer(), [Goblin.db_key()]) :: :ok | {:error, term()}
+  @spec remove_multi(Goblin.registry(), [Goblin.db_key()]) :: :ok | {:error, term()}
   def remove_multi(registry, keys) do
     transaction(registry, fn tx ->
       tx = Enum.reduce(keys, tx, fn k, acc -> Transaction.remove(acc, k) end)
@@ -97,10 +95,10 @@ defmodule Goblin.Writer do
     end)
   end
 
-  @spec is_flushing(writer()) :: boolean()
+  @spec is_flushing(Goblin.registry()) :: boolean()
   def is_flushing(registry), do: GenServer.call(via(registry), :is_flushing)
 
-  @spec transaction(writer(), (Transaction.t() -> Goblin.transaction_return())) ::
+  @spec transaction(Goblin.registry(), (Transaction.t() -> Goblin.transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(registry, f) do
     writer = via(registry) 

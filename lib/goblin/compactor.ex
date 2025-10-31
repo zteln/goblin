@@ -19,7 +19,6 @@ defmodule Goblin.Compactor do
     levels: %{}
   ]
 
-  @type compactor :: GenServer.server()
   @type data :: {
           Goblin.db_file(),
           Goblin.db_sequence(),
@@ -43,12 +42,12 @@ defmodule Goblin.Compactor do
     GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
-  @spec put(compactor(), Goblin.db_level_key(), data()) :: :ok
+  @spec put(Goblin.registry(), Goblin.db_level_key(), data()) :: :ok
   def put(registry, level_key, data) do
     GenServer.call(via(registry), {:put, level_key, data})
   end
 
-  @spec is_compacting(compactor()) :: boolean()
+  @spec is_compacting(Goblin.registry()) :: boolean()
   def is_compacting(registry) do
     GenServer.call(via(registry), :is_compacting)
   end
