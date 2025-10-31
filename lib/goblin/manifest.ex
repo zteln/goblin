@@ -1,6 +1,7 @@
 defmodule Goblin.Manifest do
   @moduledoc false
   use GenServer
+  import Goblin.ProcessRegistry, only: [via: 1]
 
   @manifest_name :goblin_manifest
   @manifest_file "manifest.goblin"
@@ -25,32 +26,34 @@ defmodule Goblin.Manifest do
     size: 0
   ]
 
-  def log_rotation(manifest, wal) do
-    GenServer.call(manifest, {:log_edit, {:wal_added, wal}})
+  def log_rotation(registry, wal) do
+    GenServer.call(via(registry), {:log_edit, {:wal_added, wal}})
   end
 
-  def log_flush(manifest, files, wal) do
+  def log_flush(registry, files, wal) do
     added_edits = Enum.map(files, &{:file_added, &1})
     removed_edit = {:wal_removed, wal}
-    GenServer.call(manifest, {:log_edit, added_edits ++ [removed_edit]})
+    GenServer.call(via(registry), {:log_edit, added_edits ++ [removed_edit]})
   end
 
-  def log_sequence(manifest, seq) do
-    GenServer.call(manifest, {:log_edit, {:seq, seq}})
+  def log_sequence(registry, seq) do
+    GenServer.call(via(registry), {:log_edit, {:seq, seq}})
   end
 
-  def log_compaction(manifest, rotated_files, new_files) do
+  def log_compaction(registry, rotated_files, new_files) do
     added_edits = Enum.map(new_files, &{:file_added, &1})
     removed_edits = Enum.map(rotated_files, &{:file_removed, &1})
-    GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
+    GenServer.call(via(registry), {:log_edit, added_edits ++ removed_edits})
   end
 
-  def get_version(manifest, keys \\ []) do
-    GenServer.call(manifest, {:get_version, keys})
+  def get_version(registry, keys \\ []) do
+    GenServer.call(via(registry), {:get_version, keys})
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    registry = opts[:registry]
+
     args =
       Keyword.take(opts, [
         :db_dir,
@@ -59,7 +62,7 @@ defmodule Goblin.Manifest do
         :manifest_max_size
       ])
 
-    GenServer.start_link(__MODULE__, args, name: opts[:name])
+    GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
   @impl GenServer

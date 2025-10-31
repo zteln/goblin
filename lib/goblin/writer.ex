@@ -1,6 +1,7 @@
 defmodule Goblin.Writer do
   @moduledoc false
   use GenServer
+  import Goblin.ProcessRegistry, only: [via: 1]
   require Logger
   alias Goblin.Writer.MemTable
   alias Goblin.Writer.Transaction
@@ -15,9 +16,7 @@ defmodule Goblin.Writer do
   @flush_level 0
 
   defstruct [
-    :wal,
-    :store,
-    :manifest,
+    :registry,
     :task_sup,
     :task_mod,
     :key_limit,
@@ -30,17 +29,17 @@ defmodule Goblin.Writer do
 
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    registry = opts[:registry]
+
     args =
       Keyword.take(opts, [
-        :wal,
-        :store,
-        :manifest,
+        :registry,
         :task_sup,
         :task_mod,
         :key_limit
       ])
 
-    GenServer.start_link(__MODULE__, args, name: opts[:name])
+    GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
   # def subscribe(server, pid \\ self()) do
@@ -48,26 +47,26 @@ defmodule Goblin.Writer do
   # end
 
   @spec get(writer(), Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
-  def get(writer, key) do
-    GenServer.call(writer, {:get, key})
+  def get(registry, key) do
+    GenServer.call(via(registry), {:get, key})
   end
 
   @spec get_multi(writer(), [Goblin.db_key()]) :: {:ok, Goblin.db_value()} | :error
-  def get_multi(writer, keys) do
-    GenServer.call(writer, {:get_multi, keys})
+  def get_multi(registry, keys) do
+    GenServer.call(via(registry), {:get_multi, keys})
   end
 
   @spec get_iterators(writer()) :: [
           {(-> [Goblin.triple()]),
            ([Goblin.triple()] -> :ok | {Goblin.triple(), [Goblin.triple()]})}
         ]
-  def get_iterators(writer) do
-    GenServer.call(writer, :get_iterators)
+  def get_iterators(registry) do
+    GenServer.call(via(registry), :get_iterators)
   end
 
   @spec put(writer(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
-  def put(writer, key, value) do
-    transaction(writer, fn tx ->
+  def put(registry, key, value) do
+    transaction(registry, fn tx ->
       tx = Transaction.put(tx, key, value)
       {:commit, tx, :ok}
     end)
@@ -75,35 +74,37 @@ defmodule Goblin.Writer do
 
   @spec put_multi(writer(), [{Goblin.db_key(), Goblin.db_value()}]) ::
           :ok | {:error, term()}
-  def put_multi(writer, pairs) do
-    transaction(writer, fn tx ->
+  def put_multi(registry, pairs) do
+    transaction(registry, fn tx ->
       tx = Enum.reduce(pairs, tx, fn {k, v}, acc -> Transaction.put(acc, k, v) end)
       {:commit, tx, :ok}
     end)
   end
 
   @spec remove(writer(), Goblin.db_key()) :: :ok | {:error, term()}
-  def remove(writer, key) do
-    transaction(writer, fn tx ->
+  def remove(registry, key) do
+    transaction(registry, fn tx ->
       tx = Transaction.remove(tx, key)
       {:commit, tx, :ok}
     end)
   end
 
   @spec remove_multi(writer(), [Goblin.db_key()]) :: :ok | {:error, term()}
-  def remove_multi(writer, keys) do
-    transaction(writer, fn tx ->
+  def remove_multi(registry, keys) do
+    transaction(registry, fn tx ->
       tx = Enum.reduce(keys, tx, fn k, acc -> Transaction.remove(acc, k) end)
       {:commit, tx, :ok}
     end)
   end
 
   @spec is_flushing(writer()) :: boolean()
-  def is_flushing(writer), do: GenServer.call(writer, :is_flushing)
+  def is_flushing(registry), do: GenServer.call(via(registry), :is_flushing)
 
   @spec transaction(writer(), (Transaction.t() -> Goblin.transaction_return())) ::
           term() | :ok | {:error, term()}
-  def transaction(writer, f) do
+  def transaction(registry, f) do
+    writer = via(registry) 
+
     with {:ok, tx} <- start_transaction(writer, self()),
          {:ok, tx, reply} <- run_transaction(writer, f, tx),
          :ok <- commit_transaction(writer, tx, self()) do
@@ -139,9 +140,7 @@ defmodule Goblin.Writer do
   def init(args) do
     {:ok,
      %__MODULE__{
-       wal: args[:wal],
-       store: args[:store],
-       manifest: args[:manifest],
+       registry: args[:registry],
        task_sup: args[:task_sup],
        task_mod: args[:task_mod] || Task.Supervisor,
        key_limit: args[:key_limit],
@@ -192,9 +191,8 @@ defmodule Goblin.Writer do
 
   def handle_call({:start_transaction, pid}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
-      writer = self()
-      store = state.store
-      reader = &Reader.get(&1, writer, store)
+      registry = state.registry
+      reader = &Reader.get(&1, registry)
       tx = Transaction.new(pid, reader)
       transactions = Map.put(state.transactions, pid, [])
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
@@ -216,7 +214,7 @@ defmodule Goblin.Writer do
             |> add_commit_to_running_transactions(tx.mem_table)
 
           writes = Enum.map(tx.writes, &advance_seq_in_write(&1, state.seq))
-          WAL.append(state.wal, writes)
+          WAL.append(state.registry, writes)
           tx_mem_table = MemTable.advance_seq(tx.mem_table, state.seq)
           mem_table = MemTable.merge(state.mem_table, tx_mem_table)
 
@@ -341,9 +339,7 @@ defmodule Goblin.Writer do
     mem_table = mem_table || state.mem_table
 
     %{
-      store: store,
-      wal: wal,
-      manifest: manifest,
+      registry: registry,
       task_sup: task_sup,
       task_mod: task_mod,
       key_limit: key_limit
@@ -354,10 +350,10 @@ defmodule Goblin.Writer do
         data = mem_table |> MemTable.sort() |> MemTable.flatten()
 
         with {:ok, flushed} <-
-               SSTs.flush(data, @flush_level, key_limit, fn -> Store.new_file(store) end),
-             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, & &1.file), rotated_wal),
-             :ok <- WAL.clean(wal, rotated_wal),
-             :ok <- put_in_store(flushed, store) do
+               SSTs.flush(data, @flush_level, key_limit, fn -> Store.new_file(registry) end),
+             :ok <- Manifest.log_flush(registry, Enum.map(flushed, & &1.file), rotated_wal),
+             :ok <- WAL.clean(registry, rotated_wal),
+             :ok <- put_in_store(flushed, registry) do
           {:ok, :flushed}
         end
       end)
@@ -367,21 +363,20 @@ defmodule Goblin.Writer do
 
   defp put_in_store([], _store), do: :ok
 
-  defp put_in_store([sst | ssts], store) do
-    Store.put(store, sst)
-    put_in_store(ssts, store)
+  defp put_in_store([sst | ssts], registry) do
+    Store.put(registry, sst)
+    put_in_store(ssts, registry)
   end
 
   defp maybe_rotate(state, nil) do
     %{
-      wal: wal,
-      manifest: manifest,
+      registry: registry,
       seq: seq
     } = state
 
-    with {:ok, rotated_wal} <- WAL.rotate(wal),
-         :ok <- Manifest.log_rotation(manifest, rotated_wal),
-         :ok <- Manifest.log_sequence(manifest, seq) do
+    with {:ok, rotated_wal} <- WAL.rotate(registry),
+         :ok <- Manifest.log_rotation(registry, rotated_wal),
+         :ok <- Manifest.log_sequence(registry, seq) do
       {:ok, rotated_wal}
     end
   end
@@ -409,9 +404,9 @@ defmodule Goblin.Writer do
   end
 
   defp recover_writes(state) do
-    %{seq: seq} = Manifest.get_version(state.manifest, [:seq])
+    %{seq: seq} = Manifest.get_version(state.registry, [:seq])
 
-    with {:ok, logs} <- WAL.recover(state.wal) do
+    with {:ok, logs} <- WAL.recover(state.registry) do
       recover_state(logs, %{state | seq: seq})
     end
   end

@@ -1,6 +1,7 @@
 defmodule Goblin.WAL do
   @moduledoc false
   use GenServer
+  import Goblin.ProcessRegistry, only: [via: 1]
 
   @default_sync_interval 200
   @log_name :goblin_wal
@@ -19,30 +20,31 @@ defmodule Goblin.WAL do
     waiting_for_sync?: false
   ]
 
-  def sync(wal) do
-    GenServer.call(wal, :sync_now)
+  def sync(registry) do
+    GenServer.call(via(registry), :sync_now)
   end
 
-  def append(wal, buffer) do
-    GenServer.call(wal, {:append, buffer})
+  def append(registry, buffer) do
+    GenServer.call(via(registry), {:append, buffer})
   end
 
-  def rotate(wal) do
-    GenServer.call(wal, :rotate)
+  def rotate(registry) do
+    GenServer.call(via(registry), :rotate)
   end
 
-  def clean(wal, rotated_file) do
-    GenServer.call(wal, {:clean, rotated_file})
+  def clean(registry, rotated_file) do
+    GenServer.call(via(registry), {:clean, rotated_file})
   end
 
-  def recover(wal) do
-    GenServer.call(wal, :recover)
+  def recover(registry) do
+    GenServer.call(via(registry), :recover)
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    registry = opts[:registry]
     args = Keyword.take(opts, [:sync_interval, :wal_name, :db_dir])
-    GenServer.start_link(__MODULE__, args, name: opts[:name])
+    GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
   @impl GenServer

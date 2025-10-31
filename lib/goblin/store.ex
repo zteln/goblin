@@ -1,6 +1,7 @@
 defmodule Goblin.Store do
   @moduledoc false
   use GenServer
+  import Goblin.ProcessRegistry, only: [via: 1]
   alias Goblin.Compactor
   alias Goblin.Manifest
   alias Goblin.BloomFilter
@@ -15,32 +16,30 @@ defmodule Goblin.Store do
            {Goblin.db_key(), Goblin.db_key()}}
 
   defstruct [
+    :registry,
     :dir,
-    :compactor,
-    :rw_locks,
     :ssts,
-    :manifest,
     max_file_count: 0
   ]
 
   @spec put(store(), SSTs.SST.t()) :: :ok
-  def put(store, sst) do
-    GenServer.call(store, {:put, sst})
+  def put(registry, sst) do
+    GenServer.call(via(registry), {:put, sst})
   end
 
   @spec remove(store(), Goblin.db_file()) :: :ok
-  def remove(store, file) do
-    GenServer.call(store, {:remove, file})
+  def remove(registry, file) do
+    GenServer.call(via(registry), {:remove, file})
   end
 
   @spec get(store(), Goblin.db_key() | [Goblin.db_key()]) :: [
           {(-> Goblin.db_value()), (-> :ok)}
         ]
-  def get(store, keys) when is_list(keys) do
-    GenServer.call(store, {:get, keys})
+  def get(registry, keys) when is_list(keys) do
+    GenServer.call(via(registry), {:get, keys})
   end
 
-  def get(store, key), do: get(store, [key])
+  def get(registry, key), do: get(registry, [key])
 
   @spec get_iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
           {{
@@ -48,29 +47,28 @@ defmodule Goblin.Store do
              (SSTs.iterator() -> :ok | {Goblin.triple(), SSTs.iterator()})
            }, (-> :ok)}
         ]
-  def get_iterators(store, min, max) do
-    GenServer.call(store, {:get_iterators, min, max})
+  def get_iterators(registry, min, max) do
+    GenServer.call(via(registry), {:get_iterators, min, max})
   end
 
   @spec new_file(store()) :: Goblin.db_file()
-  def new_file(store) do
-    GenServer.call(store, :new_file)
+  def new_file(registry) do
+    GenServer.call(via(registry), :new_file)
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    args = Keyword.take(opts, [:dir, :manifest, :compactor, :rw_locks])
-    GenServer.start_link(__MODULE__, args, name: opts[:name])
+    registry = opts[:registry]
+    args = Keyword.take(opts, [:registry, :dir, :manifest, :compactor, :rw_locks])
+    GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
   @impl GenServer
   def init(args) do
     {:ok,
      %__MODULE__{
-       dir: args[:dir],
-       manifest: args[:manifest],
-       rw_locks: args[:rw_locks],
-       compactor: args[:compactor]
+       registry: args[:registry],
+       dir: args[:dir]
      }, {:continue, :recover_state}}
   end
 
@@ -88,7 +86,7 @@ defmodule Goblin.Store do
   def handle_call({:get_iterators, min, max}, {caller, _ref}, state) do
     %{
       ssts: ssts,
-      rw_locks: rw_locks
+      registry: registry
     } = state
 
     iterators =
@@ -104,7 +102,7 @@ defmodule Goblin.Store do
           true -> true
         end
       end)
-      |> Enum.flat_map(&into_iterator(&1, caller, rw_locks))
+      |> Enum.flat_map(&into_iterator(&1, caller, registry))
 
     {:reply, iterators, state}
   end
@@ -112,12 +110,12 @@ defmodule Goblin.Store do
   def handle_call({:get, keys}, {caller, _ref}, state) do
     %{
       ssts: ssts,
-      rw_locks: rw_locks
+      registry: registry
     } = state
 
     read_pairs =
       Enum.map(keys, fn key ->
-        {key, filter_ssts(ssts, key, caller, rw_locks)}
+        {key, filter_ssts(ssts, key, caller, registry)}
       end)
 
     {:reply, read_pairs, state}
@@ -138,14 +136,14 @@ defmodule Goblin.Store do
       key_range: key_range
     } = sst
 
-    :ok = Compactor.put(state.compactor, level_key, {file, priority, size, key_range})
+    :ok = Compactor.put(state.registry, level_key, {file, priority, size, key_range})
     {:noreply, state}
   end
 
   def handle_continue(:recover_state, state) do
-    %{files: files, count: file_count} = Manifest.get_version(state.manifest, [:files, :count])
+    %{files: files, count: file_count} = Manifest.get_version(state.registry, [:files, :count])
 
-    case recover_ssts(files, state.compactor) do
+    case recover_ssts(files, state.registry) do
       {:ok, ssts} ->
         state = %{state | ssts: ssts, max_file_count: file_count}
         {:noreply, state}
@@ -155,39 +153,39 @@ defmodule Goblin.Store do
     end
   end
 
-  defp into_iterator(sst, caller, rw_locks) do
+  defp into_iterator(sst, caller, registry) do
     %{file: file} = sst
     reader = {fn -> SSTs.iterate(file) end, fn iter -> SSTs.iterate(iter) end}
 
-    case read_pair(file, caller, rw_locks, reader) do
+    case read_pair(file, caller, reader, registry) do
       {:ok, read_pair} -> [read_pair]
       _ -> []
     end
   end
 
-  defp filter_ssts(ssts, key, caller, rw_locks) do
+  defp filter_ssts(ssts, key, caller, registry) do
     ssts
     |> Enum.filter(&BloomFilter.is_member(&1.bloom_filter, key))
     |> Enum.flat_map(fn sst ->
       reader = fn -> SSTs.find(sst.file, key) end
 
-      case read_pair(sst.file, caller, rw_locks, reader) do
+      case read_pair(sst.file, caller, reader, registry) do
         {:ok, read_pair} -> [read_pair]
         _ -> []
       end
     end)
   end
 
-  defp read_pair(file, caller, rw_locks, reader) do
-    with :ok <- RWLocks.rlock(rw_locks, file, caller) do
-      {:ok, {reader, fn -> RWLocks.unlock(rw_locks, file, caller) end}}
+  defp read_pair(file, caller, reader, registry) do
+    with :ok <- RWLocks.rlock(registry, file, caller) do
+      {:ok, {reader, fn -> RWLocks.unlock(registry, file, caller) end}}
     end
   end
 
-  defp recover_ssts(files, compactor, acc \\ [])
-  defp recover_ssts([], _compactor, acc), do: {:ok, acc}
+  defp recover_ssts(files, registry, acc \\ [])
+  defp recover_ssts([], _registry, acc), do: {:ok, acc}
 
-  defp recover_ssts([file | files], compactor, acc) do
+  defp recover_ssts([file | files], registry, acc) do
     with {:ok,
           %{
             level_key: level_key,
@@ -196,9 +194,9 @@ defmodule Goblin.Store do
             size: size,
             key_range: key_range
           } = sst} <- SSTs.fetch_sst(file) do
-      Compactor.put(compactor, level_key, {file, priority, size, key_range})
+      Compactor.put(registry, level_key, {file, priority, size, key_range})
       acc = [sst | acc]
-      recover_ssts(files, compactor, acc)
+      recover_ssts(files, registry, acc)
     end
   end
 

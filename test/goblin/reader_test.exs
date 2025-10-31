@@ -6,7 +6,7 @@ defmodule Goblin.ReaderTest do
   @moduletag :tmp_dir
   @db_opts [
     id: :reader_test,
-    name: :reader_test,
+    name: __MODULE__,
     key_limit: 10,
     sync_interval: 50,
     wal_name: :reader_test_wal,
@@ -16,51 +16,51 @@ defmodule Goblin.ReaderTest do
   setup_db(@db_opts)
 
   test "get/3/4 gets existing keys", c do
-    assert :ok == Goblin.Writer.put(c.writer, 1, "v-1")
-    assert {0, "v-1"} == Reader.get(1, c.writer, c.store)
+    assert :ok == Goblin.Writer.put(c.registry, 1, "v-1")
+    assert {0, "v-1"} == Reader.get(1, c.registry)
 
     for n <- 1..10 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     for n <- 1..10 do
-      assert {n, "v-#{n}"} == Reader.get(n, c.writer, c.store)
+      assert {n, "v-#{n}"} == Reader.get(n, c.registry)
     end
   end
 
   test "get/3/4 returns :not_found for non-existing keys", c do
-    assert :not_found == Reader.get(:non_existing_key, c.writer, c.store)
+    assert :not_found == Reader.get(:non_existing_key, c.registry)
   end
 
   test "get_multi/3/4 returns list of sequences and values for keys", c do
     for n <- 1..5 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert for(n <- 5..1//-1, do: {n, n - 1, "v-#{n}"}) ==
-             Goblin.Reader.get_multi(Enum.to_list(1..5), c.writer, c.store)
+             Goblin.Reader.get_multi(Enum.to_list(1..5), c.registry)
 
     for n <- 6..10 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert for(n <- 10..1//-1, do: {n, n - 1, "v-#{n}"}) ==
-             Goblin.Reader.get_multi(Enum.to_list(1..10), c.writer, c.store)
+             Goblin.Reader.get_multi(Enum.to_list(1..10), c.registry)
 
     assert for(n <- 5..2//-1, do: {n, n - 1, "v-#{n}"}) ==
-             Goblin.Reader.get_multi(Enum.to_list(2..5), c.writer, c.store)
+             Goblin.Reader.get_multi(Enum.to_list(2..5), c.registry)
   end
 
   test "get_multi/3/4 returns :not_found for non-existing keys", c do
     for n <- 1..5 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert for(_n <- 10..6//-1, do: :not_found) ==
-             Goblin.Reader.get_multi(Enum.to_list(6..10), c.writer, c.store)
+             Goblin.Reader.get_multi(Enum.to_list(6..10), c.registry)
 
     for n <- 6..10 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert [
@@ -68,48 +68,48 @@ defmodule Goblin.ReaderTest do
              {9, 8, "v-9"},
              {8, 7, "v-8"},
              :not_found
-           ] == Goblin.Reader.get_multi(Enum.to_list(8..11), c.writer, c.store)
+           ] == Goblin.Reader.get_multi(Enum.to_list(8..11), c.registry)
   end
 
   test "select/4 returns empty stream when empty db", c do
-    assert [] == Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+    assert [] == Reader.select(nil, nil, c.registry) |> Enum.to_list()
   end
 
   test "select/4 returns entire range of keys", c do
     for n <- 1..20 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert for(n <- 1..20, do: {n, "v-#{n}"}) ==
-             Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+             Reader.select(nil, nil, c.registry) |> Enum.to_list()
   end
 
   test "select/4 returns partial range of keys (inclusive)", c do
     for n <- 1..20 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert for(n <- 5..10, do: {n, "v-#{n}"}) ==
-             Reader.select(5, 10, c.writer, c.store) |> Enum.to_list()
+             Reader.select(5, 10, c.registry) |> Enum.to_list()
 
     assert for(n <- 1..10, do: {n, "v-#{n}"}) ==
-             Reader.select(-5, 10, c.writer, c.store) |> Enum.to_list()
+             Reader.select(-5, 10, c.registry) |> Enum.to_list()
 
-    assert [] == Reader.select(-5, 0, c.writer, c.store) |> Enum.to_list()
-    assert [] == Reader.select(21, 30, c.writer, c.store) |> Enum.to_list()
+    assert [] == Reader.select(-5, 0, c.registry) |> Enum.to_list()
+    assert [] == Reader.select(21, 30, c.registry) |> Enum.to_list()
   end
 
   test "select/4 returns latest writes", c do
     for n <- 1..20 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     for n <- 5..10 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "w-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "w-#{n}")
     end
 
     for n <- 15..20 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "u-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "u-#{n}")
     end
 
     range =
@@ -121,26 +121,26 @@ defmodule Goblin.ReaderTest do
         end
       end
 
-    assert range == Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+    assert range == Reader.select(nil, nil, c.registry) |> Enum.to_list()
   end
 
   test "select/4 skips :tombstone entries", c do
     for n <- 1..20 do
-      assert :ok == Goblin.Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     for n <- 5..10 do
-      assert :ok == Goblin.Writer.remove(c.writer, n)
+      assert :ok == Goblin.Writer.remove(c.registry, n)
     end
 
     assert for(n <- 1..4, do: {n, "v-#{n}"}) ++ for(n <- 11..20, do: {n, "v-#{n}"}) ==
-             Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+             Reader.select(nil, nil, c.registry) |> Enum.to_list()
 
     for n <- 1..5 do
-      assert :ok == Goblin.Writer.remove(c.writer, n)
+      assert :ok == Goblin.Writer.remove(c.registry, n)
     end
 
     assert for(n <- 11..20, do: {n, "v-#{n}"}) ==
-             Reader.select(nil, nil, c.writer, c.store) |> Enum.to_list()
+             Reader.select(nil, nil, c.registry) |> Enum.to_list()
   end
 end

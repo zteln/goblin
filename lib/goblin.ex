@@ -66,6 +66,7 @@ defmodule Goblin do
   - **RWLocks** - Coordinates concurrent access to SST files
   """
   use Supervisor
+  require Goblin.ProcessRegistry
 
   @opaque db_key_limit :: non_neg_integer()
   @opaque db_level_limit :: non_neg_integer()
@@ -76,6 +77,7 @@ defmodule Goblin do
   @type db_key :: term()
   @type db_value :: term() | nil
   @type db_server :: Supervisor.supervisor()
+  @type registry :: module()
   @type transaction_return :: {:commit, Goblin.Tx.t(), term()} | :cancel
 
   @default_key_limit 50_000
@@ -117,8 +119,8 @@ defmodule Goblin do
   @spec transaction(db_server(), (Goblin.Tx.t() -> transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(db, f) do
-    writer = name(db, :writer)
-    Goblin.Writer.transaction(writer, f)
+    registry = registry(db)
+    Goblin.Writer.transaction(registry, f)
   end
 
   @doc """
@@ -147,8 +149,8 @@ defmodule Goblin do
   """
   @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
-    writer = name(db, :writer)
-    Goblin.Writer.put(writer, key, value)
+    registry = registry(db)
+    Goblin.Writer.put(registry, key, value)
   end
 
   @doc """
@@ -177,8 +179,8 @@ defmodule Goblin do
   """
   @spec put_multi(db_server(), [{db_key(), db_value()}]) :: :ok
   def put_multi(db, pairs) do
-    writer = name(db, :writer)
-    Goblin.Writer.put_multi(writer, pairs)
+    registry = registry(db)
+    Goblin.Writer.put_multi(registry, pairs)
   end
 
   @doc """
@@ -206,8 +208,8 @@ defmodule Goblin do
   """
   @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
-    writer = name(db, :writer)
-    Goblin.Writer.remove(writer, key)
+    registry = registry(db)
+    Goblin.Writer.remove(registry, key)
   end
 
   @doc """
@@ -232,8 +234,8 @@ defmodule Goblin do
   """
   @spec remove_multi(db_server(), [db_key()]) :: :ok
   def remove_multi(db, keys) do
-    writer = name(db, :writer)
-    Goblin.Writer.remove_multi(writer, keys)
+    registry = registry(db)
+    Goblin.Writer.remove_multi(registry, keys)
   end
 
   @doc """
@@ -266,10 +268,9 @@ defmodule Goblin do
   """
   @spec get(db_server(), db_key(), db_value()) :: db_value()
   def get(db, key, default \\ nil) do
-    writer = name(db, :writer)
-    store = name(db, :store)
+    registry = registry(db)
 
-    case Goblin.Reader.get(key, writer, store) do
+    case Goblin.Reader.get(key, registry) do
       :not_found -> default
       {_seq, value} -> value
     end
@@ -305,10 +306,9 @@ defmodule Goblin do
   """
   @spec get_multi(db_server(), [db_key()]) :: [{db_key(), db_value()}]
   def get_multi(db, keys) when is_list(keys) do
-    writer = name(db, :writer)
-    store = name(db, :store)
+    registry = registry(db)
 
-    Goblin.Reader.get_multi(keys, writer, store)
+    Goblin.Reader.get_multi(keys, registry)
     |> Enum.reject(&(&1 == :not_found))
     |> Enum.map(fn {key, _, value} -> {key, value} end)
     |> List.keysort(0)
@@ -320,7 +320,9 @@ defmodule Goblin do
   Retrieves all key-value pairs within a specified range from the database.
 
   Returns entries sorted by key in ascending order. Both `min` and `max` are
-  inclusive. If neither bound is specified, returns all entries in the database.
+  inclusive. If neither bound is specified, then all entries in the database are returned.
+  Specifying only `min` returns all entries from `min` (inclusive) and onwards.
+  Specifying only `max` returns all entries from the smallest key until `max` (inclusive).
 
   ## Parameters
 
@@ -357,12 +359,10 @@ defmodule Goblin do
   """
   @spec select(db_server(), keyword()) :: Enumerable.t()
   def select(db, opts \\ []) do
-    writer = name(db, :writer)
-    store = name(db, :store)
     min = opts[:min]
     max = opts[:max]
-
-    Goblin.Reader.select(min, max, writer, store)
+    registry = registry(db)
+    Goblin.Reader.select(min, max, registry)
   end
 
   @doc """
@@ -378,8 +378,8 @@ defmodule Goblin do
   """
   @spec is_compacting(db_server()) :: boolean()
   def is_compacting(db) do
-    compactor = name(db, :compactor)
-    Goblin.Compactor.is_compacting(compactor)
+    registry = registry(db)
+    Goblin.Compactor.is_compacting(registry)
   end
 
   @doc """
@@ -395,8 +395,8 @@ defmodule Goblin do
   """
   @spec is_flushing(db_server()) :: boolean()
   def is_flushing(db) do
-    writer = name(db, :writer)
-    Goblin.Writer.is_flushing(writer)
+    registry = registry(db)
+    Goblin.Writer.is_flushing(registry)
   end
 
   @doc """
@@ -429,8 +429,9 @@ defmodule Goblin do
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     db_dir = opts[:db_dir] || raise "no db_dir provided."
+    name = opts[:name] || __MODULE__
     File.exists?(db_dir) || File.mkdir_p!(db_dir)
-    Supervisor.start_link(__MODULE__, opts, name: opts[:name] || __MODULE__)
+    Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
   @impl true
@@ -438,67 +439,51 @@ defmodule Goblin do
     db_dir = args[:db_dir]
     key_limit = args[:key_limit] || @default_key_limit
     level_limit = args[:level_limit] || @default_level_limit
-    task_sup_name = name(args[:name], :task_sup)
-    rw_locks_name = name(args[:name], :rw_locks)
-    manifest_name = name(args[:name], :manifest)
-    wal_name = name(args[:name], :wal)
-    writer_name = name(args[:name], :writer)
-    compactor_name = name(args[:name], :compactor)
-    store_name = name(args[:name], :store)
+    registry = registry(args[:name] || __MODULE__)
+    task_sup = Goblin.ProcessRegistry.via(registry, Goblin.TaskSupervisor)
 
-    children = [
-      {Task.Supervisor, name: task_sup_name},
-      {Goblin.RWLocks, Keyword.merge(args, name: rw_locks_name)},
-      {Goblin.Manifest, Keyword.merge(args, name: manifest_name, db_dir: db_dir)},
-      {Goblin.WAL, Keyword.merge(args, name: wal_name, db_dir: db_dir)},
-      {Goblin.Compactor,
-       Keyword.merge(args,
-         name: compactor_name,
-         key_limit: key_limit,
-         level_limit: level_limit,
-         store: store_name,
-         rw_locks: rw_locks_name,
-         level_limit: level_limit,
-         manifest: manifest_name,
-         task_sup: task_sup_name
-       )},
-      {Goblin.Store,
-       Keyword.merge(args,
-         name: store_name,
-         dir: db_dir,
-         writer: writer_name,
-         rw_locks: rw_locks_name,
-         compactor: compactor_name,
-         manifest: manifest_name
-       )},
-      {Goblin.Writer,
-       Keyword.merge(args,
-         name: writer_name,
-         key_limit: key_limit,
-         store: store_name,
-         wal: wal_name,
-         manifest: manifest_name,
-         task_sup: task_sup_name
-       )}
-    ]
+    children =
+      [
+        {Goblin.ProcessRegistry, name: registry},
+        {Task.Supervisor, name: task_sup},
+        {Goblin.RWLocks, Keyword.merge(args, registry: registry)},
+        {Goblin.Manifest, Keyword.merge(args, registry: registry, db_dir: db_dir)},
+        {Goblin.WAL, Keyword.merge(args, registry: registry, db_dir: db_dir)},
+        {Goblin.Compactor,
+         Keyword.merge(args,
+           registry: registry,
+           task_sup: task_sup,
+           key_limit: key_limit,
+           level_limit: level_limit
+         )},
+        {Goblin.Store,
+         Keyword.merge(args,
+           registry: registry,
+           dir: db_dir
+         )},
+        {Goblin.Writer,
+         Keyword.merge(args,
+           registry: registry,
+           task_sup: task_sup,
+           key_limit: key_limit
+         )}
+      ]
 
     Supervisor.init(children, strategy: :one_for_all)
   end
 
-  defp name(pid, suffix) when is_pid(pid) do
+  defp registry(pid) when is_pid(pid) do
     case Process.info(pid, :registered_name) do
       {:registered_name, []} ->
-        name(nil, suffix)
-
-      {:registered_name, __MODULE__} ->
-        name(nil, suffix)
+        name(__MODULE__, ProcessRegistry)
 
       {:registered_name, registered_name} ->
-        name(registered_name, suffix)
+        name(registered_name, ProcessRegistry)
     end
   end
 
-  defp name(name, suffix) do
-    if name, do: :"#{name}_#{suffix}", else: :"goblin_#{suffix}"
-  end
+  defp registry(nil), do: name(__MODULE__, ProcessRegistry)
+  defp registry(name), do: name(name, ProcessRegistry)
+
+  defp name(name, suffix), do: Module.concat(name, suffix)
 end

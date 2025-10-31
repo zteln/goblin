@@ -18,7 +18,7 @@ defmodule Goblin.WriterTest do
   @moduletag :tmp_dir
   @db_opts [
     id: :writer_test,
-    name: :writer_test,
+    name: __MODULE__,
     key_limit: 10,
     sync_interval: 50,
     wal_name: :writer_test_wal,
@@ -34,40 +34,40 @@ defmodule Goblin.WriterTest do
 
   test "writes increase sequence", c do
     assert %{seq: 0} = :sys.get_state(c.writer)
-    assert :ok == Writer.put(c.writer, :k1, :v1)
-    assert :ok == Writer.put(c.writer, :k2, :v2)
-    assert :ok == Writer.remove(c.writer, :k3)
+    assert :ok == Writer.put(c.registry, :k1, :v1)
+    assert :ok == Writer.put(c.registry, :k2, :v2)
+    assert :ok == Writer.remove(c.registry, :k3)
     assert %{seq: 3} = :sys.get_state(c.writer)
   end
 
   test "writer can put key-value in memory", c do
-    assert :ok == Writer.put(c.writer, :k1, :v1)
-    assert :ok == Writer.put(c.writer, :k2, :v2)
-    assert :ok == Writer.put(c.writer, :k3, :v3)
-    assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
-    assert {:ok, {:value, 1, :v2}} == Writer.get(c.writer, :k2)
-    assert {:ok, {:value, 2, :v3}} == Writer.get(c.writer, :k3)
+    assert :ok == Writer.put(c.registry, :k1, :v1)
+    assert :ok == Writer.put(c.registry, :k2, :v2)
+    assert :ok == Writer.put(c.registry, :k3, :v3)
+    assert {:ok, {:value, 0, :v1}} == Writer.get(c.registry, :k1)
+    assert {:ok, {:value, 1, :v2}} == Writer.get(c.registry, :k2)
+    assert {:ok, {:value, 2, :v3}} == Writer.get(c.registry, :k3)
   end
 
   test "writer can remove key-value pairs", c do
-    assert :ok == Writer.remove(c.writer, :k)
-    assert {:ok, {:value, 0, :tombstone}} == Writer.get(c.writer, :k)
-    assert :ok == Writer.put(c.writer, :k, :v)
-    assert {:ok, {:value, 1, :v}} == Writer.get(c.writer, :k)
-    assert :ok == Writer.remove(c.writer, :k)
-    assert {:ok, {:value, 2, :tombstone}} == Writer.get(c.writer, :k)
+    assert :ok == Writer.remove(c.registry, :k)
+    assert {:ok, {:value, 0, :tombstone}} == Writer.get(c.registry, :k)
+    assert :ok == Writer.put(c.registry, :k, :v)
+    assert {:ok, {:value, 1, :v}} == Writer.get(c.registry, :k)
+    assert :ok == Writer.remove(c.registry, :k)
+    assert {:ok, {:value, 2, :tombstone}} == Writer.get(c.registry, :k)
   end
 
   test "writer recovers memory after restart", c do
-    assert :ok == Writer.put(c.writer, :k1, :v1)
-    assert :ok == Writer.put(c.writer, :k2, :v2)
-    assert :ok == Writer.remove(c.writer, :k3)
-    WAL.sync(c.wal)
+    assert :ok == Writer.put(c.registry, :k1, :v1)
+    assert :ok == Writer.put(c.registry, :k2, :v2)
+    assert :ok == Writer.remove(c.registry, :k3)
+    WAL.sync(c.registry)
     stop_supervised!(c.db_id)
-    %{writer: writer} = start_db(c.tmp_dir, @db_opts)
-    assert {:ok, {:value, 0, :v1}} == Writer.get(writer, :k1)
-    assert {:ok, {:value, 1, :v2}} == Writer.get(writer, :k2)
-    assert {:ok, {:value, 2, :tombstone}} == Writer.get(writer, :k3)
+    start_db(c.tmp_dir, @db_opts)
+    assert {:ok, {:value, 0, :v1}} == Writer.get(c.registry, :k1)
+    assert {:ok, {:value, 1, :v2}} == Writer.get(c.registry, :k2)
+    assert {:ok, {:value, 2, :tombstone}} == Writer.get(c.registry, :k3)
   end
 
   test "overflowing the MemTable causes a flush and writes data to disk", c do
@@ -75,7 +75,7 @@ defmodule Goblin.WriterTest do
     no_of_files = length(File.ls!(c.tmp_dir))
 
     for n <- 1..10 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert_eventually do
@@ -88,7 +88,7 @@ defmodule Goblin.WriterTest do
   @tag db_opts: [task_mod: FakeTask]
   test "recovers flushes after restart", c do
     for n <- 1..20 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert %{
@@ -98,7 +98,7 @@ defmodule Goblin.WriterTest do
              ]
            } = :sys.get_state(c.writer)
 
-    WAL.sync(c.wal)
+    WAL.sync(c.registry)
     stop_supervised!(c.db_id)
     %{writer: writer} = start_db(c.tmp_dir, @db_opts)
 
@@ -113,27 +113,27 @@ defmodule Goblin.WriterTest do
   @tag db_opts: [task_mod: FakeTask]
   test "able to read data inbetween flush and flushed", c do
     for n <- 1..10 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert %{mem_table: mem_table, flushing: [{_, _, _, _}]} = :sys.get_state(c.writer)
     assert %{} == mem_table
 
     for n <- 1..10 do
-      assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
+      assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.registry, n)
     end
   end
 
   @tag db_opts: [task_mod: FakeTask]
   test "able to read data from flushing MemTables", c do
     for n <- 1..30 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert %{flushing: [{_, _, _, _}, {_, _, _, _}, {_, _, _, _}]} = :sys.get_state(c.writer)
 
     for n <- 1..30 do
-      assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.writer, n)
+      assert {:ok, {:value, n - 1, "v-#{n}"}} == Writer.get(c.registry, n)
     end
   end
 
@@ -141,12 +141,12 @@ defmodule Goblin.WriterTest do
   test "reads from latest write", c do
     for i <- 1..3 do
       for n <- 1..10 do
-        assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
+        assert :ok == Writer.put(c.registry, n, "v#{i}-#{n}")
       end
     end
 
     for n <- 1..10 do
-      assert {:ok, {:value, n + 20 - 1, "v3-#{n}"}} == Writer.get(c.writer, n)
+      assert {:ok, {:value, n + 20 - 1, "v3-#{n}"}} == Writer.get(c.registry, n)
     end
   end
 
@@ -154,11 +154,11 @@ defmodule Goblin.WriterTest do
   test "get_iterators/1 gets iterator over current and flushing MemTables", c do
     for i <- 1..3 do
       for n <- 1..10 do
-        assert :ok == Writer.put(c.writer, n, "v#{i}-#{n}")
+        assert :ok == Writer.put(c.registry, n, "v#{i}-#{n}")
       end
     end
 
-    assert iterators = Writer.get_iterators(c.writer)
+    assert iterators = Writer.get_iterators(c.registry)
     assert length(iterators) == 4
   end
 
@@ -169,7 +169,7 @@ defmodule Goblin.WriterTest do
     log =
       capture_log(fn ->
         for n <- 1..10 do
-          assert :ok == Writer.put(c.writer, n, "v-#{n}")
+          assert :ok == Writer.put(c.registry, n, "v-#{n}")
         end
 
         assert_receive {:EXIT, _pid, :shutdown}
@@ -177,14 +177,13 @@ defmodule Goblin.WriterTest do
 
     assert log =~ "Flush failed with reason: :failed_to_flush. Retrying..."
     assert log =~ "Flush failed after 5 attempts with reason: :failed_to_flush. Exiting."
-    assert log =~ "GenServer :writer_test_writer terminating"
   end
 
   test "merges MemTable with transactions writes after commit", c do
-    assert :ok == Writer.put(c.writer, :i, :u)
+    assert :ok == Writer.put(c.registry, :i, :u)
 
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                tx = Writer.Transaction.put(tx, :k, :v)
                tx = Writer.Transaction.put(tx, :l, :w)
                tx = Writer.Transaction.remove(tx, :m)
@@ -193,17 +192,17 @@ defmodule Goblin.WriterTest do
                {:commit, tx, :ok}
              end)
 
-    assert {:ok, {:value, 0, :u}} == Writer.get(c.writer, :i)
-    assert {:ok, {:value, 1, :v}} == Writer.get(c.writer, :k)
-    assert {:ok, {:value, 2, :w}} == Writer.get(c.writer, :l)
-    assert {:ok, {:value, 3, :tombstone}} == Writer.get(c.writer, :m)
+    assert {:ok, {:value, 0, :u}} == Writer.get(c.registry, :i)
+    assert {:ok, {:value, 1, :v}} == Writer.get(c.registry, :k)
+    assert {:ok, {:value, 2, :w}} == Writer.get(c.registry, :l)
+    assert {:ok, {:value, 3, :tombstone}} == Writer.get(c.registry, :m)
   end
 
   test "does not merge with MemTable after a transaction cancels", c do
-    assert :ok == Writer.put(c.writer, :i, :u)
+    assert :ok == Writer.put(c.registry, :i, :u)
 
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                tx = Writer.Transaction.put(tx, :k, :v)
                tx = Writer.Transaction.put(tx, :l, :w)
                tx = Writer.Transaction.remove(tx, :m)
@@ -211,17 +210,17 @@ defmodule Goblin.WriterTest do
                :cancel
              end)
 
-    assert {:ok, {:value, 0, :u}} == Writer.get(c.writer, :i)
-    assert :not_found == Writer.get(c.writer, :k)
-    assert :not_found == Writer.get(c.writer, :l)
-    assert :not_found == Writer.get(c.writer, :m)
+    assert {:ok, {:value, 0, :u}} == Writer.get(c.registry, :i)
+    assert :not_found == Writer.get(c.registry, :k)
+    assert :not_found == Writer.get(c.registry, :l)
+    assert :not_found == Writer.get(c.registry, :m)
   end
 
   test "concurrent non-conflicting transactions are merged into the MemTable", c do
     pid1 =
       spawn(fn ->
         pid2 =
-          Writer.transaction(c.writer, fn tx ->
+          Writer.transaction(c.registry, fn tx ->
             tx = Writer.Transaction.put(tx, :k1, :v1)
 
             pid2 =
@@ -236,7 +235,7 @@ defmodule Goblin.WriterTest do
       end)
 
     spawn(fn ->
-      Writer.transaction(c.writer, fn tx ->
+      Writer.transaction(c.registry, fn tx ->
         tx = Writer.Transaction.put(tx, :k2, :v2)
 
         send(pid1, {:cont, self()})
@@ -250,8 +249,8 @@ defmodule Goblin.WriterTest do
     end)
 
     assert_eventually do
-      assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
-      assert {:ok, {:value, 1, :v2}} == Writer.get(c.writer, :k2)
+      assert {:ok, {:value, 0, :v1}} == Writer.get(c.registry, :k1)
+      assert {:ok, {:value, 1, :v2}} == Writer.get(c.registry, :k2)
     end
   end
 
@@ -259,7 +258,7 @@ defmodule Goblin.WriterTest do
     pid1 =
       spawn_link(fn ->
         pid2 =
-          Writer.transaction(c.writer, fn tx ->
+          Writer.transaction(c.registry, fn tx ->
             tx = Writer.Transaction.put(tx, :k1, :v1)
 
             pid2 =
@@ -275,7 +274,7 @@ defmodule Goblin.WriterTest do
 
     spawn(fn ->
       assert {:error, :in_conflict} ==
-               Writer.transaction(c.writer, fn tx ->
+               Writer.transaction(c.registry, fn tx ->
                  tx = Writer.Transaction.put(tx, :k2, :v2)
                  assert {nil, tx} = Writer.Transaction.get(tx, :k1)
                  send(pid1, {:cont, self()})
@@ -289,8 +288,8 @@ defmodule Goblin.WriterTest do
     end)
 
     assert_eventually do
-      assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
-      assert :not_found == Writer.get(c.writer, :k2)
+      assert {:ok, {:value, 0, :v1}} == Writer.get(c.registry, :k1)
+      assert :not_found == Writer.get(c.registry, :k2)
     end
   end
 
@@ -298,7 +297,7 @@ defmodule Goblin.WriterTest do
     pid1 =
       spawn(fn ->
         pid2 =
-          Writer.transaction(c.writer, fn tx ->
+          Writer.transaction(c.registry, fn tx ->
             tx = Writer.Transaction.put(tx, :k1, :v1)
 
             pid2 =
@@ -314,7 +313,7 @@ defmodule Goblin.WriterTest do
 
     spawn(fn ->
       assert {:error, :in_conflict} ==
-               Writer.transaction(c.writer, fn tx ->
+               Writer.transaction(c.registry, fn tx ->
                  tx = Writer.Transaction.put(tx, :k1, :v2)
                  send(pid1, {:cont, self()})
 
@@ -327,39 +326,39 @@ defmodule Goblin.WriterTest do
     end)
 
     assert_eventually do
-      assert {:ok, {:value, 0, :v1}} == Writer.get(c.writer, :k1)
+      assert {:ok, {:value, 0, :v1}} == Writer.get(c.registry, :k1)
     end
   end
 
   test "a transaction raises if it returns anything other than {:commit, tx, reply} or :cancel",
        c do
     assert_raise RuntimeError, fn ->
-      Writer.transaction(c.writer, fn tx ->
+      Writer.transaction(c.registry, fn tx ->
         Writer.Transaction.put(tx, :k, :v)
         :tx_done
       end)
     end
 
     assert_eventually do
-      assert :not_found == Writer.get(c.writer, :k1)
+      assert :not_found == Writer.get(c.registry, :k1)
     end
   end
 
   test "all writes are appended to the WAL", c do
-    assert :ok == Writer.put(c.writer, :k, :v)
+    assert :ok == Writer.put(c.registry, :k, :v)
 
     assert_eventually do
-      assert {:ok, [{nil, [{0, :put, :k, :v}]}]} == WAL.recover(c.wal)
+      assert {:ok, [{nil, [{0, :put, :k, :v}]}]} == WAL.recover(c.registry)
     end
 
-    assert :ok == Writer.remove(c.writer, :k)
+    assert :ok == Writer.remove(c.registry, :k)
 
     assert_eventually do
-      assert {:ok, [{nil, [{0, :put, :k, :v}, {1, :remove, :k}]}]} == WAL.recover(c.wal)
+      assert {:ok, [{nil, [{0, :put, :k, :v}, {1, :remove, :k}]}]} == WAL.recover(c.registry)
     end
 
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                tx = Writer.Transaction.put(tx, :l, :w)
                tx = Writer.Transaction.remove(tx, :l)
                {:commit, tx, :ok}
@@ -368,15 +367,15 @@ defmodule Goblin.WriterTest do
     assert_eventually do
       assert {:ok,
               [{nil, [{0, :put, :k, :v}, {1, :remove, :k}, {2, :put, :l, :w}, {3, :remove, :l}]}]} ==
-               WAL.recover(c.wal)
+               WAL.recover(c.registry)
     end
   end
 
   test "cannot be in two transactions simultaneously", c do
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                assert {:error, :already_in_transaction} ==
-                        Writer.transaction(c.writer, fn tx ->
+                        Writer.transaction(c.registry, fn tx ->
                           {:commit, tx, :ok}
                         end)
 
@@ -385,7 +384,6 @@ defmodule Goblin.WriterTest do
   end
 
   test "transactions are not persisted on restarts", c do
-    {:registered_name, writer_name} = Process.info(c.writer, :registered_name)
     parent = self()
     ref1 = make_ref()
     ref2 = make_ref()
@@ -394,7 +392,7 @@ defmodule Goblin.WriterTest do
     pid =
       spawn(fn ->
         assert {:error, :no_tx_found} ==
-                 Writer.transaction(writer_name, fn tx ->
+                 Writer.transaction(c.registry, fn tx ->
                    tx = Writer.Transaction.put(tx, :k, :v)
                    send(parent, {:ok, ref1})
 
@@ -413,7 +411,7 @@ defmodule Goblin.WriterTest do
     end
 
     stop_supervised!(c.db_id)
-    %{writer: writer} = start_db(c.tmp_dir, @db_opts)
+    start_db(c.tmp_dir, @db_opts)
 
     send(pid, {:ok, ref2})
 
@@ -421,29 +419,29 @@ defmodule Goblin.WriterTest do
       {:ok, ^ref3} -> :ok
     end
 
-    assert :not_found == Writer.get(writer, :k)
+    assert :not_found == Writer.get(c.registry, :k)
   end
 
   test "get returns :not_found for non-existent key", c do
-    assert :not_found == Writer.get(c.writer, :non_existent)
+    assert :not_found == Writer.get(c.registry, :non_existent)
   end
 
   test "is_flushing returns false when not flushing", c do
-    refute Writer.is_flushing(c.writer)
+    refute Writer.is_flushing(c.registry)
   end
 
   @tag db_opts: [task_mod: FakeTask]
   test "is_flushing returns true when flushing", c do
     for n <- 1..10 do
-      assert :ok == Writer.put(c.writer, n, "v-#{n}")
+      assert :ok == Writer.put(c.registry, n, "v-#{n}")
     end
 
-    assert Writer.is_flushing(c.writer)
+    assert Writer.is_flushing(c.registry)
   end
 
   test "empty transaction commits successfully", c do
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                {:commit, tx, :ok}
              end)
 
@@ -451,38 +449,38 @@ defmodule Goblin.WriterTest do
   end
 
   test "transaction with remove then put on same key", c do
-    assert :ok == Writer.put(c.writer, :k, :v1)
+    assert :ok == Writer.put(c.registry, :k, :v1)
 
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                tx = Writer.Transaction.remove(tx, :k)
                tx = Writer.Transaction.put(tx, :k, :v2)
                {:commit, tx, :ok}
              end)
 
-    assert {:ok, {:value, 2, :v2}} == Writer.get(c.writer, :k)
+    assert {:ok, {:value, 2, :v2}} == Writer.get(c.registry, :k)
   end
 
   test "transaction with put then remove on same key", c do
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                tx = Writer.Transaction.put(tx, :k, :v)
                tx = Writer.Transaction.remove(tx, :k)
                {:commit, tx, :ok}
              end)
 
-    assert {:ok, {:value, 1, :tombstone}} == Writer.get(c.writer, :k)
+    assert {:ok, {:value, 1, :tombstone}} == Writer.get(c.registry, :k)
   end
 
   test "multiple sequential flushes maintain correct state", c do
     for batch <- 1..3 do
       for n <- 1..10 do
         key = "batch#{batch}_key#{n}"
-        assert :ok == Writer.put(c.writer, key, "value#{n}")
+        assert :ok == Writer.put(c.registry, key, "value#{n}")
       end
 
       assert_eventually do
-        refute Writer.is_flushing(c.writer)
+        refute Writer.is_flushing(c.registry)
       end
     end
 
@@ -491,7 +489,7 @@ defmodule Goblin.WriterTest do
 
   test "transaction can read its own writes", c do
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                tx = Writer.Transaction.put(tx, :k1, :v1)
                assert {:v1, tx} = Writer.Transaction.get(tx, :k1)
 
@@ -501,14 +499,14 @@ defmodule Goblin.WriterTest do
                {:commit, tx, :ok}
              end)
 
-    assert {:ok, {:value, 1, :v2}} == Writer.get(c.writer, :k1)
+    assert {:ok, {:value, 1, :v2}} == Writer.get(c.registry, :k1)
   end
 
   test "transaction reads from writer when key not in transaction", c do
-    assert :ok == Writer.put(c.writer, :k, :v)
+    assert :ok == Writer.put(c.registry, :k, :v)
 
     assert :ok ==
-             Writer.transaction(c.writer, fn tx ->
+             Writer.transaction(c.registry, fn tx ->
                assert {:v, tx} = Writer.Transaction.get(tx, :k)
                {:commit, tx, :ok}
              end)

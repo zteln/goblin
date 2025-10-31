@@ -7,7 +7,7 @@ defmodule Goblin.StoreTest do
   @moduletag :tmp_dir
   @db_opts [
     id: :store_test,
-    name: :store_test,
+    name: __MODULE__,
     wal_name: :store_test_wal,
     manifest_name: :store_test_manifest,
     sync_interval: 50
@@ -28,7 +28,7 @@ defmodule Goblin.StoreTest do
      } = sst} =
       SSTs.fetch_sst(file)
 
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Store.put(c.registry, sst)
 
     assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
@@ -51,10 +51,10 @@ defmodule Goblin.StoreTest do
      } = sst} =
       SSTs.fetch_sst(file)
 
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Store.put(c.registry, sst)
     assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Store.put(c.registry, sst)
 
     assert %{
              ssts: [%{file: ^file, bloom_filter: ^bf}, %{file: ^file, bloom_filter: ^bf}]
@@ -63,9 +63,9 @@ defmodule Goblin.StoreTest do
 
   test "remove/2 is idempotent", c do
     assert %{ssts: []} = :sys.get_state(c.store)
-    assert :ok == Store.remove(c.store, "foo")
-    assert :ok == Store.remove(c.store, "foo")
-    assert :ok == Store.remove(c.store, "foo")
+    assert :ok == Store.remove(c.registry, "foo")
+    assert :ok == Store.remove(c.registry, "foo")
+    assert :ok == Store.remove(c.registry, "foo")
     assert %{ssts: []} = :sys.get_state(c.store)
   end
 
@@ -79,22 +79,22 @@ defmodule Goblin.StoreTest do
      } = sst} =
       SSTs.fetch_sst(file)
 
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Store.put(c.registry, sst)
     assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
-    assert :ok == Store.remove(c.store, file)
+    assert :ok == Store.remove(c.registry, file)
     assert %{ssts: []} = :sys.get_state(c.store)
   end
 
   test "new_file/1 increments store file counter", c do
     assert %{max_file_count: 0} = :sys.get_state(c.store)
-    _ = Store.new_file(c.store)
+    _ = Store.new_file(c.registry)
     assert %{max_file_count: 1} = :sys.get_state(c.store)
-    _ = Store.new_file(c.store)
+    _ = Store.new_file(c.registry)
     assert %{max_file_count: 2} = :sys.get_state(c.store)
   end
 
   test "get/2 returns empty list if no files are stored", c do
-    assert [{:k, []}] == Store.get(c.store, :k)
+    assert [{:k, []}] == Store.get(c.registry, :k)
   end
 
   test "get/2 rlocks file when matched", c do
@@ -103,9 +103,9 @@ defmodule Goblin.StoreTest do
 
     {:ok, %{file: file} = sst} = SSTs.fetch_sst(file)
 
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Store.put(c.registry, sst)
 
-    assert [{_, [{read_f, unlock_f}]}] = Store.get(c.store, :k1)
+    assert [{_, [{read_f, unlock_f}]}] = Store.get(c.registry, :k1)
 
     assert %{
              locks: %{
@@ -130,19 +130,19 @@ defmodule Goblin.StoreTest do
   test "get/2 returns empty list if Bloom filter does not match", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
     {:ok, sst} = SSTs.fetch_sst(file)
-    assert :ok == Store.put(c.store, sst)
-    assert [{:k3, []}] = Store.get(c.store, :k3)
+    assert :ok == Store.put(c.registry, sst)
+    assert [{:k3, []}] = Store.get(c.registry, :k3)
   end
 
   test "get_iterators/3 returns iterators within key_range", c do
     pid = self()
-    assert [] == Store.get_iterators(c.store, nil, nil)
+    assert [] == Store.get_iterators(c.registry, nil, nil)
 
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
     {:ok, sst} = SSTs.fetch_sst(file)
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Store.put(c.registry, sst)
 
-    assert [{{_, _}, unlock_f}] = Store.get_iterators(c.store, nil, nil)
+    assert [{{_, _}, unlock_f}] = Store.get_iterators(c.registry, nil, nil)
 
     assert %{locks: %{^file => %{current: [rlock: {^pid, _, _}]}}} = :sys.get_state(c.rw_locks)
     assert :ok == unlock_f.()
@@ -150,10 +150,10 @@ defmodule Goblin.StoreTest do
     assert %{locks: locks} = :sys.get_state(c.rw_locks)
     assert locks == %{}
 
-    assert [] = Store.get_iterators(c.store, nil, :k0)
-    assert [{{_, _}, _}] = Store.get_iterators(c.store, nil, :k2)
-    assert [{{_, _}, _}] = Store.get_iterators(c.store, :k1, nil)
-    assert [{{_, _}, _}] = Store.get_iterators(c.store, :k0, :k3)
+    assert [] = Store.get_iterators(c.registry, nil, :k0)
+    assert [{{_, _}, _}] = Store.get_iterators(c.registry, nil, :k2)
+    assert [{{_, _}, _}] = Store.get_iterators(c.registry, :k1, nil)
+    assert [{{_, _}, _}] = Store.get_iterators(c.registry, :k0, :k3)
   end
 
   test "get_iterators/3 returns multiple iterators for multiple SSTs", c do
@@ -165,28 +165,28 @@ defmodule Goblin.StoreTest do
     {:ok, sst2} = SSTs.fetch_sst(file2)
     {:ok, sst3} = SSTs.fetch_sst(file3)
 
-    assert :ok == Store.put(c.store, sst1)
-    assert :ok == Store.put(c.store, sst2)
-    assert :ok == Store.put(c.store, sst3)
+    assert :ok == Store.put(c.registry, sst1)
+    assert :ok == Store.put(c.registry, sst2)
+    assert :ok == Store.put(c.registry, sst3)
 
-    iterators = Store.get_iterators(c.store, nil, nil)
+    iterators = Store.get_iterators(c.registry, nil, nil)
     assert length(iterators) == 3
 
-    iterators = Store.get_iterators(c.store, :b, :e)
+    iterators = Store.get_iterators(c.registry, :b, :e)
     assert length(iterators) == 3
 
-    iterators = Store.get_iterators(c.store, :a, :b)
+    iterators = Store.get_iterators(c.registry, :a, :b)
     assert length(iterators) == 1
 
-    iterators = Store.get_iterators(c.store, :g, :z)
+    iterators = Store.get_iterators(c.registry, :g, :z)
     assert length(iterators) == 0
   end
 
   test "store gets state from manifest on start", c do
     file = write_sst(c.tmp_dir, "foo", 0, 10, [{0, :k1, :v1}, {1, :k2, :v2}])
     {:ok, %{file: file, bloom_filter: bf} = sst} = SSTs.fetch_sst(file)
-    assert :ok == Goblin.Manifest.log_compaction(c.manifest, [], [file])
-    assert :ok == Store.put(c.store, sst)
+    assert :ok == Goblin.Manifest.log_compaction(c.registry, [], [file])
+    assert :ok == Store.put(c.registry, sst)
     assert %{ssts: [%{file: ^file, bloom_filter: ^bf}]} = :sys.get_state(c.store)
 
     stop_supervised!(c.db_id)

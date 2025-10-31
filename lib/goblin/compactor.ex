@@ -1,6 +1,7 @@
 defmodule Goblin.Compactor do
   @moduledoc false
   use GenServer
+  import Goblin.ProcessRegistry, only: [via: 1]
   require Logger
   alias Goblin.Compactor.Entry
   alias Goblin.Compactor.Level
@@ -10,9 +11,7 @@ defmodule Goblin.Compactor do
   alias Goblin.RWLocks
 
   defstruct [
-    :store,
-    :rw_locks,
-    :manifest,
+    :registry,
     :task_sup,
     :task_mod,
     :key_limit,
@@ -30,39 +29,37 @@ defmodule Goblin.Compactor do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
+    registry = opts[:registry]
+
     args =
       Keyword.take(opts, [
+        :registry,
         :key_limit,
         :level_limit,
-        :store,
-        :rw_locks,
-        :manifest,
         :task_sup,
         :task_mod
       ])
 
-    GenServer.start_link(__MODULE__, args, name: opts[:name])
+    GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
   @spec put(compactor(), Goblin.db_level_key(), data()) :: :ok
-  def put(compactor, level_key, data) do
-    GenServer.call(compactor, {:put, level_key, data})
+  def put(registry, level_key, data) do
+    GenServer.call(via(registry), {:put, level_key, data})
   end
 
   @spec is_compacting(compactor()) :: boolean()
-  def is_compacting(compactor) do
-    GenServer.call(compactor, :is_compacting)
+  def is_compacting(registry) do
+    GenServer.call(via(registry), :is_compacting)
   end
 
   @impl GenServer
   def init(args) do
     {:ok,
      %__MODULE__{
+       registry: args[:registry],
        key_limit: args[:key_limit],
        level_limit: args[:level_limit],
-       rw_locks: args[:rw_locks],
-       store: args[:store],
-       manifest: args[:manifest],
        task_sup: args[:task_sup],
        task_mod: args[:task_mod] || Task.Supervisor
      }}
@@ -184,11 +181,9 @@ defmodule Goblin.Compactor do
 
   defp compact(state, source_level, target_level, retry \\ 5) do
     %{
+      registry: registry,
       levels: levels,
       key_limit: key_limit,
-      store: store,
-      manifest: manifest,
-      rw_locks: rw_locks,
       task_sup: task_sup,
       task_mod: task_mod
     } = state
@@ -228,11 +223,11 @@ defmodule Goblin.Compactor do
                  data,
                  level_key,
                  key_limit,
-                 fn -> Store.new_file(store) end
+                 fn -> Store.new_file(registry) end
                ),
-             :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, & &1.file)),
-             :ok <- put_new_files_in_store(new, target_level.level_key, store),
-             :ok <- remove_old_files(sources ++ old, store, rw_locks) do
+             :ok <- Manifest.log_compaction(registry, sources ++ old, Enum.map(new, & &1.file)),
+             :ok <- put_new_files_in_store(new, target_level.level_key, registry),
+             :ok <- remove_old_files(sources ++ old, registry) do
           {:ok, sources ++ old, source_level_key, target_level.level_key}
         end
       end)
@@ -261,19 +256,19 @@ defmodule Goblin.Compactor do
 
   defp put_new_files_in_store([], _level_key, _store), do: :ok
 
-  defp put_new_files_in_store([sst | ssts], level_key, store) do
-    Store.put(store, sst)
-    put_new_files_in_store(ssts, level_key, store)
+  defp put_new_files_in_store([sst | ssts], level_key, registry) do
+    Store.put(registry, sst)
+    put_new_files_in_store(ssts, level_key, registry)
   end
 
-  defp remove_old_files([], _store, _rw_locks), do: :ok
+  defp remove_old_files([], _registry), do: :ok
 
-  defp remove_old_files([file | old], store, rw_locks) do
-    with :ok <- Store.remove(store, file),
-         :ok <- RWLocks.wlock(rw_locks, file),
+  defp remove_old_files([file | old], registry) do
+    with :ok <- Store.remove(registry, file),
+         :ok <- RWLocks.wlock(registry, file),
          :ok <- SSTs.delete(file),
-         :ok <- RWLocks.unlock(rw_locks, file) do
-      remove_old_files(old, store, rw_locks)
+         :ok <- RWLocks.unlock(registry, file) do
+      remove_old_files(old, registry)
     end
   end
 

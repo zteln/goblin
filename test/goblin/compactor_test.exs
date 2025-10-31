@@ -37,7 +37,7 @@ defmodule Goblin.CompactorTest do
   end
 
   test "put/4 puts file in level queue for compaction", c do
-    assert :ok == Compactor.put(c.compactor, 0, {"foo", 0, 1, {2, 3}})
+    assert :ok == Compactor.put(c.registry, 0, {"foo", 0, 1, {2, 3}})
 
     assert %{
              levels: %{
@@ -49,10 +49,10 @@ defmodule Goblin.CompactorTest do
   end
 
   test "level with size exceeding level_limit causes a merge", c do
-    assert :ok == Compactor.put(c.compactor, 0, {"foo", 0, 50, {2, 3}})
+    assert :ok == Compactor.put(c.registry, 0, {"foo", 0, 50, {2, 3}})
     assert %{levels: %{0 => %Level{compacting_ref: nil}}} = :sys.get_state(c.compactor)
 
-    assert :ok == Compactor.put(c.compactor, 0, {"bar", 1, 50, {5, 7}})
+    assert :ok == Compactor.put(c.registry, 0, {"bar", 1, 50, {5, 7}})
 
     assert %{
              levels: %{
@@ -69,8 +69,8 @@ defmodule Goblin.CompactorTest do
     file2 = write_sst(c.tmp_dir, "bar", 0, 10, [{2, 3, :v3}, {3, 4, :v4}])
     %{size: size1} = File.stat!(file1)
     %{size: size2} = File.stat!(file2)
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 2}})
-    assert :ok == Compactor.put(c.compactor, 0, {file2, 2, size2, {3, 4}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 2}})
+    assert :ok == Compactor.put(c.registry, 0, {file2, 2, size2, {3, 4}})
     assert File.exists?(file1)
     assert File.exists?(file2)
 
@@ -112,14 +112,13 @@ defmodule Goblin.CompactorTest do
 
     log =
       capture_log(fn ->
-        assert :ok == Compactor.put(c.compactor, 1, {file, 0, size, {1, 2}})
+        assert :ok == Compactor.put(c.registry, 1, {file, 0, size, {1, 2}})
 
         assert_receive {:DOWN, _ref, :process, _pid, {:error, :failed_to_compact}}
       end)
 
     assert log =~ "Failed to compact with reason: :failed_to_compact. Retrying..."
     assert log =~ "Failed to compact after 5 attempts with reason: :failed_to_compact. Exiting."
-    assert log =~ "GenServer :compactor_test_compactor terminating"
   end
 
   @tag db_opts: [task_mod: FakeTask]
@@ -128,8 +127,8 @@ defmodule Goblin.CompactorTest do
     file2 = write_sst(c.tmp_dir, "bar", 1, 10, [{2, 3, :v3}, {3, 4, :v4}])
     %{size: size1} = File.stat!(file1)
     %{size: size2} = File.stat!(file2)
-    assert :ok == Compactor.put(c.compactor, 1, {file1, 0, size1, {1, 2}})
-    assert :ok == Compactor.put(c.compactor, 1, {file2, 2, size2, {3, 4}})
+    assert :ok == Compactor.put(c.registry, 1, {file1, 0, size1, {1, 2}})
+    assert :ok == Compactor.put(c.registry, 1, {file2, 2, size2, {3, 4}})
 
     assert %{
              levels: %{
@@ -180,9 +179,9 @@ defmodule Goblin.CompactorTest do
     %{size: size2} = File.stat!(file2)
     %{size: size3} = File.stat!(file3)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 1}})
-    assert :ok == Compactor.put(c.compactor, 0, {file2, 1, size2, {2, 2}})
-    assert :ok == Compactor.put(c.compactor, 0, {file3, 2, size3, {3, 3}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 0, {file2, 1, size2, {2, 2}})
+    assert :ok == Compactor.put(c.registry, 0, {file3, 2, size3, {3, 3}})
 
     assert_eventually do
       assert %{
@@ -210,8 +209,8 @@ defmodule Goblin.CompactorTest do
     %{size: size1} = File.stat!(file1)
     %{size: size2} = File.stat!(file2)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 2}})
-    assert :ok == Compactor.put(c.compactor, 0, {file2, 2, size2, {1, 3}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 2}})
+    assert :ok == Compactor.put(c.registry, 0, {file2, 2, size2, {1, 3}})
 
     assert_eventually do
       assert %{
@@ -241,9 +240,9 @@ defmodule Goblin.CompactorTest do
     %{size: size2} = File.stat!(file2)
     %{size: size3} = File.stat!(file3)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 2}})
-    assert :ok == Compactor.put(c.compactor, 0, {file2, 2, size2, {3, 3}})
-    assert :ok == Compactor.put(c.compactor, 0, {file3, 3, size3, {4, 4}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 2}})
+    assert :ok == Compactor.put(c.registry, 0, {file2, 2, size2, {3, 3}})
+    assert :ok == Compactor.put(c.registry, 0, {file3, 3, size3, {4, 4}})
 
     assert_eventually do
       state = :sys.get_state(c.compactor)
@@ -268,7 +267,7 @@ defmodule Goblin.CompactorTest do
     file1 = write_sst(c.tmp_dir, "exp1", 0, 10, [{0, 1, :v1}])
     %{size: size1} = File.stat!(file1)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 1}})
 
     assert_eventually do
       assert %{levels: %{1 => %Level{}}} = :sys.get_state(c.compactor)
@@ -277,7 +276,7 @@ defmodule Goblin.CompactorTest do
     file2 = write_sst(c.tmp_dir, "exp2", 1, 10, Enum.map(1..100, &{&1, &1, :v}))
     %{size: size2} = File.stat!(file2)
 
-    assert :ok == Compactor.put(c.compactor, 1, {file2, 0, size2, {1, 100}})
+    assert :ok == Compactor.put(c.registry, 1, {file2, 0, size2, {1, 100}})
 
     assert_eventually do
       assert %{levels: %{2 => %Level{}}} = :sys.get_state(c.compactor)
@@ -290,8 +289,8 @@ defmodule Goblin.CompactorTest do
     %{size: size1} = File.stat!(file1)
     %{size: size2} = File.stat!(file2)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 1}})
-    assert :ok == Compactor.put(c.compactor, 0, {file2, 1, size2, {2, 2}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 0, {file2, 1, size2, {2, 2}})
 
     assert_eventually do
       state = :sys.get_state(c.compactor)
@@ -313,13 +312,13 @@ defmodule Goblin.CompactorTest do
     %{size: size1} = File.stat!(file1)
     %{size: size2} = File.stat!(file2)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 1}})
 
     assert_eventually do
       assert %{levels: %{1 => %Level{}}} = :sys.get_state(c.compactor)
     end
 
-    assert :ok == Compactor.put(c.compactor, 2, {file2, 0, size2, {1, 100}})
+    assert :ok == Compactor.put(c.registry, 2, {file2, 0, size2, {1, 100}})
 
     assert_eventually do
       assert %{
@@ -336,7 +335,7 @@ defmodule Goblin.CompactorTest do
     file1 = write_sst(c.tmp_dir, "ignore", 1, 10, [{0, 1, :v1}])
     %{size: size1} = File.stat!(file1)
 
-    assert :ok == Compactor.put(c.compactor, 1, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 1, {file1, 0, size1, {1, 1}})
 
     send(c.compactor, :unknown_message)
     send(c.compactor, {:unknown, :tuple})
@@ -355,8 +354,8 @@ defmodule Goblin.CompactorTest do
     %{size: size1} = File.stat!(file1)
     %{size: size2} = File.stat!(file2)
 
-    assert :ok == Compactor.put(c.compactor, 0, {file1, 0, size1, {1, 1}})
-    assert :ok == Compactor.put(c.compactor, 0, {file2, 1, size2, {2, 2}})
+    assert :ok == Compactor.put(c.registry, 0, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 0, {file2, 1, size2, {2, 2}})
 
     assert_eventually do
       assert %{
@@ -380,15 +379,15 @@ defmodule Goblin.CompactorTest do
     %{size: size2} = File.stat!(file2)
     %{size: size3} = File.stat!(file3)
 
-    assert :ok == Compactor.put(c.compactor, 1, {file1, 0, size1, {1, 1}})
-    assert :ok == Compactor.put(c.compactor, 1, {file2, 1, size2, {10, 10}})
+    assert :ok == Compactor.put(c.registry, 1, {file1, 0, size1, {1, 1}})
+    assert :ok == Compactor.put(c.registry, 1, {file2, 1, size2, {10, 10}})
 
     assert_eventually do
       assert %{levels: %{1 => %Level{entries: entries}}} = :sys.get_state(c.compactor)
       assert map_size(entries) == 2
     end
 
-    assert :ok == Compactor.put(c.compactor, 0, {file3, 2, size3, {5, 5}})
+    assert :ok == Compactor.put(c.registry, 0, {file3, 2, size3, {5, 5}})
 
     assert_eventually do
       assert %{
@@ -405,8 +404,8 @@ defmodule Goblin.CompactorTest do
   end
 
   test "put/4 with different priorities maintains order", c do
-    assert :ok == Compactor.put(c.compactor, 0, {"high_prio", 100, 10, {1, 10}})
-    assert :ok == Compactor.put(c.compactor, 0, {"low_prio", 50, 10, {11, 20}})
+    assert :ok == Compactor.put(c.registry, 0, {"high_prio", 100, 10, {1, 10}})
+    assert :ok == Compactor.put(c.registry, 0, {"low_prio", 50, 10, {11, 20}})
 
     assert %{
              levels: %{
@@ -422,11 +421,11 @@ defmodule Goblin.CompactorTest do
 
   @tag db_opts: [task_mod: FakeTask]
   test "is_compacting/1 returns true when compacting, false otherwise", c do
-    refute Compactor.is_compacting(c.compactor)
+    refute Compactor.is_compacting(c.registry)
 
-    assert :ok == Compactor.put(c.compactor, 0, {"foo", 0, 50, {2, 3}})
-    assert :ok == Compactor.put(c.compactor, 0, {"bar", 1, 50, {5, 7}})
+    assert :ok == Compactor.put(c.registry, 0, {"foo", 0, 50, {2, 3}})
+    assert :ok == Compactor.put(c.registry, 0, {"bar", 1, 50, {5, 7}})
 
-    assert Compactor.is_compacting(c.compactor)
+    assert Compactor.is_compacting(c.registry)
   end
 end

@@ -33,12 +33,14 @@ defmodule TestHelper do
       {Goblin.WAL, wal, _, _},
       {Goblin.Manifest, manifest, _, _},
       {Goblin.RWLocks, rw_locks, _, _},
-      {_, _, _, _}
+      {_, _, _, _},
+      {registry, _, _, _}
     ] = Supervisor.which_children(db)
 
     %{
       db: db,
       db_id: id,
+      registry: registry,
       writer: writer,
       store: store,
       compactor: compactor,

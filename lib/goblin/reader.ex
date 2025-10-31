@@ -3,10 +3,10 @@ defmodule Goblin.Reader do
   alias Goblin.Writer
   alias Goblin.Store
 
-  @spec get(Goblin.db_key(), Writer.writer(), Store.store()) ::
+  @spec get(Goblin.db_key(), atom()) ::
           Goblin.db_value() | :not_found
-  def get(key, writer, store) do
-    case try_writer(writer, key) do
+  def get(key, registry) do
+    case try_writer(registry, key) do
       {:ok, {:value, _seq, :tombstone}} ->
         :not_found
 
@@ -14,25 +14,25 @@ defmodule Goblin.Reader do
         {seq, value}
 
       :not_found ->
-        try_store(store, key)
+        try_store(registry, key)
     end
   end
 
-  @spec get_multi([Goblin.db_key()], Writer.writer(), Store.store()) :: [
+  @spec get_multi([Goblin.db_key()], atom()) :: [
           {Goblin.db_key(), Goblin.db_sequence(), Goblin.db_value()} | :not_found
         ]
-  def get_multi(keys, writer, store) do
-    {found, not_found} = try_writer(writer, keys)
-    found ++ try_store(store, not_found)
+  def get_multi(keys, registry) do
+    {found, not_found} = try_writer(registry, keys)
+    found ++ try_store(registry, not_found)
   end
 
-  @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, Writer.writer(), Store.store()) ::
+  @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, atom()) ::
           Enumerable.t()
-  def select(min, max, writer, store) do
+  def select(min, max, registry) do
     Stream.resource(
       fn ->
-        mem_iterators = init_mem_iterators(writer)
-        {level_iterators, defer} = init_store_iterators(store, min, max)
+        mem_iterators = init_mem_iterators(registry)
+        {level_iterators, defer} = init_store_iterators(registry, min, max)
         iterators = advance_until(mem_iterators ++ level_iterators, min)
         first = take_smallest(iterators)
         iterators = advance(iterators, first)
@@ -67,9 +67,8 @@ defmodule Goblin.Reader do
     )
   end
 
-  defp init_mem_iterators(writer) do
-    writer
-    |> Writer.get_iterators()
+  defp init_mem_iterators(registry) do
+    Writer.get_iterators(registry)
     |> Enum.flat_map(fn {start_f, iter_f} ->
       iter = start_f.()
 
@@ -80,9 +79,8 @@ defmodule Goblin.Reader do
     end)
   end
 
-  defp init_store_iterators(store, min, max) do
-    store
-    |> Store.get_iterators(min, max)
+  defp init_store_iterators(registry, min, max) do
+    Store.get_iterators(registry, min, max)
     |> Enum.reduce({[], []}, fn {{start_f, iter_f}, unlock_f}, {level_iterators, defer} ->
       iter = start_f.()
 
@@ -140,11 +138,11 @@ defmodule Goblin.Reader do
     end
   end
 
-  defp try_writer(writer, keys) when is_list(keys), do: Writer.get_multi(writer, keys)
-  defp try_writer(writer, key), do: Writer.get(writer, key)
+  defp try_writer(registry, keys) when is_list(keys), do: Writer.get_multi(registry, keys)
+  defp try_writer(registry, key), do: Writer.get(registry, key)
 
-  defp try_store(store, keys) when is_list(keys) do
-    keys_and_ssts = Store.get(store, keys)
+  defp try_store(registry, keys) when is_list(keys) do
+    keys_and_ssts = Store.get(registry, keys)
 
     keys_and_ssts
     |> Task.async_stream(fn {key, ssts} ->
@@ -158,8 +156,8 @@ defmodule Goblin.Reader do
     |> Enum.to_list()
   end
 
-  defp try_store(store, key) do
-    [{_key, ssts}] = Store.get(store, key)
+  defp try_store(registry, key) do
+    [{_key, ssts}] = Store.get(registry, key)
     async_read_ssts(ssts)
   end
 
