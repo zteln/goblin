@@ -306,8 +306,7 @@ defmodule Goblin do
     registry = name(db, ProcessRegistry)
 
     Goblin.Reader.get_multi(keys, registry)
-    |> Enum.reject(&(&1 == :not_found))
-    |> Enum.map(fn {key, _, value} -> {key, value} end)
+    |> Enum.map(fn {_seq, key, value} -> {key, value} end)
     |> List.keysort(0)
   end
 

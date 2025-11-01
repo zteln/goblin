@@ -37,17 +37,17 @@ defmodule Goblin.ReaderTest do
       assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
-    assert for(n <- 5..1//-1, do: {n, n - 1, "v-#{n}"}) ==
+    assert for(n <- 5..1//-1, do: {n - 1, n, "v-#{n}"}) ==
              Goblin.Reader.get_multi(Enum.to_list(1..5), c.registry)
 
     for n <- 6..10 do
       assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
-    assert for(n <- 10..1//-1, do: {n, n - 1, "v-#{n}"}) ==
+    assert for(n <- 10..1//-1, do: {n - 1, n, "v-#{n}"}) ==
              Goblin.Reader.get_multi(Enum.to_list(1..10), c.registry)
 
-    assert for(n <- 5..2//-1, do: {n, n - 1, "v-#{n}"}) ==
+    assert for(n <- 5..2//-1, do: {n - 1, n, "v-#{n}"}) ==
              Goblin.Reader.get_multi(Enum.to_list(2..5), c.registry)
   end
 
@@ -56,18 +56,16 @@ defmodule Goblin.ReaderTest do
       assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
-    assert for(_n <- 10..6//-1, do: :not_found) ==
-             Goblin.Reader.get_multi(Enum.to_list(6..10), c.registry)
+    assert [] == Goblin.Reader.get_multi(Enum.to_list(6..10), c.registry)
 
     for n <- 6..10 do
       assert :ok == Goblin.Writer.put(c.registry, n, "v-#{n}")
     end
 
     assert [
-             {10, 9, "v-10"},
-             {9, 8, "v-9"},
-             {8, 7, "v-8"},
-             :not_found
+             {9, 10, "v-10"},
+             {8, 9, "v-9"},
+             {7, 8, "v-8"}
            ] == Goblin.Reader.get_multi(Enum.to_list(8..11), c.registry)
   end
 

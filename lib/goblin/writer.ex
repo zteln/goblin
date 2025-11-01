@@ -167,7 +167,7 @@ defmodule Goblin.Writer do
       Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
         case search_for_key(mem_tables, key) do
           :not_found -> {found, [key | not_found]}
-          {:ok, {:value, seq, value}} -> {[{key, seq, value} | found], not_found}
+          {:ok, {:value, seq, value}} -> {[{seq, key, value} | found], not_found}
         end
       end)
 

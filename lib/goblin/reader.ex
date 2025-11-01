@@ -19,11 +19,18 @@ defmodule Goblin.Reader do
   end
 
   @spec get_multi([Goblin.db_key()], atom()) :: [
-          {Goblin.db_key(), Goblin.db_sequence(), Goblin.db_value()} | :not_found
+          {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
         ]
   def get_multi(keys, registry) do
     {found, not_found} = try_writer(registry, keys)
-    found ++ try_store(registry, not_found)
+    result = found ++ try_store(registry, not_found)
+
+    result
+    |> Enum.map(fn
+      {_seq, _key, :tombstone} -> :not_found
+      other -> other
+    end)
+    |> Enum.reject(&(&1 == :not_found))
   end
 
   @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, atom()) ::
@@ -148,7 +155,7 @@ defmodule Goblin.Reader do
     |> Task.async_stream(fn {key, ssts} ->
       case async_read_ssts(ssts) do
         :not_found -> :not_found
-        {seq, value} -> {key, seq, value}
+        {seq, value} -> {seq, key, value}
       end
     end)
     |> Stream.filter(&match?({:ok, _}, &1))
