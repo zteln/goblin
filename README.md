@@ -129,6 +129,19 @@ end)
 
 Transactions provide snapshot isolation. If a conflict is detected (another transaction modified the same keys), the transaction returns `{:error, :in_conflict}`.
 
+### PubSub
+
+```elixir
+Goblin.subscribe(db)
+# => :ok
+
+Goblin.unsubscribe(db)
+# => :ok
+```
+
+Processes can subscribe to database writes.
+When writes are committed to the database MemTable then subscribers receive either `{:put, key, value}` or `{:remove, key}`.
+
 ### Using with a supervision tree
 
 ```elixir
