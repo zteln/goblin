@@ -440,7 +440,7 @@ defmodule Goblin do
     end
   end
 
-  @doc"""
+  @doc """
   Unsubscribes the current process for future database writes.
 
   ## Parameters
@@ -494,8 +494,9 @@ defmodule Goblin do
 
   @impl true
   def init(args) do
-    registry = name(args[:name] || __MODULE__, ProcessRegistry)
-    pub_sub = name(args[:name] || __MODULE__, PubSub)
+    name = args[:name] || __MODULE__
+    registry = name(name, ProcessRegistry)
+    pub_sub = name(name, PubSub)
 
     children =
       [
@@ -504,6 +505,7 @@ defmodule Goblin do
         {Goblin.ProcessSupervisor,
          Keyword.merge(
            args,
+           name: name,
            registry: registry,
            pub_sub: pub_sub
          )}
