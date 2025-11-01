@@ -10,19 +10,20 @@ defmodule Goblin.Writer do
   alias Goblin.WAL
   alias Goblin.Manifest
   alias Goblin.SSTs
+  alias Goblin.PubSub
 
   @flush_level 0
 
   defstruct [
     :registry,
+    :pub_sub,
     :task_sup,
     :task_mod,
     :key_limit,
     seq: 0,
     mem_table: MemTable.new(),
     transactions: %{},
-    flushing: [],
-    subscribers: %{}
+    flushing: []
   ]
 
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
@@ -32,6 +33,7 @@ defmodule Goblin.Writer do
     args =
       Keyword.take(opts, [
         :registry,
+        :pub_sub,
         :task_sup,
         :task_mod,
         :key_limit
@@ -39,10 +41,6 @@ defmodule Goblin.Writer do
 
     GenServer.start_link(__MODULE__, args, name: via(registry))
   end
-
-  # def subscribe(server, pid \\ self()) do
-  #   GenServer.call(server, {:subscribe, pid})
-  # end
 
   @spec get(Goblin.registry(), Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
   def get(registry, key) do
@@ -101,7 +99,7 @@ defmodule Goblin.Writer do
   @spec transaction(Goblin.registry(), (Transaction.t() -> Goblin.transaction_return())) ::
           term() | :ok | {:error, term()}
   def transaction(registry, f) do
-    writer = via(registry) 
+    writer = via(registry)
 
     with {:ok, tx} <- start_transaction(writer, self()),
          {:ok, tx, reply} <- run_transaction(writer, f, tx),
@@ -139,6 +137,7 @@ defmodule Goblin.Writer do
     {:ok,
      %__MODULE__{
        registry: args[:registry],
+       pub_sub: args[:pub_sub],
        task_sup: args[:task_sup],
        task_mod: args[:task_mod] || Task.Supervisor,
        key_limit: args[:key_limit],
@@ -215,6 +214,8 @@ defmodule Goblin.Writer do
           WAL.append(state.registry, writes)
           tx_mem_table = MemTable.advance_seq(tx.mem_table, state.seq)
           mem_table = MemTable.merge(state.mem_table, tx_mem_table)
+
+          publish_writes(state, writes)
 
           state = %{
             state
@@ -357,6 +358,24 @@ defmodule Goblin.Writer do
       end)
 
     {ref, mem_table, rotated_wal, retry}
+  end
+
+  defp publish_writes(state, writes) do
+    %{
+      pub_sub: pub_sub,
+      task_mod: task_mod,
+      task_sup: task_sup
+    } = state
+
+    task_mod.async(task_sup, fn ->
+      writes =
+        Enum.map(writes, fn
+          {_seq, :put, k, v} -> {:put, k, v}
+          {_seq, :remove, k} -> {:remove, k}
+        end)
+
+      PubSub.publish(pub_sub, writes)
+    end)
   end
 
   defp put_in_store([], _store), do: :ok

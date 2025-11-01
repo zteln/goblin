@@ -2,6 +2,7 @@ defmodule TestHelper do
   @moduledoc false
   require ExUnit.Assertions
   require ExUnit.Callbacks
+  require Goblin.ProcessRegistry
 
   defmacro __using__(_) do
     quote do
@@ -27,15 +28,20 @@ defmodule TestHelper do
       )
 
     [
+      {proc_sup, _, _, _},
+      {registry, _, _, _},
+      {_, _, _, _}
+    ] = Supervisor.which_children(db)
+
+    [
       {Goblin.Writer, writer, _, _},
       {Goblin.Store, store, _, _},
       {Goblin.Compactor, compactor, _, _},
       {Goblin.WAL, wal, _, _},
       {Goblin.Manifest, manifest, _, _},
       {Goblin.RWLocks, rw_locks, _, _},
-      {_, _, _, _},
-      {registry, _, _, _}
-    ] = Supervisor.which_children(db)
+      {_, _, _, _}
+    ] = Supervisor.which_children(Goblin.ProcessRegistry.via(registry, proc_sup))
 
     %{
       db: db,

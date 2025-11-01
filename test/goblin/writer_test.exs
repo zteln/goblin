@@ -511,4 +511,52 @@ defmodule Goblin.WriterTest do
                {:commit, tx, :ok}
              end)
   end
+
+  test "commits are published to subscribers", c do
+    spawn(fn ->
+      Goblin.subscribe(c.db)
+
+      assert_receive {:put, :k, :v}, 500
+      assert_receive {:remove, :l}, 500
+      assert_receive {:put, :k1, :v1}, 500
+      assert_receive {:put, :k2, :v2}, 500
+      assert_receive {:put, :k3, :v3}, 500
+      assert_receive {:remove, :l1}, 500
+      assert_receive {:remove, :l2}, 500
+      assert_receive {:remove, :l3}, 500
+    end)
+
+    spawn(fn ->
+      Goblin.subscribe(c.db)
+
+      assert_receive {:put, :k, :v}, 500
+      assert_receive {:remove, :l}, 500
+
+      Goblin.unsubscribe(c.db)
+
+      refute_receive {:put, :k1, :v1}, 500
+      refute_receive {:put, :k2, :v2}, 500
+      refute_receive {:put, :k3, :v3}, 500
+      refute_receive {:remove, :l1}, 500
+      refute_receive {:remove, :l2}, 500
+      refute_receive {:remove, :l3}, 500
+    end)
+
+    assert :ok == Writer.put(c.registry, :k, :v)
+    assert :ok == Writer.remove(c.registry, :l)
+
+    spawn(fn ->
+      Goblin.subscribe(c.db)
+
+      assert_receive {:put, :k1, :v1}, 500
+      assert_receive {:put, :k2, :v2}, 500
+      assert_receive {:put, :k3, :v3}, 500
+      assert_receive {:remove, :l1}, 500
+      assert_receive {:remove, :l2}, 500
+      assert_receive {:remove, :l3}, 500
+    end)
+
+    assert :ok == Writer.put_multi(c.registry, k1: :v1, k2: :v2, k3: :v3)
+    assert :ok == Writer.remove_multi(c.registry, [:l1, :l2, :l3])
+  end
 end
