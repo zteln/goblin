@@ -384,7 +384,7 @@ defmodule Goblin do
 
   ## Parameters
 
-  - `db` - The dabase server (PID or registered name)
+  - `db` - The database server (PID or registered name)
 
   ## Returns
 
@@ -404,6 +404,34 @@ defmodule Goblin do
   #
   # end
 
+  @doc """
+  Subscribes the current process for database writes. 
+  When a write occurs then either `{:put, key, value}` or `{:remove, key}` is dispatched to the subscribers mailbox.
+  Batch writes result in separate messages.
+
+  ## Parameters
+
+  - `db` - The database server (pid or registered name)
+
+  ## Returns
+
+  - `:ok` if successful, `{:error, reason}` otherwise
+
+  ## Examples
+
+      Goblin.subscribe(db)
+      # => :ok
+
+      Goblin.put(db, :user_1, %{name: "Alice"})
+      
+      flush()
+      # => {:put, :user_1, %{name: "Alice"}}
+
+      Goblin.remove(db, :user_1)
+      
+      flush()
+      # => {:remove, :user_1}
+  """
   @spec subscribe(db_server()) :: :ok | {:error, term()}
   def subscribe(db) do
     pub_sub = name(db, PubSub)
@@ -413,6 +441,17 @@ defmodule Goblin do
     end
   end
 
+  @doc"""
+  Unsubscribes the current process for future database writes.
+
+  ## Parameters
+
+  - `db` - The database server (pid or registered name)
+
+  ## Returns
+
+  - `:ok`
+  """
   @spec unsubscribe(db_server()) :: :ok | {:error, term()}
   def unsubscribe(db) do
     pub_sub = name(db, PubSub)
