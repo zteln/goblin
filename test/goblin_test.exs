@@ -210,4 +210,63 @@ defmodule GoblinTest do
       assert Goblin.is_flushing(c.db)
     end
   end
+
+  describe "subscribe/1, unsubscribe/1" do
+    setup_db(@db_opts)
+
+    test "subscribed process receives write updates", c do
+      assert :ok == Goblin.subscribe(c.db)
+
+      Goblin.put(c.db, :k, :v)
+
+      assert_receive {:put, :k, :v}
+
+      Goblin.remove(c.db, :k)
+
+      assert_receive {:remove, :k}
+    end
+
+    test "unsubscribed process receives no updates", c do
+      assert :ok == Goblin.subscribe(c.db)
+
+      Goblin.put(c.db, :k, :v)
+
+      assert_receive {:put, :k, :v}
+
+      assert :ok == Goblin.unsubscribe(c.db)
+
+      Goblin.remove(c.db, :k)
+
+      refute_receive {:remove, :k}
+    end
+
+    test "pubsub is separate from different databases", c do
+      parent = self()
+      {:ok, db} = Goblin.start_link(name: Foo, db_dir: Path.join(c.tmp_dir, "foo"))
+
+      spawn(fn -> 
+        assert :ok == Goblin.subscribe(c.db)
+
+        assert_receive {:put, :k1, :v1}
+        refute_receive {:remove, :k2}
+
+        send(parent, :done1)
+      end)
+
+      spawn(fn -> 
+        assert :ok == Goblin.subscribe(db)
+
+        refute_receive {:put, :k1, :v1}
+        assert_receive {:remove, :k2}
+
+        send(parent, :done2)
+      end)
+
+      Goblin.put(c.db, :k1, :v1)
+      Goblin.remove(db, :k2)
+
+      assert_receive :done1, 200
+      assert_receive :done2, 200
+    end
+  end
 end
