@@ -18,6 +18,7 @@ defmodule Goblin.ProcessSupervisor do
     key_limit = args[:key_limit] || @default_key_limit
     level_limit = args[:level_limit] || @default_level_limit
 
+    name = args[:name]
     registry = args[:registry]
     pub_sub = args[:pub_sub]
     task_sup = via(registry, Goblin.TaskSupervisor)
@@ -25,8 +26,20 @@ defmodule Goblin.ProcessSupervisor do
     children = [
       {Task.Supervisor, name: task_sup},
       {Goblin.RWLocks, Keyword.merge(args, registry: registry)},
-      {Goblin.Manifest, Keyword.merge(args, registry: registry, db_dir: db_dir)},
-      {Goblin.WAL, Keyword.merge(args, registry: registry, db_dir: db_dir)},
+      {Goblin.Manifest,
+       Keyword.merge(
+         args,
+         name: name,
+         registry: registry,
+         db_dir: db_dir
+       )},
+      {Goblin.WAL,
+       Keyword.merge(
+         args,
+         name: name,
+         registry: registry,
+         db_dir: db_dir
+       )},
       {Goblin.Compactor,
        Keyword.merge(args,
          registry: registry,

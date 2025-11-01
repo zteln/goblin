@@ -3,7 +3,6 @@ defmodule Goblin.Manifest do
   use GenServer
   import Goblin.ProcessRegistry, only: [via: 1]
 
-  @manifest_name :goblin_manifest
   @manifest_file "manifest.goblin"
   @wal_file "wal.goblin"
   @tmp_suffix ".goblin.tmp"
@@ -33,8 +32,8 @@ defmodule Goblin.Manifest do
     args =
       Keyword.take(opts, [
         :db_dir,
+        :name,
         :manifest_file,
-        :manifest_name,
         :manifest_max_size
       ])
 
@@ -74,7 +73,7 @@ defmodule Goblin.Manifest do
 
   @impl GenServer
   def init(args) do
-    name = args[:manifest_name] || @manifest_name
+    name = Module.concat(args[:name], Manifest)
     file = args[:manifest_file] || @manifest_file
     db_dir = args[:db_dir]
     file = Path.join(db_dir, file)

@@ -4,8 +4,6 @@ defmodule Goblin.WAL do
   import Goblin.ProcessRegistry, only: [via: 1]
 
   @default_sync_interval 200
-  @log_name :goblin_wal
-  @ro_log_name :goblin_wal_ro
   @log_file "wal.goblin"
   @rotated_log_suffix ".rot"
 
@@ -15,6 +13,7 @@ defmodule Goblin.WAL do
     :last_sync,
     :file,
     :name,
+    :ro_name,
     rotated_files: [],
     buffer: [],
     waiting_for_sync?: false
@@ -23,7 +22,7 @@ defmodule Goblin.WAL do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     registry = opts[:registry]
-    args = Keyword.take(opts, [:sync_interval, :wal_name, :db_dir])
+    args = Keyword.take(opts, [:name, :sync_interval, :db_dir])
     GenServer.start_link(__MODULE__, args, name: via(registry))
   end
 
@@ -55,7 +54,8 @@ defmodule Goblin.WAL do
 
   @impl GenServer
   def init(args) do
-    name = args[:wal_name] || @log_name
+    name = Module.concat(args[:name], WAL)
+    ro_name = Module.concat(args[:name], WALRO)
     file = Path.join(args[:db_dir], @log_file)
     sync_interval = args[:sync_interval] || @default_sync_interval
 
@@ -64,6 +64,7 @@ defmodule Goblin.WAL do
         {:ok,
          %__MODULE__{
            name: name,
+           ro_name: ro_name,
            file: file,
            log: log,
            sync_interval: sync_interval,
@@ -118,7 +119,7 @@ defmodule Goblin.WAL do
   end
 
   def handle_call(:recover, _from, state) do
-    {:reply, recover_writes(state.log, state.file), state}
+    {:reply, recover_writes(state.log, state.ro_name, state.file), state}
   end
 
   @impl GenServer
@@ -194,26 +195,26 @@ defmodule Goblin.WAL do
     end
   end
 
-  defp recover_writes(log, file) do
-    with {:ok, rotated_writes} <- recover_rotated_writes(file),
+  defp recover_writes(log, ro_log, file) do
+    with {:ok, rotated_writes} <- recover_rotated_writes(file, ro_log),
          {:ok, writes} <- recover_logs(log) do
       {:ok, rotated_writes ++ [{nil, writes}]}
     end
   end
 
-  defp recover_rotated_writes(file) do
+  defp recover_rotated_writes(file, ro_log) do
     file
     |> rotated_files()
     |> Enum.reduce_while({:ok, []}, fn rotated_file, {:ok, acc} ->
-      case get_writes(rotated_file) do
+      case get_writes(rotated_file, ro_log) do
         {:ok, writes} -> {:cont, {:ok, [{rotated_file, writes} | acc]}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp get_writes(file) do
-    with {:ok, log} <- open_log(file, @ro_log_name, mode: :read_only),
+  defp get_writes(file, ro_log) do
+    with {:ok, log} <- open_log(file, ro_log, mode: :read_only),
          {:ok, writes} <- recover_logs(log),
          :ok <- close_log(log) do
       {:ok, writes}
