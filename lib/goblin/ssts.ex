@@ -18,10 +18,7 @@ defmodule Goblin.SSTs do
 
     result =
       with :ok <- valid_ss_table(disk),
-           {:ok, {_, _, _, key_range_pos, key_range_size, _, _, no_of_blocks, _, _}} <-
-             read_metadata(disk),
-           {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
-           :ok <- key_in_range(key_range, key) do
+           {:ok, {_, _, _, _, _, _, _, no_of_blocks, _, _}} <- read_metadata(disk) do
         binary_search(disk, key, 0, no_of_blocks)
       end
 
@@ -401,9 +398,6 @@ defmodule Goblin.SSTs do
       {:ok, disk, bloom_filter, byte_size(footer)}
     end
   end
-
-  defp key_in_range({smallest, largest}, key) when key >= smallest and key <= largest, do: :ok
-  defp key_in_range(_, _), do: :error
 
   defp switch(to_switch, acc \\ [])
   defp switch([], acc), do: {:ok, acc}

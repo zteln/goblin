@@ -165,6 +165,7 @@ defmodule Goblin.Store do
   defp filter_ssts(ssts, key, caller, registry) do
     ssts
     |> Enum.filter(&BloomFilter.is_member(&1.bloom_filter, key))
+    |> Enum.filter(&key_in_range(&1.key_range, key))
     |> Enum.flat_map(fn sst ->
       reader = fn -> SSTs.find(sst.file, key) end
 
@@ -173,6 +174,10 @@ defmodule Goblin.Store do
         _ -> []
       end
     end)
+  end
+
+  defp key_in_range({min, max}, key) do
+    key >= min and key <= max
   end
 
   defp read_pair(file, caller, reader, registry) do

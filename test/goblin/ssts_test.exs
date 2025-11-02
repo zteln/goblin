@@ -71,20 +71,21 @@ defmodule Goblin.SSTsTest do
       end
     end
 
-    test "find returns error for non-existent key", c do
+    test "find/2 returns :not_found for non-existent key", c do
       file = Path.join(c.tmp_dir, "test.goblin")
       level_key = 0
 
       data = [
         {1, "key1", "value1"},
-        {2, "key2", "value2"}
+        {2, "key2", "value2"},
+        {3, "key4", "value4"}
       ]
 
       assert {:ok, [_]} = SSTs.flush(data, level_key, 10, fn -> file end)
 
-      assert :error = SSTs.find(file, "key3")
-      assert :error = SSTs.find(file, "key0")
-      assert :error = SSTs.find(file, "key99")
+      assert :not_found = SSTs.find(file, "key3")
+      assert :not_found = SSTs.find(file, "key0")
+      assert :not_found = SSTs.find(file, "key99")
     end
 
     test "writes SST with large values spanning multiple blocks", c do
