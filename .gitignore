@@ -23,3 +23,5 @@ goblin-*.tar
 /tmp/
 
 .tprof.exs
+
+/benchmark_output/
