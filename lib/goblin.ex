@@ -395,14 +395,6 @@ defmodule Goblin do
     Goblin.Writer.is_flushing(registry)
   end
 
-  # def sync do
-  #
-  # end
-  #
-  # def has_key do
-  #
-  # end
-
   @doc """
   Subscribes the current process for database writes. 
   When a write occurs then either `{:put, key, value}` or `{:remove, key}` is dispatched to the subscribers mailbox.

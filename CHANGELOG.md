@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.5 ()
+* Improvements
+    * Filter SSTs in `Goblin.Store.get/2` by checking key range in directly in memory
+* Enhancements
+    * Add benchmarking scripts
+
 ## v0.1.4 (2025-11-01)
 * Enhancements
     * Add registry for process discovery within the database server
