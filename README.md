@@ -127,7 +127,8 @@ end)
 # => :ok (if cancelled) or :ok (if committed)
 ```
 
-Transactions provide snapshot isolation. If a conflict is detected (another transaction modified the same keys), the transaction returns `{:error, :in_conflict}`.
+Transactions provide snapshot isolation. If a conflict is detected (another transaction modified the same keys), the transaction returns `{:error, :tx_in_conflict}`.
+Conflicts can arise if one transaction's read or write set is not disjoint from another simultaneous transaction's write set. However, a transaction with only a read set and empty write set will have no conflicts even if another transaction writes to those keys at the same time.
 
 ### PubSub
 

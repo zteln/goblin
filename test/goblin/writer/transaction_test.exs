@@ -51,7 +51,7 @@ defmodule Goblin.Writer.TransactionTest do
              Transaction.remove(tx, :k)
   end
 
-  test "has_conflict/2 returns true on read conflict" do
+  test "has_conflict/2 returns false if no writes are written" do
     {nil, tx} = Transaction.new(:owner, []) |> Transaction.get(:k3)
 
     mem_tables = [
@@ -60,7 +60,7 @@ defmodule Goblin.Writer.TransactionTest do
       MemTable.upsert(MemTable.new(), 2, :k3, :v1)
     ]
 
-    assert Transaction.has_conflict(tx, mem_tables)
+    refute Transaction.has_conflict(tx, mem_tables)
   end
 
   test "has_conflict/2 returns true on write conflict" do

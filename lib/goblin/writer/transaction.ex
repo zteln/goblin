@@ -70,8 +70,15 @@ defmodule Goblin.Writer.Transaction do
 
   @spec has_conflict(t(), [MemTable.t()]) :: boolean()
   def has_conflict(tx, mem_tables) do
-    has_read_conflict(tx.reads, mem_tables) || has_write_conflict(tx.mem_table, mem_tables)
+    if has_writes(tx.writes) do
+      has_read_conflict(tx.reads, mem_tables) or has_write_conflict(tx.mem_table, mem_tables)
+    else
+      false
+    end
   end
+
+  defp has_writes([]), do: false
+  defp has_writes(_), do: true
 
   defp has_read_conflict(_, []), do: false
 
