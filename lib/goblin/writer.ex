@@ -170,11 +170,7 @@ defmodule Goblin.Writer do
 
   @impl GenServer
   def handle_call({:get, key}, _from, state) do
-    flushing_mem_tables =
-      state.flushing
-      |> Enum.map(fn {_, mem_table, _, _} -> mem_table end)
-
-    mem_tables = [state.mem_table | flushing_mem_tables]
+    mem_tables = mem_tables_snapshot(state)
     reply = search_for_key(mem_tables, key)
     {:reply, reply, state}
   end
@@ -212,7 +208,16 @@ defmodule Goblin.Writer do
   def handle_call({:start_transaction, pid, opts}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
       registry = state.registry
-      reader = &Reader.get(&1, registry)
+      immutable_mem_tables = mem_tables_snapshot(state)
+      max_seq = state.seq
+
+      reader = fn key ->
+        case search_for_key(immutable_mem_tables, key) do
+          {:ok, {:value, seq, value}} -> {seq, value}
+          _ -> Reader.get_from_store(key, registry, max_seq)
+        end
+      end
+
       opts = Keyword.put(opts, :timestamp, now())
       tx = Transaction.new(pid, opts, reader)
       transactions = Map.put(state.transactions, pid, [])
@@ -452,6 +457,14 @@ defmodule Goblin.Writer do
   end
 
   defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
+
+  defp mem_tables_snapshot(state) do
+    flushing_mem_tables =
+      state.flushing
+      |> Enum.map(fn {_, mem_table, _, _} -> mem_table end)
+
+    [state.mem_table | flushing_mem_tables]
+  end
 
   defp search_for_key([], _key), do: :not_found
 

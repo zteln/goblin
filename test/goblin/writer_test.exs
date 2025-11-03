@@ -565,7 +565,70 @@ defmodule Goblin.WriterTest do
                end,
                timeout: 200
              )
+
     assert {:ok, {:value, 0, :v}} == Writer.get(c.registry, :k)
+  end
+
+  test "transactions have snapshot isolation", c do
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        assert :ok ==
+                 Writer.transaction(c.registry, fn tx ->
+                   send(parent, :ready)
+
+                   receive do
+                     :cont -> :ok
+                   end
+
+                   assert {nil, tx} = Writer.Transaction.get(tx, :k)
+                   {:commit, tx, :ok}
+                 end)
+
+        send(parent, :done)
+      end)
+
+    assert_receive :ready
+
+    assert :ok == Writer.put(c.registry, :k, :v)
+
+    send(pid, :cont)
+
+    assert_receive :done
+  end
+
+  test "transactions have snapshot isolation in store", c do
+    parent = self()
+
+    for n <- 1..10 do
+      assert :ok == Writer.put(c.registry, n, "v-#{n}")
+    end
+
+    pid =
+      spawn(fn ->
+        assert :ok ==
+                 Writer.transaction(c.registry, fn tx ->
+                   send(parent, :ready)
+
+                   receive do
+                     :cont -> :ok
+                   end
+
+                   assert {"v-5", tx} = Writer.Transaction.get(tx, 5)
+                   {:commit, tx, :ok}
+                 end)
+
+        send(parent, :done)
+      end)
+
+    assert_receive :ready
+
+    assert :ok == Writer.put(c.registry, 5, "w-5")
+
+    send(pid, :cont)
+
+    assert_receive :done
   end
 
   test "commits are published to subscribers", c do
