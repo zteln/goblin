@@ -91,12 +91,18 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `f` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
+  - `opts` - A keyword list with options to the transaction. Available options:
+    - `retries` - How many times the transactions should be retried for if a conflict is detected. Defaults to 0.
+    - `timeout` - How many milliseconds the transaction must complete within before being timed out. Defaults to `:infinity`.
 
   ## Returns
 
   - `result` - The value returned from the transaction function on successful commit
   - `:ok` - When the transaction is cancelled
-  - `{:error, :in_conflict}` - When a write conflict is detected
+  - `{:error, :tx_in_conflict}` - When a write conflict is detected
+  - `{:error, :tx_timed_out}` - When a transaction times out
+  - `{:error, :tx_not_found}` - If not transaction was found for the current process
+  - `{:error, :already_in_transaction}` - If the current process is already in a transaction
   - `{:error, term()}` - Other errors
 
   ## Examples
@@ -112,12 +118,21 @@ defmodule Goblin do
         :cancel
       end)
       # => :ok
+
+      Goblin.transaction(db, fn tx -> 
+        count = Goblin.Tx.get(tx, :counter) || 0
+        tx = Goblin.Tx.put(tx, :counter, count + 1)
+        {:commit, tx, count + 1}
+      end, retries: 3, timeout: 5000)
   """
-  @spec transaction(db_server(), (Goblin.Tx.t() -> transaction_return())) ::
-          term() | :ok | {:error, term()}
-  def transaction(db, f) do
+  @spec transaction(db_server(), (Goblin.Tx.t() -> transaction_return()), keyword()) ::
+          term()
+          | :ok
+          | {:error,
+             :tx_in_conflict | :tx_timed_out | :tx_not_found | :already_in_transaction | term()}
+  def transaction(db, f, opts \\ []) do
     registry = name(db, ProcessRegistry)
-    Goblin.Writer.transaction(registry, f)
+    Goblin.Writer.transaction(registry, f, opts)
   end
 
   @doc """

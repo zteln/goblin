@@ -2,9 +2,15 @@ defmodule Goblin.Writer.Transaction do
   @moduledoc false
   alias Goblin.Writer.MemTable
 
+  @default_timeout :infinity
+  @default_retries 0
+
   defstruct [
     :owner,
     :fallback_read,
+    :timestamp,
+    :timeout,
+    :retries,
     seq: 0,
     mem_table: MemTable.new(),
     writes: [],
@@ -14,8 +20,18 @@ defmodule Goblin.Writer.Transaction do
   @type t :: %__MODULE__{}
 
   @spec new(pid(), (term() -> term())) :: t()
-  def new(pid, fallback_read \\ fn _ -> :not_found end) do
-    %__MODULE__{owner: pid, fallback_read: fallback_read}
+  def new(pid, opts, fallback_read \\ fn _ -> :not_found end) do
+    timeout = opts[:timeout] || @default_timeout
+    retries = opts[:retries] || @default_retries
+    timestamp = opts[:timestamp]
+
+    %__MODULE__{
+      owner: pid,
+      fallback_read: fallback_read,
+      timestamp: timestamp,
+      timeout: timeout,
+      retries: retries
+    }
   end
 
   @spec put(t(), Goblin.db_key(), Goblin.db_value()) :: t()

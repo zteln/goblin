@@ -273,7 +273,7 @@ defmodule Goblin.WriterTest do
       end)
 
     spawn(fn ->
-      assert {:error, :in_conflict} ==
+      assert {:error, :tx_in_conflict} ==
                Writer.transaction(c.registry, fn tx ->
                  tx = Writer.Transaction.put(tx, :k2, :v2)
                  assert {nil, tx} = Writer.Transaction.get(tx, :k1)
@@ -312,7 +312,7 @@ defmodule Goblin.WriterTest do
       end)
 
     spawn(fn ->
-      assert {:error, :in_conflict} ==
+      assert {:error, :tx_in_conflict} ==
                Writer.transaction(c.registry, fn tx ->
                  tx = Writer.Transaction.put(tx, :k1, :v2)
                  send(pid1, {:cont, self()})
@@ -391,7 +391,7 @@ defmodule Goblin.WriterTest do
 
     pid =
       spawn(fn ->
-        assert {:error, :no_tx_found} ==
+        assert {:error, :tx_not_found} ==
                  Writer.transaction(c.registry, fn tx ->
                    tx = Writer.Transaction.put(tx, :k, :v)
                    send(parent, {:ok, ref1})
@@ -415,9 +415,7 @@ defmodule Goblin.WriterTest do
 
     send(pid, {:ok, ref2})
 
-    receive do
-      {:ok, ^ref3} -> :ok
-    end
+    assert_receive {:ok, ^ref3}
 
     assert :not_found == Writer.get(c.registry, :k)
   end
@@ -510,6 +508,64 @@ defmodule Goblin.WriterTest do
                assert {:v, tx} = Writer.Transaction.get(tx, :k)
                {:commit, tx, :ok}
              end)
+  end
+
+  test "transactions are retried on conflicts", c do
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        assert {:error, :tx_in_conflict} ==
+                 Writer.transaction(
+                   c.registry,
+                   fn tx ->
+                     send(parent, :ready)
+
+                     receive do
+                       :cont -> :ok
+                     end
+
+                     tx = Writer.Transaction.put(tx, :k, :v)
+                     {:commit, tx, :ok}
+                   end,
+                   retries: 1
+                 )
+      end)
+
+    assert_receive :ready
+
+    Writer.put(c.registry, :k, :w)
+
+    send(pid, :cont)
+
+    assert_receive :ready
+
+    assert {:ok, {:value, 0, :w}} == Writer.get(c.registry, :k)
+  end
+
+  test "transactions can time out", c do
+    assert {:error, :tx_timed_out} ==
+             Writer.transaction(
+               c.registry,
+               fn tx ->
+                 tx = Writer.Transaction.put(tx, :k, :v)
+                 {:commit, tx, :ok}
+               end,
+               timeout: 0
+             )
+
+    assert :not_found == Writer.get(c.registry, :k)
+
+    assert :ok ==
+             Writer.transaction(
+               c.registry,
+               fn tx ->
+                 tx = Writer.Transaction.put(tx, :k, :v)
+                 {:commit, tx, :ok}
+               end,
+               timeout: 200
+             )
+    assert {:ok, {:value, 0, :v}} == Writer.get(c.registry, :k)
   end
 
   test "commits are published to subscribers", c do

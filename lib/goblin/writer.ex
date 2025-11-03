@@ -96,36 +96,59 @@ defmodule Goblin.Writer do
   @spec is_flushing(Goblin.registry()) :: boolean()
   def is_flushing(registry), do: GenServer.call(via(registry), :is_flushing)
 
-  @spec transaction(Goblin.registry(), (Transaction.t() -> Goblin.transaction_return())) ::
+  @spec transaction(
+          Goblin.registry(),
+          (Transaction.t() -> Goblin.transaction_return()),
+          keyword()
+        ) ::
           term() | :ok | {:error, term()}
-  def transaction(registry, f) do
+  def transaction(registry, f, opts \\ []) do
     writer = via(registry)
+    opts = Keyword.take(opts, [:timeout, :retries])
+    do_transaction(writer, f, opts)
+  end
 
-    with {:ok, tx} <- start_transaction(writer, self()),
+  defp do_transaction(writer, f, opts) do
+    with {:ok, tx} <- start_transaction(writer, opts),
          {:ok, tx, reply} <- run_transaction(writer, f, tx),
-         :ok <- commit_transaction(writer, tx, self()) do
+         :ok <- commit_transaction(writer, f, tx, opts) do
       reply
     end
   end
 
-  defp start_transaction(writer, pid), do: GenServer.call(writer, {:start_transaction, pid})
+  defp start_transaction(writer, opts),
+    do: GenServer.call(writer, {:start_transaction, self(), opts})
 
   defp run_transaction(writer, f, tx) do
+    me = self()
+
     case f.(tx) do
       {:commit, tx, reply} ->
         {:ok, tx, reply}
 
       :cancel ->
-        cancel_transaction(writer, self())
+        cancel_transaction(writer, me)
 
       _ ->
-        cancel_transaction(writer, self())
+        cancel_transaction(writer, me)
         raise "Invalid return type from transaction."
     end
   end
 
-  defp commit_transaction(writer, tx, pid) do
-    GenServer.call(writer, {:commit_transaction, tx, pid})
+  defp commit_transaction(writer, f, tx, opts) do
+    me = self()
+
+    case GenServer.call(writer, {:commit_transaction, tx, me}) do
+      :ok ->
+        :ok
+
+      :retry ->
+        opts = Keyword.replace(opts, :retries, (opts[:retries] || 0) - 1)
+        do_transaction(writer, f, opts)
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp cancel_transaction(writer, pid) do
@@ -186,11 +209,12 @@ defmodule Goblin.Writer do
     {:reply, [current_iterator | flushing_iterators], state}
   end
 
-  def handle_call({:start_transaction, pid}, _from, state) do
+  def handle_call({:start_transaction, pid, opts}, _from, state) do
     if not Map.has_key?(state.transactions, pid) do
       registry = state.registry
       reader = &Reader.get(&1, registry)
-      tx = Transaction.new(pid, reader)
+      opts = Keyword.put(opts, :timestamp, now())
+      tx = Transaction.new(pid, opts, reader)
       transactions = Map.put(state.transactions, pid, [])
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
     else
@@ -201,33 +225,41 @@ defmodule Goblin.Writer do
   def handle_call({:commit_transaction, tx, pid}, _from, state) do
     case Map.get(state.transactions, pid) do
       nil ->
-        {:reply, {:error, :no_tx_found}, state}
+        {:reply, {:error, :tx_not_found}, state}
 
       commits ->
-        if not Transaction.has_conflict(tx, commits) do
-          transactions =
-            state.transactions
-            |> clean_transaction(pid)
-            |> add_commit_to_running_transactions(tx.mem_table)
+        cond do
+          is_integer(tx.timeout) and now() - tx.timestamp >= tx.timeout ->
+            state = %{state | transactions: clean_transaction(state.transactions, pid)}
+            {:reply, {:error, :tx_timed_out}, state}
 
-          writes = Enum.map(tx.writes, &advance_seq_in_write(&1, state.seq))
-          WAL.append(state.registry, writes)
-          tx_mem_table = MemTable.advance_seq(tx.mem_table, state.seq)
-          mem_table = MemTable.merge(state.mem_table, tx_mem_table)
+          Transaction.has_conflict(tx, commits) and tx.retries <= 0 ->
+            state = %{state | transactions: clean_transaction(state.transactions, pid)}
+            {:reply, {:error, :tx_in_conflict}, state}
 
-          publish_writes(state, writes)
+          Transaction.has_conflict(tx, commits) ->
+            state = %{state | transactions: clean_transaction(state.transactions, pid)}
+            {:reply, :retry, state}
 
-          state = %{
-            state
-            | transactions: transactions,
-              mem_table: mem_table,
-              seq: state.seq + length(writes)
-          }
+          true ->
+            transactions =
+              state.transactions
+              |> clean_transaction(pid)
+              |> add_commit_to_running_transactions(tx.mem_table)
 
-          {:reply, :ok, state, {:continue, :flush}}
-        else
-          state = %{state | transactions: clean_transaction(state.transactions, pid)}
-          {:reply, {:error, :in_conflict}, state}
+            mem_table = merge_tx_mem_table(state.mem_table, tx.mem_table, state.seq)
+            writes = Enum.map(tx.writes, &advance_seq_in_write(&1, state.seq))
+            WAL.append(state.registry, writes)
+            publish_writes(state, writes)
+
+            state = %{
+              state
+              | transactions: transactions,
+                mem_table: mem_table,
+                seq: state.seq + length(writes)
+            }
+
+            {:reply, :ok, state, {:continue, :flush}}
         end
     end
   end
@@ -299,6 +331,11 @@ defmodule Goblin.Writer do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp merge_tx_mem_table(mem_table, tx_mem_table, seq) do
+    tx_mem_table = MemTable.advance_seq(tx_mem_table, seq)
+    MemTable.merge(mem_table, tx_mem_table)
+  end
 
   defp clean_flush(state, ref) do
     flushing =
@@ -463,4 +500,6 @@ defmodule Goblin.Writer do
     mem_table = MemTable.delete(state.mem_table, seq, k)
     %{state | mem_table: mem_table, seq: seq}
   end
+
+  defp now, do: System.monotonic_time(:millisecond)
 end

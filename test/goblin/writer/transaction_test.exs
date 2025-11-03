@@ -8,12 +8,23 @@ defmodule Goblin.Writer.TransactionTest do
              owner: :owner,
              mem_table: %{},
              reads: %{},
-             writes: []
-           } = Transaction.new(:owner)
+             writes: [],
+             retries: 0,
+             timeout: :infinity
+           } = Transaction.new(:owner, [])
+
+    assert %Transaction{
+             owner: :owner,
+             mem_table: %{},
+             reads: %{},
+             writes: [],
+             retries: 5,
+             timeout: 200
+           } = Transaction.new(:owner, [retries: 5, timeout: 200])
   end
 
   test "put/3 writes to MemTable and inserts a write command" do
-    tx = Transaction.new(:owner)
+    tx = Transaction.new(:owner, [])
 
     assert %Transaction{writes: [{0, :put, :k, :v}], mem_table: %{k: {0, :v}}} =
              tx =
@@ -24,7 +35,7 @@ defmodule Goblin.Writer.TransactionTest do
   end
 
   test "remove/2 writes to MemTable and inserts a write command" do
-    tx = Transaction.new(:owner) |> Transaction.put(:k, :v)
+    tx = Transaction.new(:owner, []) |> Transaction.put(:k, :v)
 
     assert %Transaction{
              writes: [{1, :remove, :k}, {0, :put, :k, :v}],
@@ -34,14 +45,14 @@ defmodule Goblin.Writer.TransactionTest do
   end
 
   test "remove/2 removes key not written during transaction" do
-    tx = Transaction.new(:owner)
+    tx = Transaction.new(:owner, [])
 
     assert %Transaction{writes: [{0, :remove, :k}], mem_table: %{k: {0, :tombstone}}} =
              Transaction.remove(tx, :k)
   end
 
   test "has_conflict/2 returns true on read conflict" do
-    {nil, tx} = Transaction.new(:owner) |> Transaction.get(:k3)
+    {nil, tx} = Transaction.new(:owner, []) |> Transaction.get(:k3)
 
     mem_tables = [
       MemTable.upsert(MemTable.new(), 0, :k1, :v1),
@@ -54,7 +65,7 @@ defmodule Goblin.Writer.TransactionTest do
 
   test "has_conflict/2 returns true on write conflict" do
     tx =
-      Transaction.new(:owner)
+      Transaction.new(:owner, [])
       |> Transaction.put(:k1, :v0)
       |> Transaction.put(:k2, :v0)
       |> Transaction.put(:k3, :v0)
@@ -70,7 +81,7 @@ defmodule Goblin.Writer.TransactionTest do
 
   test "has_conflict/2 returns false on no conflicts" do
     {nil, tx} =
-      Transaction.new(:owner)
+      Transaction.new(:owner, [])
       |> Transaction.put(:k1, :v0)
       |> Transaction.get(:k2)
 
@@ -79,17 +90,17 @@ defmodule Goblin.Writer.TransactionTest do
   end
 
   test "get/3 updates read table and returns value" do
-    tx = Transaction.new(:owner) |> Transaction.put(:k, :v)
+    tx = Transaction.new(:owner, []) |> Transaction.put(:k, :v)
     assert {:v, %{reads: %{k: {0, :v}}}} = Transaction.get(tx, :k)
   end
 
   test "get/3 returns value from fallback reader" do
-    tx = Transaction.new(:owner, &{0, &1})
+    tx = Transaction.new(:owner, [], &{0, &1})
     assert {:k, %{reads: %{k: {0, :k}}}} = Transaction.get(tx, :k)
   end
 
   test "get/3 returns default if not found" do
-    tx = Transaction.new(:owner)
+    tx = Transaction.new(:owner, [])
     assert {:w, %{reads: %{k: :not_found}}} = Transaction.get(tx, :k, :w)
   end
 end
