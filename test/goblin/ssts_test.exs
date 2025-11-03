@@ -1,20 +1,23 @@
 defmodule Goblin.SSTsTest do
   use ExUnit.Case, async: true
+  import TestHelper
   alias Goblin.SSTs
   alias Goblin.BloomFilter
 
   @moduletag :tmp_dir
 
-  describe "flush/3 and find/2" do
+  describe "new/3 and find/2" do
     test "writes SST file and can find keys", c do
       file = Path.join(c.tmp_dir, "test.goblin")
       level_key = 0
 
-      data = [
-        {1, "key1", "value1"},
-        {2, "key2", "value2"},
-        {3, "key3", "value3"}
-      ]
+      stream =
+        [
+          {1, "key1", "value1"},
+          {2, "key2", "value2"},
+          {3, "key3", "value3"}
+        ]
+        |> stream_flush_data(10)
 
       assert {:ok,
               [
@@ -26,7 +29,7 @@ defmodule Goblin.SSTsTest do
                   key_range: key_range
                 }
               ]} =
-               SSTs.flush(data, level_key, 10, fn -> file end)
+               SSTs.new([stream], level_key, fn -> file end)
 
       assert %BloomFilter{} = bloom_filter
       assert priority == 1
@@ -43,16 +46,18 @@ defmodule Goblin.SSTsTest do
       level_key = 0
       key_limit = 5
 
-      data = [
-        {1, "key1", "value1"},
-        {2, "key2", "value2"},
-        {3, "key3", "value3"},
-        {4, "key4", "value4"},
-        {5, "key5", "value5"},
-        {6, "key6", "value6"},
-        {7, "key7", "value7"},
-        {8, "key8", "value8"}
-      ]
+      stream =
+        [
+          {1, "key1", "value1"},
+          {2, "key2", "value2"},
+          {3, "key3", "value3"},
+          {4, "key4", "value4"},
+          {5, "key5", "value5"},
+          {6, "key6", "value6"},
+          {7, "key7", "value7"},
+          {8, "key8", "value8"}
+        ]
+        |> stream_flush_data(key_limit)
 
       counter = :counters.new(1, [])
 
@@ -62,7 +67,7 @@ defmodule Goblin.SSTsTest do
         Path.join(c.tmp_dir, "flush_#{n}.goblin")
       end
 
-      assert {:ok, flushed} = SSTs.flush(data, level_key, key_limit, file_getter)
+      assert {:ok, flushed} = SSTs.new([stream], level_key, file_getter)
 
       assert length(flushed) == 2
 
@@ -75,13 +80,15 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "test.goblin")
       level_key = 0
 
-      data = [
-        {1, "key1", "value1"},
-        {2, "key2", "value2"},
-        {3, "key4", "value4"}
-      ]
+      stream =
+        [
+          {1, "key1", "value1"},
+          {2, "key2", "value2"},
+          {3, "key4", "value4"}
+        ]
+        |> stream_flush_data(10)
 
-      assert {:ok, [_]} = SSTs.flush(data, level_key, 10, fn -> file end)
+      assert {:ok, [_]} = SSTs.new([stream], level_key, fn -> file end)
 
       assert :not_found = SSTs.find(file, "key3")
       assert :not_found = SSTs.find(file, "key0")
@@ -94,12 +101,14 @@ defmodule Goblin.SSTsTest do
 
       large_value = String.duplicate("x", 1000)
 
-      data = [
-        {1, "key1", large_value}
-      ]
+      stream =
+        [
+          {1, "key1", large_value}
+        ]
+        |> stream_flush_data(10)
 
       assert {:ok, [_sst]} =
-               SSTs.flush(data, level_key, 10, fn -> file end)
+               SSTs.new([stream], level_key, fn -> file end)
 
       assert {:ok, {:value, 1, ^large_value}} = SSTs.find(file, "key1")
     end
@@ -108,13 +117,15 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "tombstone.goblin")
       level_key = 0
 
-      data = [
-        {1, "key1", "value1"},
-        {2, "key2", :tombstone},
-        {3, "key3", "value3"}
-      ]
+      stream =
+        [
+          {1, "key1", "value1"},
+          {2, "key2", :tombstone},
+          {3, "key3", "value3"}
+        ]
+        |> stream_flush_data(10)
 
-      assert {:ok, [_sst]} = SSTs.flush(data, level_key, 10, fn -> file end)
+      assert {:ok, [_sst]} = SSTs.new([stream], level_key, fn -> file end)
 
       assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
       assert {:ok, {:value, 2, :tombstone}} = SSTs.find(file, "key2")
@@ -125,14 +136,15 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "many.goblin")
       level_key = 0
 
-      data =
+      stream =
         for n <- 1..100 do
           key = String.pad_leading("#{n}", 3, "0")
           {n, key, "value#{n}"}
         end
+        |> stream_flush_data(100)
 
       assert {:ok, [%{priority: priority, key_range: key_range}]} =
-               SSTs.flush(data, level_key, 100, fn -> file end)
+               SSTs.new([stream], level_key, fn -> file end)
 
       assert priority == 1
       assert key_range == {"001", "100"}
@@ -148,11 +160,13 @@ defmodule Goblin.SSTsTest do
       for level_key <- 0..3 do
         file = Path.join(c.tmp_dir, "level#{level_key}.goblin")
 
-        data = [
-          {1, "key1", "value1"}
-        ]
+        stream =
+          [
+            {1, "key1", "value1"}
+          ]
+          |> stream_flush_data(100)
 
-        assert {:ok, [_sst]} = SSTs.flush(data, level_key, 100, fn -> file end)
+        assert {:ok, [_sst]} = SSTs.new([stream], level_key, fn -> file end)
         assert {:ok, %{level_key: ^level_key}} = SSTs.fetch_sst(file)
       end
     end
@@ -163,12 +177,14 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "info.goblin")
       level_key = 2
 
-      data = [
-        {5, "key1", "value1"},
-        {6, "key2", "value2"}
-      ]
+      stream =
+        [
+          {5, "key1", "value1"},
+          {6, "key2", "value2"}
+        ]
+        |> stream_flush_data(100)
 
-      SSTs.flush(data, level_key, 100, fn -> file end)
+      SSTs.new([stream], level_key, fn -> file end)
 
       assert {:ok,
               %{
@@ -213,7 +229,9 @@ defmodule Goblin.SSTsTest do
         {3, "c", "value_c"}
       ]
 
-      SSTs.flush(data, level_key, 100, fn -> file end)
+      stream = stream_flush_data(data, 100)
+
+      SSTs.new([stream], level_key, fn -> file end)
 
       result = SSTs.stream!(file) |> Enum.to_list()
 
@@ -229,7 +247,9 @@ defmodule Goblin.SSTsTest do
           {n, "key#{String.pad_leading("#{n}", 3, "0")}", "value#{n}"}
         end
 
-      SSTs.flush(data, level_key, 100, fn -> file end)
+      stream = stream_flush_data(data, 100)
+
+      SSTs.new([stream], level_key, fn -> file end)
 
       result = SSTs.stream!(file) |> Enum.to_list()
 
@@ -243,13 +263,15 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "iterate.goblin")
       level_key = 0
 
-      data = [
-        {1, "key1", "value1"},
-        {2, "key2", "value2"},
-        {3, "key3", "value3"}
-      ]
+      stream =
+        [
+          {1, "key1", "value1"},
+          {2, "key2", "value2"},
+          {3, "key3", "value3"}
+        ]
+        |> stream_flush_data(100)
 
-      SSTs.flush(data, level_key, 100, fn -> file end)
+      SSTs.new([stream], level_key, fn -> file end)
 
       iter = SSTs.iterate(file)
       assert {{1, "key1", "value1"}, iter} = SSTs.iterate(iter)
@@ -264,8 +286,8 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "delete.goblin")
       level_key = 0
 
-      data = [{1, "key1", "value1"}]
-      SSTs.flush(data, level_key, 100, fn -> file end)
+      stream = [{1, "key1", "value1"}] |> stream_flush_data(100)
+      SSTs.new([stream], level_key, fn -> file end)
 
       assert File.exists?(file)
       assert :ok = SSTs.delete(file)
@@ -285,12 +307,14 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "complex.goblin")
       level_key = 0
 
-      data = [
-        {1, {:compound, "key"}, %{nested: [1, 2, 3]}},
-        {2, %{map: "key"}, [nested: %{data: "value"}]}
-      ]
+      stream =
+        [
+          {1, {:compound, "key"}, %{nested: [1, 2, 3]}},
+          {2, %{map: "key"}, [nested: %{data: "value"}]}
+        ]
+        |> stream_flush_data(100)
 
-      SSTs.flush(data, level_key, 100, fn -> file end)
+      SSTs.new([stream], level_key, fn -> file end)
 
       assert {:ok, {:value, 1, %{nested: [1, 2, 3]}}} = SSTs.find(file, {:compound, "key"})
       assert {:ok, {:value, 2, [nested: %{data: "value"}]}} = SSTs.find(file, %{map: "key"})

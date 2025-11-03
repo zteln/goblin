@@ -18,7 +18,7 @@ defmodule GoblinTest do
     end
 
     test "fails if no db_dir provided" do
-      assert_raise RuntimeError, "no db_dir provided.", fn -> 
+      assert_raise RuntimeError, "no db_dir provided.", fn ->
         Goblin.start_link([])
       end
     end
@@ -244,7 +244,7 @@ defmodule GoblinTest do
       parent = self()
       {:ok, db} = Goblin.start_link(name: Foo, db_dir: Path.join(c.tmp_dir, "foo"))
 
-      spawn(fn -> 
+      spawn(fn ->
         assert :ok == Goblin.subscribe(c.db)
 
         assert_receive {:put, :k1, :v1}
@@ -253,7 +253,7 @@ defmodule GoblinTest do
         send(parent, :done1)
       end)
 
-      spawn(fn -> 
+      spawn(fn ->
         assert :ok == Goblin.subscribe(db)
 
         refute_receive {:put, :k1, :v1}

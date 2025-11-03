@@ -82,9 +82,22 @@ defmodule TestHelper do
     end
   end
 
+  def stream_flush_data(data, key_limit) do
+    Stream.resource(
+      fn -> data end,
+      fn
+        [] -> {:halt, :ok}
+        [next | data] -> {[next], data}
+      end,
+      fn _ -> :ok end
+    )
+    |> Stream.chunk_every(key_limit)
+  end
+
   def write_sst(dir, name, level_key, key_limit, data) do
     file_getter = fn -> Path.join(dir, "#{name}.goblin") end
-    Goblin.SSTs.flush(data, level_key, key_limit, file_getter)
+    stream = stream_flush_data(data, key_limit)
+    Goblin.SSTs.new([stream], level_key, file_getter)
     file_getter.()
   end
 end

@@ -346,10 +346,14 @@ defmodule Goblin.Writer do
 
     %{ref: ref} =
       task_mod.async(task_sup, fn ->
-        data = mem_table |> MemTable.sort() |> MemTable.flatten()
+        stream =
+          mem_table
+          |> MemTable.sort()
+          |> MemTable.flatten()
+          |> flush_stream(key_limit)
 
         with {:ok, flushed} <-
-               SSTs.flush(data, @flush_level, key_limit, fn -> Store.new_file(registry) end),
+               SSTs.new([stream], @flush_level, fn -> Store.new_file(registry) end),
              :ok <- Manifest.log_flush(registry, Enum.map(flushed, & &1.file), rotated_wal),
              :ok <- WAL.clean(registry, rotated_wal),
              :ok <- put_in_store(flushed, registry) do
@@ -359,6 +363,18 @@ defmodule Goblin.Writer do
 
     {ref, mem_table, rotated_wal, retry}
   end
+
+  defp flush_stream(data, key_limit) do
+    Stream.resource(
+      fn -> data end,
+      &iter_flush_data/1,
+      fn _ -> :ok end
+    )
+    |> Stream.chunk_every(key_limit)
+  end
+
+  defp iter_flush_data([]), do: {:halt, :ok}
+  defp iter_flush_data([next | data]), do: {[next], data}
 
   defp publish_writes(state, writes) do
     %{

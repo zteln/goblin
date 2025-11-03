@@ -216,14 +216,12 @@ defmodule Goblin.Compactor do
 
             {id, buffer}
           end)
+          |> Enum.map(fn {id, buffer} ->
+            merge_stream(id, buffer, key_limit)
+          end)
 
         with {:ok, new} <-
-               SSTs.merge(
-                 data,
-                 level_key,
-                 key_limit,
-                 fn -> Store.new_file(registry) end
-               ),
+               SSTs.new(data, level_key, fn -> Store.new_file(registry) end),
              :ok <- Manifest.log_compaction(registry, sources ++ old, Enum.map(new, & &1.file)),
              :ok <- put_new_files_in_store(new, target_level.level_key, registry),
              :ok <- remove_old_files(sources ++ old, registry) do
@@ -251,6 +249,62 @@ defmodule Goblin.Compactor do
       |> Enum.reduce(level, &Level.place_in_buffer(&2, &1))
 
     deplete(sources, level)
+  end
+
+  defp merge_stream(id, buffer, key_limit) do
+    Stream.resource(
+      fn ->
+        sst_iter = init_sst_iter(id)
+        buffer = init_buffer(buffer)
+        {sst_iter, buffer, nil}
+      end,
+      &iter_merge_data/1,
+      fn _ -> :ok end
+    )
+    |> Stream.chunk_every(key_limit)
+  end
+
+  defp init_sst_iter(nil), do: nil
+  defp init_sst_iter(id), do: SSTs.iterate(id)
+
+  defp init_buffer(buffer) do
+    buffer
+    |> Enum.map(fn {key, {seq, value}} -> {seq, key, value} end)
+    |> Enum.sort_by(fn {_seq, key, _value} -> key end, :asc)
+  end
+
+  defp iter_merge_data({nil, [], nil}), do: {:halt, :ok}
+  defp iter_merge_data({nil, [next | buffer], nil}), do: {[next], {nil, buffer, nil}}
+
+  defp iter_merge_data({iter, [], nil}) do
+    case SSTs.iterate(iter) do
+      :ok -> {:halt, :ok}
+      {data, iter} -> {[data], {iter, [], nil}}
+    end
+  end
+
+  defp iter_merge_data({iter, [], placeholder}), do: {[placeholder], {iter, [], nil}}
+
+  defp iter_merge_data({iter, [next | buffer], nil}) do
+    case SSTs.iterate(iter) do
+      :ok -> {[next], {nil, buffer, nil}}
+      {data, iter} -> iter_merge_data({iter, [next | buffer], data})
+    end
+  end
+
+  defp iter_merge_data({iter, [next | buffer], placeholder}) do
+    {next, back, placeholder} = choose_next(next, placeholder)
+    buffer = List.wrap(back) ++ buffer
+    {[next], {iter, buffer, placeholder}}
+  end
+
+  defp choose_next({seq1, key1, _} = data1, {seq2, key2, _} = data2) do
+    cond do
+      key1 == key2 and seq1 > seq2 -> {data1, nil, nil}
+      key1 == key2 and seq1 < seq2 -> {data2, nil, nil}
+      key1 < key2 -> {data1, nil, data2}
+      key1 > key2 -> {data2, data1, nil}
+    end
   end
 
   defp put_new_files_in_store([], _level_key, _store), do: :ok
