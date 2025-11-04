@@ -87,7 +87,8 @@ defmodule Goblin.SSTs.SST do
         no_of_blocks,
         size
       ) do
-    enc_bf = encode({:bloom_filter, bloom_filter})
+    tuple_bf = BloomFilter.to_tuple(bloom_filter)
+    enc_bf = encode({:bloom_filter, tuple_bf})
     bf_pos = offset + @separator_size
     bf_size = byte_size(enc_bf)
     enc_key_range = encode({:key_range, key_range})
@@ -175,7 +176,7 @@ defmodule Goblin.SSTs.SST do
           {:ok, BloomFilter.t()} | {:error, :invalid_bloom_filter}
   def decode_bloom_filter(encoded) do
     case decode(encoded) do
-      {:bloom_filter, %BloomFilter{} = bloom_filter} -> {:ok, bloom_filter}
+      {:bloom_filter, {_, _, _} = tuple_bf} -> {:ok, BloomFilter.from_tuple(tuple_bf)}
       _ -> {:error, :invalid_bloom_filter}
     end
   end

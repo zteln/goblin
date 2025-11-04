@@ -332,7 +332,7 @@ defmodule Goblin.CompactorTest do
 
   @tag db_opts: [task_mod: FakeTask]
   test "handle_info ignores unknown messages", c do
-    file1 = write_sst(c.tmp_dir, "ignore", 1, 10, [{0, 1, :v1}])
+    file1 = write_sst(c.tmp_dir, "ignore", 1, 10, [{0, 1, :v1}, {1, 2, :v2}, {2, 3, :v3}])
     %{size: size1} = File.stat!(file1)
 
     assert :ok == Compactor.put(c.registry, 1, {file1, 0, size1, {1, 1}})

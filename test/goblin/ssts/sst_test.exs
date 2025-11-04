@@ -184,7 +184,7 @@ defmodule Goblin.SSTs.SSTTest do
   describe "decode_bloom_filter/1" do
     test "decodes valid bloom filter" do
       bloom_filter = BloomFilter.new() |> BloomFilter.put("key1") |> BloomFilter.generate()
-      encoded = :erlang.term_to_binary({:bloom_filter, bloom_filter})
+      encoded = :erlang.term_to_binary({:bloom_filter, BloomFilter.to_tuple(bloom_filter)})
 
       assert {:ok, decoded_bf} = SST.decode_bloom_filter(encoded)
       assert %BloomFilter{} = decoded_bf

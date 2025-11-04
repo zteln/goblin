@@ -6,10 +6,14 @@ defmodule Goblin.BloomFilter do
   defstruct [
     :hashes,
     :array,
+    :no_of_bits,
+    :no_of_hashes,
     set: MapSet.new()
   ]
 
   @type t :: %__MODULE__{}
+  @type no_of_bits :: non_neg_integer()
+  @type no_of_hashes :: non_neg_integer()
 
   @spec new() :: t()
   def new, do: %__MODULE__{}
@@ -27,6 +31,29 @@ defmodule Goblin.BloomFilter do
     end
   end
 
+  @spec to_tuple(t()) :: {:array.array(), no_of_bits(), no_of_hashes()}
+  def to_tuple(bloom_filter) do
+    %{
+      array: array,
+      no_of_bits: no_of_bits,
+      no_of_hashes: no_of_hashes
+    } = bloom_filter
+
+    {array, no_of_bits, no_of_hashes}
+  end
+
+  @spec from_tuple({:array.array(), no_of_bits(), no_of_hashes()}) :: t()
+  def from_tuple({array, no_of_bits, no_of_hashes}) do
+    hashes = hashes(no_of_hashes, no_of_bits)
+
+    %__MODULE__{
+      array: array,
+      no_of_bits: no_of_bits,
+      no_of_hashes: no_of_hashes,
+      hashes: hashes
+    }
+  end
+
   @spec is_member(t(), term()) :: boolean()
   def is_member(bloom_filter, key) do
     Enum.all?(bloom_filter.hashes, fn hash ->
@@ -37,9 +64,9 @@ defmodule Goblin.BloomFilter do
   defp init(size) do
     no_of_bits = no_of_bits(size)
     no_of_hashes = no_of_hashes(size, no_of_bits)
-    hashes = hashes(no_of_hashes, no_of_bits, [])
+    hashes = hashes(no_of_hashes, no_of_bits)
     array = :array.new(no_of_bits, default: 0)
-    %__MODULE__{hashes: hashes, array: array}
+    %__MODULE__{hashes: hashes, array: array, no_of_hashes: no_of_hashes, no_of_bits: no_of_bits}
   end
 
   defp update(bloom_filter, key) do
@@ -58,6 +85,7 @@ defmodule Goblin.BloomFilter do
     round(no_of_bits / size * :math.log(2))
   end
 
+  defp hashes(salt, range, hashes \\ [])
   defp hashes(0, _range, hashes), do: hashes
 
   defp hashes(salt, range, hashes) do

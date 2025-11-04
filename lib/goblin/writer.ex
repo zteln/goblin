@@ -238,7 +238,6 @@ defmodule Goblin.Writer do
       nil ->
         {:reply, {:error, :tx_not_found}, state}
 
-      # commits ->
       %{commits: commits} ->
         cond do
           is_integer(tx.timeout) and now() - tx.timestamp >= tx.timeout ->
