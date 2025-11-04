@@ -15,6 +15,7 @@ defmodule Goblin.Writer do
   @flush_level 0
 
   defstruct [
+    :bf_fpp,
     :registry,
     :pub_sub,
     :task_sup,
@@ -32,6 +33,7 @@ defmodule Goblin.Writer do
 
     args =
       Keyword.take(opts, [
+        :bf_fpp,
         :registry,
         :pub_sub,
         :task_sup,
@@ -159,6 +161,7 @@ defmodule Goblin.Writer do
   def init(args) do
     {:ok,
      %__MODULE__{
+       bf_fpp: args[:bf_fpp],
        registry: args[:registry],
        pub_sub: args[:pub_sub],
        task_sup: args[:task_sup],
@@ -221,6 +224,7 @@ defmodule Goblin.Writer do
       reader = &Reader.get(&1, registry, max_seq)
       opts = Keyword.put(opts, :timestamp, now())
       tx = Transaction.new(pid, opts, reader)
+
       transactions =
         Map.put(state.transactions, pid, %{
           commits: [],
@@ -390,6 +394,7 @@ defmodule Goblin.Writer do
     mem_table = mem_table || state.mem_table
 
     %{
+      bf_fpp: bf_fpp,
       registry: registry,
       task_sup: task_sup,
       task_mod: task_mod,
@@ -404,8 +409,12 @@ defmodule Goblin.Writer do
           |> MemTable.flatten()
           |> flush_stream(key_limit)
 
-        with {:ok, flushed} <-
-               SSTs.new([stream], @flush_level, fn -> Store.new_file(registry) end),
+        opts = [
+          file_getter: fn -> Store.new_file(registry) end,
+          bf_fpp: bf_fpp
+        ]
+
+        with {:ok, flushed} <- SSTs.new([stream], @flush_level, opts),
              :ok <- Manifest.log_flush(registry, Enum.map(flushed, & &1.file), rotated_wal),
              :ok <- WAL.clean(registry, rotated_wal),
              :ok <- put_in_store(flushed, registry) do

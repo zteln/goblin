@@ -7,11 +7,15 @@ defmodule Goblin.SSTs do
   @tmp_suffix ".tmp"
 
   @type iterator :: {:next, Disk.t()}
+  @type new_sst_opts :: [
+          file_getter: (-> Goblin.db_file()),
+          bf_fpp: number()
+        ]
 
-  @spec new([Enumerable.t(Goblin.triple())], Goblin.level_key(), (-> Goblin.db_file())) ::
+  @spec new([Enumerable.t(Goblin.triple())], Goblin.level_key(), new_sst_opts()) ::
           {:ok, [SST.t()]} | {:error, term()}
-  def new(streams, level_key, file_getter) do
-    with {:ok, new} <- write_streams(streams, level_key, file_getter) do
+  def new(streams, level_key, opts) do
+    with {:ok, new} <- write_streams(streams, level_key, opts) do
       switch(new)
     end
   end
@@ -116,21 +120,24 @@ defmodule Goblin.SSTs do
     {:next, disk}
   end
 
-  defp write_streams(streams, level_key, file_getter, acc \\ [])
-  defp write_streams([], _level_key, _file_getter, acc), do: {:ok, acc}
+  defp write_streams(streams, level_key, opts, acc \\ [])
+  defp write_streams([], _level_key, _opts, acc), do: {:ok, acc}
 
-  defp write_streams([stream | rest], level_key, file_getter, acc) do
-    with {:ok, new} <- write_stream(stream, level_key, file_getter) do
-      write_streams(rest, level_key, file_getter, new ++ acc)
+  defp write_streams([stream | rest], level_key, opts, acc) do
+    with {:ok, new} <- write_stream(stream, level_key, opts) do
+      write_streams(rest, level_key, opts, new ++ acc)
     end
   end
 
-  defp write_stream(stream, level_key, file_getter) do
+  defp write_stream(stream, level_key, opts) do
+    file_getter = opts[:file_getter]
+    bf_fpp = opts[:bf_fpp]
+
     Enum.reduce_while(stream, {:ok, []}, fn chunk, {:ok, acc} ->
       file = file_getter.()
       tmp_file = tmp_file(file)
 
-      case write(tmp_file, level_key, chunk) do
+      case write(tmp_file, level_key, chunk, bf_fpp) do
         {:ok, sst} ->
           {:cont, {:ok, [{tmp_file, file, sst} | acc]}}
 
@@ -140,12 +147,12 @@ defmodule Goblin.SSTs do
     end)
   end
 
-  defp write(file, level_key, data) do
+  defp write(file, level_key, data, bf_fpp) do
     disk = Disk.open!(file, write?: true)
 
     result =
       with {:ok, _disk, bloom_filter, priority, size, key_range} <-
-             write_sst(disk, level_key, data) do
+             write_sst(disk, level_key, data, bf_fpp) do
         {:ok,
          %SST{
            bloom_filter: bloom_filter,
@@ -246,9 +253,9 @@ defmodule Goblin.SSTs do
     end
   end
 
-  defp write_sst(disk, level_key, data) do
+  defp write_sst(disk, level_key, data, bf_fpp) do
     with {:ok, disk, data} <- write_data(disk, data),
-         {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data) do
+         {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data, bf_fpp) do
       {:ok, disk, bloom_filter, data.priority, data.size + meta_size, data.key_range}
     end
   end
@@ -293,8 +300,8 @@ defmodule Goblin.SSTs do
     end)
   end
 
-  defp write_meta(disk, level_key, data) do
-    bloom_filter = BloomFilter.generate(data.bloom_filter)
+  defp write_meta(disk, level_key, data, bf_fpp) do
+    bloom_filter = BloomFilter.generate(data.bloom_filter, bf_fpp)
 
     footer =
       SST.encode_footer(

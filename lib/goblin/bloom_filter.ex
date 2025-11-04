@@ -1,6 +1,6 @@
 defmodule Goblin.BloomFilter do
   @moduledoc false
-  @default_false_positive_probability 0.05
+  @default_fpp 0.05
 
   @derive {Inspect, except: [:array]}
   defstruct [
@@ -17,41 +17,42 @@ defmodule Goblin.BloomFilter do
   @spec put(t(), term()) :: t()
   def put(bf, key), do: %{bf | set: MapSet.put(bf.set, key)}
 
-  @spec generate(t()) :: t()
-  def generate(bf) do
+  @spec generate(t(), number()) :: t()
+  def generate(bf, fpp \\ nil) do
     size = MapSet.size(bf.set)
+    fpp = fpp || @default_fpp
 
-    for key <- MapSet.to_list(bf.set), reduce: init(size) do
+    for key <- MapSet.to_list(bf.set), reduce: init(size, fpp) do
       acc ->
         update(acc, key)
     end
   end
 
   @spec is_member(t(), term()) :: boolean()
-  def is_member(bloom_filter, key) do
-    Enum.all?(bloom_filter.hashes, fn {salt, range} ->
-      1 == :array.get(hash(key, salt, range), bloom_filter.array)
+  def is_member(bf, key) do
+    Enum.all?(bf.hashes, fn {salt, range} ->
+      1 == :array.get(hash(key, salt, range), bf.array)
     end)
   end
 
-  defp init(size) do
-    no_of_bits = no_of_bits(size)
+  defp init(size, fpp) do
+    no_of_bits = no_of_bits(size, fpp)
     no_of_hashes = no_of_hashes(size, no_of_bits)
     hashes = hashes(no_of_hashes, no_of_bits)
     array = :array.new(no_of_bits, default: 0)
     %__MODULE__{hashes: hashes, array: array}
   end
 
-  defp update(bloom_filter, key) do
-    for {salt, range} <- bloom_filter.hashes, reduce: bloom_filter do
+  defp update(bf, key) do
+    for {salt, range} <- bf.hashes, reduce: bf do
       acc ->
         array = :array.set(hash(key, salt, range), 1, acc.array)
         %{acc | array: array}
     end
   end
 
-  defp no_of_bits(size) do
-    floor(-size * :math.log(@default_false_positive_probability) / :math.pow(:math.log(2), 2))
+  defp no_of_bits(size, fpp) do
+    floor(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
   end
 
   defp no_of_hashes(size, no_of_bits) do

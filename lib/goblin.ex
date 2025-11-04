@@ -476,6 +476,7 @@ defmodule Goblin do
   - `:db_dir` - Directory path for database files (required)
   - `:key_limit` - Max keys in MemTable before flush (default: 50,000)
   - `:level_limit` - Size threshold for level 0 compaction in bytes (default: 128 MB)
+  - `:bf_fpp` - Bloom filter false positive probability (default: 0.05)
 
   ## Returns
 
@@ -488,7 +489,8 @@ defmodule Goblin do
         name: MyApp.DB,
         db_dir: "/var/lib/myapp/db",
         key_limit: 100_000,
-        level_limit: 256 * 1024 * 1024
+        level_limit: 256 * 1024 * 1024,
+        bf_fpp: 0.05
       )
   """
   @spec start_link(keyword()) :: Supervisor.on_start()

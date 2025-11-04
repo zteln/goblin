@@ -29,7 +29,7 @@ defmodule Goblin.SSTsTest do
                   key_range: key_range
                 }
               ]} =
-               SSTs.new([stream], level_key, fn -> file end)
+               SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert %BloomFilter{} = bloom_filter
       assert priority == 1
@@ -67,7 +67,7 @@ defmodule Goblin.SSTsTest do
         Path.join(c.tmp_dir, "flush_#{n}.goblin")
       end
 
-      assert {:ok, flushed} = SSTs.new([stream], level_key, file_getter)
+      assert {:ok, flushed} = SSTs.new([stream], level_key, file_getter: file_getter)
 
       assert length(flushed) == 2
 
@@ -88,7 +88,7 @@ defmodule Goblin.SSTsTest do
         ]
         |> stream_flush_data(10)
 
-      assert {:ok, [_]} = SSTs.new([stream], level_key, fn -> file end)
+      assert {:ok, [_]} = SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert :not_found = SSTs.find(file, "key3")
       assert :not_found = SSTs.find(file, "key0")
@@ -108,7 +108,7 @@ defmodule Goblin.SSTsTest do
         |> stream_flush_data(10)
 
       assert {:ok, [_sst]} =
-               SSTs.new([stream], level_key, fn -> file end)
+               SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert {:ok, {:value, 1, ^large_value}} = SSTs.find(file, "key1")
     end
@@ -125,7 +125,7 @@ defmodule Goblin.SSTsTest do
         ]
         |> stream_flush_data(10)
 
-      assert {:ok, [_sst]} = SSTs.new([stream], level_key, fn -> file end)
+      assert {:ok, [_sst]} = SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
       assert {:ok, {:value, 2, :tombstone}} = SSTs.find(file, "key2")
@@ -144,7 +144,7 @@ defmodule Goblin.SSTsTest do
         |> stream_flush_data(100)
 
       assert {:ok, [%{priority: priority, key_range: key_range}]} =
-               SSTs.new([stream], level_key, fn -> file end)
+               SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert priority == 1
       assert key_range == {"001", "100"}
@@ -166,7 +166,7 @@ defmodule Goblin.SSTsTest do
           ]
           |> stream_flush_data(100)
 
-        assert {:ok, [_sst]} = SSTs.new([stream], level_key, fn -> file end)
+        assert {:ok, [_sst]} = SSTs.new([stream], level_key, file_getter: fn -> file end)
         assert {:ok, %{level_key: ^level_key}} = SSTs.fetch_sst(file)
       end
     end
@@ -184,7 +184,7 @@ defmodule Goblin.SSTsTest do
         ]
         |> stream_flush_data(100)
 
-      SSTs.new([stream], level_key, fn -> file end)
+      SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert {:ok,
               %{
@@ -231,7 +231,7 @@ defmodule Goblin.SSTsTest do
 
       stream = stream_flush_data(data, 100)
 
-      SSTs.new([stream], level_key, fn -> file end)
+      SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       result = SSTs.stream!(file) |> Enum.to_list()
 
@@ -249,7 +249,7 @@ defmodule Goblin.SSTsTest do
 
       stream = stream_flush_data(data, 100)
 
-      SSTs.new([stream], level_key, fn -> file end)
+      SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       result = SSTs.stream!(file) |> Enum.to_list()
 
@@ -271,7 +271,7 @@ defmodule Goblin.SSTsTest do
         ]
         |> stream_flush_data(100)
 
-      SSTs.new([stream], level_key, fn -> file end)
+      SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       iter = SSTs.iterate(file)
       assert {{1, "key1", "value1"}, iter} = SSTs.iterate(iter)
@@ -287,7 +287,7 @@ defmodule Goblin.SSTsTest do
       level_key = 0
 
       stream = [{1, "key1", "value1"}] |> stream_flush_data(100)
-      SSTs.new([stream], level_key, fn -> file end)
+      SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert File.exists?(file)
       assert :ok = SSTs.delete(file)
@@ -314,7 +314,7 @@ defmodule Goblin.SSTsTest do
         ]
         |> stream_flush_data(100)
 
-      SSTs.new([stream], level_key, fn -> file end)
+      SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert {:ok, {:value, 1, %{nested: [1, 2, 3]}}} = SSTs.find(file, {:compound, "key"})
       assert {:ok, {:value, 2, [nested: %{data: "value"}]}} = SSTs.find(file, %{map: "key"})

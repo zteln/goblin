@@ -95,9 +95,10 @@ defmodule TestHelper do
   end
 
   def write_sst(dir, name, level_key, key_limit, data) do
-    file_getter = fn -> Path.join(dir, "#{name}.goblin") end
     stream = stream_flush_data(data, key_limit)
-    Goblin.SSTs.new([stream], level_key, file_getter)
+    file_getter = fn -> Path.join(dir, "#{name}.goblin") end
+    opts = [file_getter: file_getter]
+    Goblin.SSTs.new([stream], level_key, opts)
     file_getter.()
   end
 end

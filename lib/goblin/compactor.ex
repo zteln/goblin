@@ -11,6 +11,7 @@ defmodule Goblin.Compactor do
   alias Goblin.RWLocks
 
   defstruct [
+    :bf_fpp,
     :registry,
     :task_sup,
     :task_mod,
@@ -32,6 +33,7 @@ defmodule Goblin.Compactor do
 
     args =
       Keyword.take(opts, [
+        :bf_fpp,
         :registry,
         :key_limit,
         :level_limit,
@@ -56,6 +58,7 @@ defmodule Goblin.Compactor do
   def init(args) do
     {:ok,
      %__MODULE__{
+       bf_fpp: args[:bf_fpp],
        registry: args[:registry],
        key_limit: args[:key_limit],
        level_limit: args[:level_limit],
@@ -180,6 +183,7 @@ defmodule Goblin.Compactor do
 
   defp compact(state, source_level, target_level, retry \\ 5) do
     %{
+      bf_fpp: bf_fpp,
       registry: registry,
       levels: levels,
       key_limit: key_limit,
@@ -220,8 +224,12 @@ defmodule Goblin.Compactor do
             merge_stream(id, buffer, key_limit)
           end)
 
-        with {:ok, new} <-
-               SSTs.new(data, level_key, fn -> Store.new_file(registry) end),
+        opts = [
+          file_getter: fn -> Store.new_file(registry) end,
+          bf_fpp: bf_fpp
+        ]
+
+        with {:ok, new} <- SSTs.new(data, level_key, opts),
              :ok <- Manifest.log_compaction(registry, sources ++ old, Enum.map(new, & &1.file)),
              :ok <- put_new_files_in_store(new, target_level.level_key, registry),
              :ok <- remove_old_files(sources ++ old, registry) do
@@ -325,7 +333,7 @@ defmodule Goblin.Compactor do
     end
   end
 
-  defp level_limit(level_limit, level_key), do: level_limit * :math.pow(10, level_key)
+  defp level_limit(level_limit, level_key), do: level_limit * 10 ** level_key
 
   defp clean_tombstones?(target_level, levels) do
     has_virtual_entry(target_level) and max_level(levels) == target_level.level_key
