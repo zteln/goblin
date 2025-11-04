@@ -4,7 +4,7 @@ defmodule Goblin.Reader do
   alias Goblin.Store
 
   @spec get(Goblin.db_key(), atom()) :: {Goblin.db_sequence(), Goblin.db_value()} | :not_found
-  def get(key, registry) do
+  def get(key, registry, max_seq \\ nil) do
     case try_writer(registry, key) do
       {:ok, {:value, _seq, :tombstone}} ->
         :not_found
@@ -13,7 +13,7 @@ defmodule Goblin.Reader do
         {seq, value}
 
       :not_found ->
-        try_store(registry, key)
+        try_store(registry, key, max_seq)
     end
   end
 
@@ -30,12 +30,6 @@ defmodule Goblin.Reader do
       other -> other
     end)
     |> Enum.reject(&(&1 == :not_found))
-  end
-
-  @spec get_from_store(Goblin.db_key(), Goblin.registry(), Goblin.db_sequence() | nil) ::
-          {Goblin.db_sequence(), Goblin.db_value()} | :not_found
-  def get_from_store(key, registry, max_seq) do
-    try_store(registry, key, max_seq)
   end
 
   @spec select(Goblin.db_key() | nil, Goblin.db_key() | nil, atom()) ::

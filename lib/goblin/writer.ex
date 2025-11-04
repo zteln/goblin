@@ -169,9 +169,17 @@ defmodule Goblin.Writer do
   end
 
   @impl GenServer
-  def handle_call({:get, key}, _from, state) do
-    mem_tables = mem_tables_snapshot(state)
-    reply = search_for_key(mem_tables, key)
+  def handle_call({:get, key}, {pid, _}, state) do
+    reply =
+      case Map.get(state.transactions, pid) do
+        %{immutable_mem_tables: immutable_mem_tables} ->
+          search_for_key(immutable_mem_tables, key)
+
+        _ ->
+          mem_tables = mem_tables_snapshot(state)
+          search_for_key(mem_tables, key)
+      end
+
     {:reply, reply, state}
   end
 
@@ -210,17 +218,15 @@ defmodule Goblin.Writer do
       registry = state.registry
       immutable_mem_tables = mem_tables_snapshot(state)
       max_seq = state.seq
-
-      reader = fn key ->
-        case search_for_key(immutable_mem_tables, key) do
-          {:ok, {:value, seq, value}} -> {seq, value}
-          _ -> Reader.get_from_store(key, registry, max_seq)
-        end
-      end
-
+      reader = &Reader.get(&1, registry, max_seq)
       opts = Keyword.put(opts, :timestamp, now())
       tx = Transaction.new(pid, opts, reader)
-      transactions = Map.put(state.transactions, pid, [])
+      transactions =
+        Map.put(state.transactions, pid, %{
+          commits: [],
+          immutable_mem_tables: immutable_mem_tables
+        })
+
       {:reply, {:ok, tx}, %{state | transactions: transactions}}
     else
       {:reply, {:error, :already_in_transaction}, state}
@@ -232,7 +238,8 @@ defmodule Goblin.Writer do
       nil ->
         {:reply, {:error, :tx_not_found}, state}
 
-      commits ->
+      # commits ->
+      %{commits: commits} ->
         cond do
           is_integer(tx.timeout) and now() - tx.timestamp >= tx.timeout ->
             state = %{state | transactions: clean_transaction(state.transactions, pid)}
@@ -354,8 +361,12 @@ defmodule Goblin.Writer do
 
   defp clean_transaction(transactions, pid), do: Map.delete(transactions, pid)
 
-  defp add_commit_to_running_transactions(transactions, mem_table),
-    do: Enum.into(transactions, %{}, fn {pid, commits} -> {pid, [mem_table | commits]} end)
+  defp add_commit_to_running_transactions(transactions, mem_table) do
+    Enum.into(transactions, %{}, fn {pid, tx_data} ->
+      commits = [mem_table | tx_data.commits]
+      {pid, Map.replace(tx_data, :commits, commits)}
+    end)
+  end
 
   defp advance_seq_in_write({seq1, :put, k, v}, seq2), do: {seq1 + seq2, :put, k, v}
   defp advance_seq_in_write({seq1, :remove, k}, seq2), do: {seq1 + seq2, :remove, k}
