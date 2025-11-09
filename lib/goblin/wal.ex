@@ -1,63 +1,53 @@
 defmodule Goblin.WAL do
   @moduledoc false
   use GenServer
-  import Goblin.ProcessRegistry, only: [via: 1]
 
-  @default_sync_interval 200
   @log_file "wal.goblin"
   @rotated_log_suffix ".rot"
 
+  @type wal :: module() | {:via, Registry, {module(), module()}}
+
   defstruct [
     :log,
-    :sync_interval,
-    :last_sync,
     :file,
     :name,
     :ro_name,
-    rotated_files: [],
-    buffer: [],
-    waiting_for_sync?: false
+    rotated_files: []
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    registry = opts[:registry]
-    args = Keyword.take(opts, [:name, :sync_interval, :db_dir])
-    GenServer.start_link(__MODULE__, args, name: via(registry))
+    name = opts[:name]
+    args = [local_name: opts[:local_name] || name, db_dir: opts[:db_dir]]
+    GenServer.start_link(__MODULE__, args, name: name)
   end
 
-  @spec sync(Goblin.registry()) :: :ok
-  def sync(registry) do
-    GenServer.call(via(registry), :sync_now)
+  @spec append(wal(), [term()]) :: :ok
+  def append(wal, buffer) do
+    GenServer.call(wal, {:append, buffer})
   end
 
-  @spec append(Goblin.registry(), [term()]) :: :ok
-  def append(registry, buffer) do
-    GenServer.call(via(registry), {:append, buffer})
+  @spec rotate(wal()) :: Goblin.db_file()
+  def rotate(wal) do
+    GenServer.call(wal, :rotate)
   end
 
-  @spec rotate(Goblin.registry()) :: Goblin.db_file()
-  def rotate(registry) do
-    GenServer.call(via(registry), :rotate)
+  @spec clean(wal(), Goblin.db_file()) :: :ok | {:error, term()}
+  def clean(wal, rotated_file) do
+    GenServer.call(wal, {:clean, rotated_file})
   end
 
-  @spec clean(Goblin.registry(), Goblin.db_file()) :: :ok | {:error, term()}
-  def clean(registry, rotated_file) do
-    GenServer.call(via(registry), {:clean, rotated_file})
-  end
-
-  @spec recover(Goblin.registry()) ::
+  @spec recover(wal()) ::
           {:ok, [{Goblin.db_file() | nil, [term()]}]} | {:error, term()}
-  def recover(registry) do
-    GenServer.call(via(registry), :recover)
+  def recover(wal) do
+    GenServer.call(wal, :recover)
   end
 
   @impl GenServer
   def init(args) do
-    name = Module.concat(args[:name], WAL)
-    ro_name = Module.concat(args[:name], WALRO)
+    name = args[:local_name]
+    ro_name = Module.concat(name, RO)
     file = Path.join(args[:db_dir], @log_file)
-    sync_interval = args[:sync_interval] || @default_sync_interval
 
     case open_log(file, name) do
       {:ok, log} ->
@@ -66,37 +56,29 @@ defmodule Goblin.WAL do
            name: name,
            ro_name: ro_name,
            file: file,
-           log: log,
-           sync_interval: sync_interval,
-           last_sync: now()
+           log: log
          }, {:continue, :get_rotated_files}}
 
-      {:error, _} = error ->
-        {:stop, error}
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
   @impl GenServer
-  def handle_call(:sync_now, _from, state) do
-    append_and_sync_log(state.log, Enum.reverse(state.buffer))
-    {:reply, :ok, %{state | last_sync: now(), buffer: []}}
-  end
-
   def handle_call({:append, buffer}, _from, state) do
-    buffer = buffer ++ state.buffer
-    state = %{state | buffer: buffer}
-    {:reply, :ok, state, {:continue, :sync}}
+    case append_and_sync_log(state.log, Enum.reverse(buffer)) do
+      :ok -> {:reply, :ok, state}
+      {:error, reason} -> {:stop, reason, state}
+    end
   end
 
   def handle_call(:rotate, _from, state) do
-    case rotate_log(state.name, state.file, state.log, state.buffer) do
+    case rotate_log(state.name, state.file, state.log) do
       {:ok, log, rotated_file} ->
         state = %{
           state
           | log: log,
-            rotated_files: [rotated_file | state.rotated_files],
-            buffer: [],
-            last_sync: now()
+            rotated_files: [rotated_file | state.rotated_files]
         }
 
         {:reply, {:ok, rotated_file}, state}
@@ -128,28 +110,8 @@ defmodule Goblin.WAL do
     {:noreply, state}
   end
 
-  def handle_continue(:sync, state) do
-    now = now()
-    last_sync = state.last_sync
-    sync_interval = state.sync_interval * Integer.pow(10, 6)
-
-    if now - last_sync >= sync_interval do
-      append_and_sync_log(state.log, Enum.reverse(state.buffer))
-      {:noreply, %{state | last_sync: now, buffer: []}}
-    else
-      state = send_sync(state)
-      {:noreply, state}
-    end
-  end
-
-  @impl GenServer
-  def handle_info(:sync, state) do
-    {:noreply, %{state | waiting_for_sync?: false}, {:continue, :sync}}
-  end
-
-  defp rotate_log(name, file, log, buffer) do
-    with :ok <- append_and_sync_log(log, Enum.reverse(buffer)),
-         :ok <- close_log(log),
+  defp rotate_log(name, file, log) do
+    with :ok <- close_log(log),
          {:ok, rotated_file} <- mv_log(file),
          {:ok, log} <- open_log(file, name) do
       {:ok, log, rotated_file}
@@ -183,15 +145,6 @@ defmodule Goblin.WAL do
   defp append_and_sync_log(log, buffer) do
     with :ok <- :disk_log.log_terms(log, buffer) do
       :disk_log.sync(log)
-    end
-  end
-
-  defp send_sync(state) do
-    if state.waiting_for_sync? do
-      state
-    else
-      Process.send_after(self(), :sync, state.sync_interval)
-      %{state | waiting_for_sync?: true}
     end
   end
 
@@ -242,8 +195,7 @@ defmodule Goblin.WAL do
     filename = Path.basename(file)
     dir = Path.dirname(file)
 
-    dir
-    |> File.ls!()
+    File.ls!(dir)
     |> Enum.filter(&String.starts_with?(&1, filename <> @rotated_log_suffix <> "."))
     |> Enum.flat_map(fn file ->
       case String.split(Path.basename(file), ".") do

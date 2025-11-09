@@ -3,127 +3,120 @@ defmodule Goblin.WALTest do
   use TestHelper
   alias Goblin.WAL
 
-  @sync_interval 200
-  @wal_name :wal_test
-  @wal_file "wal.goblin"
-  @registry_name WALTest.ProcessRegistry
   @moduletag :tmp_dir
 
-  setup c do
-    wal = start_wal(c.tmp_dir)
-    %{wal: wal, wal_file: Path.join(c.tmp_dir, @wal_file), registry: @registry_name}
-  end
-
-  test "WAL starts with empty file", c do
-    assert {:ok, [nil: []]} == WAL.recover(c.registry)
-  end
-
-  test "WAL recovers writes after restart", c do
-    assert {:ok, [nil: []]} == WAL.recover(c.registry)
-    assert :ok == WAL.append(c.registry, [{0, :put, :k, :v}])
-
-    assert_eventually do
-      assert {:ok, [nil: [{0, :put, :k, :v}]]} == WAL.recover(c.registry)
+  describe "start_link/1" do
+    test "opens a log", c do
+      assert 0 == length(File.ls!(c.tmp_dir))
+      assert {:ok, _wal} = WAL.start_link(db_dir: c.tmp_dir, name: __MODULE__)
+      assert 1 == length(File.ls!(c.tmp_dir))
     end
 
-    stop_wal()
-    start_wal(c.tmp_dir)
-    assert {:ok, [nil: [{0, :put, :k, :v}]]} == WAL.recover(c.registry)
-  end
+    test "fails to open log in no existing directory", c do
+      Process.flag(:trap_exit, true)
+      non_existing_dir = Path.join(c.tmp_dir, "foo")
 
-  test "WAL creates a new WAL file on rotate", c do
-    assert :ok == WAL.append(c.registry, [{0, :put, :k, :v}])
-    assert {:ok, rotated_file} = WAL.rotate(c.registry)
-    assert File.exists?(rotated_file)
-    assert File.exists?(c.wal_file)
-    refute rotated_file == c.wal_file
-    assert {:ok, [{^rotated_file, [{0, :put, :k, :v}]}, {nil, []}]} = WAL.recover(c.registry)
-  end
+      assert {:error, {:file_error, _, :enoent}} =
+               WAL.start_link(db_dir: non_existing_dir, name: __MODULE__)
+    end
 
-  test "WAL recovers writes from rotated files", c do
-    assert :ok == WAL.append(c.registry, [{0, :put, :k, :v}])
-    assert {:ok, rotated_file} = WAL.rotate(c.registry)
-    assert :ok == WAL.append(c.registry, [{1, :put, :k, :v}])
+    test "fails to open log with same name", c do
+      Process.flag(:trap_exit, true)
+      assert {:ok, _wal} = WAL.start_link(db_dir: c.tmp_dir, name: __MODULE__)
 
-    assert_eventually do
-      assert {:ok, [{^rotated_file, [{0, :put, :k, :v}]}, {nil, [{1, :put, :k, :v}]}]} =
-               WAL.recover(c.registry)
+      assert {:error, {:already_started, _pid}} =
+               WAL.start_link(db_dir: c.tmp_dir, name: __MODULE__)
     end
   end
 
-  test "WAL finds previously rotated files on start", c do
-    assert :ok == WAL.append(c.registry, [{0, :put, :k, :v}])
-    assert {:ok, rotated_file} = WAL.rotate(c.registry)
+  describe "append/2" do
+    setup c, do: start_wal(c.tmp_dir)
 
-    stop_wal()
-    wal = start_wal(c.tmp_dir)
+    test "appends to log and syncs file", c do
+      %{file: file} = :sys.get_state(c.wal)
+      %{size: size1} = File.stat!(file)
 
-    assert %{rotated_files: [^rotated_file]} = :sys.get_state(wal)
-  end
+      assert :ok == WAL.append(c.wal, [:foo, :bar])
+      %{size: size2} = File.stat!(file)
+      assert size2 > size1
 
-  test "append/2 appends writes sequentially", c do
-    assert :ok == WAL.append(c.registry, [{0, :put, :k1, :v1}])
-    assert :ok == WAL.append(c.registry, [{1, :put, :k2, :v2}])
-    assert :ok == WAL.append(c.registry, [{2, :put, :k3, :v3}])
+      assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(c.wal)
 
-    assert_eventually do
-      assert {:ok,
-              [
-                {nil,
-                 [
-                   {0, :put, :k1, :v1},
-                   {1, :put, :k2, :v2},
-                   {2, :put, :k3, :v3}
-                 ]}
-              ]} = WAL.recover(c.registry)
+      stop_wal()
+      %{wal: wal} = start_wal(c.tmp_dir)
+
+      assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(wal)
     end
   end
 
-  test "append/2 appends batch writes in reverse order", c do
-    assert :ok == WAL.append(c.registry, [{1, :put, :k2, :v2}, {0, :put, :k1, :v1}])
+  describe "rotate/2" do
+    setup c, do: start_wal(c.tmp_dir)
 
-    assert_eventually do
-      assert {:ok,
-              [
-                {nil,
-                 [
-                   {0, :put, :k1, :v1},
-                   {1, :put, :k2, :v2}
-                 ]}
-              ]} = WAL.recover(c.registry)
+    test "rotates log and opens new", c do
+      assert 1 == length(File.ls!(c.tmp_dir))
+      WAL.append(c.wal, [:foo, :bar])
+
+      assert {:ok, rotated_wal} = WAL.rotate(c.wal)
+
+      WAL.append(c.wal, [:baz])
+
+      assert 2 == length(File.ls!(c.tmp_dir))
+      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, [:baz]}]} = WAL.recover(c.wal)
     end
   end
 
-  test "sync/1 syncs the WAL file", c do
-    assert :ok == WAL.append(c.registry, [{0, :put, :k, :v}])
-    assert {:ok, [{nil, []}]} = WAL.recover(c.registry)
-    assert :ok == WAL.sync(c.registry)
+  describe "clean/2" do
+    setup c, do: start_wal(c.tmp_dir)
 
-    assert {:ok,
-            [
-              {nil,
-               [
-                 {0, :put, :k, :v}
-               ]}
-            ]} = WAL.recover(c.registry)
+    test "removes rotated wal from disk and state", c do
+      {:ok, rotated_wal} = WAL.rotate(c.wal)
+      assert 2 == length(File.ls!(c.tmp_dir))
+
+      assert %{rotated_files: [_]} = :sys.get_state(c.wal)
+
+      assert :ok == WAL.clean(c.wal, rotated_wal)
+
+      assert %{rotated_files: []} = :sys.get_state(c.wal)
+
+      assert 1 == length(File.ls!(c.tmp_dir))
+    end
+
+    test "fails if rotated wal does not exist", c do
+      assert {:error, :enoent} == WAL.clean(c.wal, Path.join(c.tmp_dir, "foo"))
+    end
+  end
+
+  describe "recover/2" do
+    setup c, do: start_wal(c.tmp_dir)
+
+    test "get past logs from disk", c do
+      assert {:ok, [{nil, []}]} == WAL.recover(c.wal)
+      WAL.append(c.wal, [:foo, :bar])
+      assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(c.wal)
+
+      {:ok, rotated_wal} = WAL.rotate(c.wal)
+
+      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, []}]} = WAL.recover(c.wal)
+      WAL.append(c.wal, [:foo, :bar])
+      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(c.wal)
+
+      stop_wal()
+      %{wal: wal} = start_wal(c.tmp_dir)
+
+      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(wal)
+    end
   end
 
   defp start_wal(dir) do
-    start_supervised({
-      Goblin.ProcessRegistry,
-      name: @registry_name
-    })
+    wal =
+      start_link_supervised!({WAL, db_dir: dir, name: __MODULE__},
+        id: __MODULE__
+      )
 
-    start_link_supervised!(
-      {
-        WAL,
-        db_dir: dir, wal_name: @wal_name, sync_interval: @sync_interval, registry: @registry_name
-      },
-      id: :wal_test_id
-    )
+    %{wal: wal}
   end
 
   defp stop_wal do
-    stop_supervised(:wal_test_id)
+    stop_supervised(__MODULE__)
   end
 end
