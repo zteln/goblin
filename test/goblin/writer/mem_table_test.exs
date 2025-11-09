@@ -2,159 +2,153 @@ defmodule Goblin.Writer.MemTableTest do
   use ExUnit.Case, async: true
   alias Goblin.Writer.MemTable
 
-  test "new/0 creates empty mem table" do
-    assert %{} == MemTable.new()
+  setup do
+    table = MemTable.new(__MODULE__)
+    %{table: table}
   end
 
-  test "upsert/3 insert new key" do
-    assert %{"key" => {0, "value"}} == MemTable.upsert(MemTable.new(), 0, "key", "value")
+  describe "upsert/4" do
+    test "inserts new key-value pair", c do
+      assert [] == :ets.tab2list(c.table)
+      assert true == MemTable.upsert(c.table, :k, 0, :v)
+      assert [{:k, 0, :v}] == :ets.tab2list(c.table)
+    end
+
+    test "updates key-value pair", c do
+      assert true == MemTable.upsert(c.table, :k, 0, :v)
+      assert [{:k, 0, :v}] == :ets.tab2list(c.table)
+      assert true == MemTable.upsert(c.table, :k, 0, :w)
+      assert [{:k, 0, :w}] == :ets.tab2list(c.table)
+    end
   end
 
-  test "upsert/3 updates existing key" do
-    assert %{"key" => {0, "value"}} =
-             mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+  describe "delete/3" do
+    test "updates existing value with :tombstone", c do
+      assert true == MemTable.upsert(c.table, :k, 0, :v)
+      assert [{:k, 0, :v}] == :ets.tab2list(c.table)
+      assert true == MemTable.delete(c.table, :k, 1)
+      assert [{:k, 1, :tombstone}] == :ets.tab2list(c.table)
+    end
 
-    assert %{"key" => {1, "value1"}} = MemTable.upsert(mem_table, 1, "key", "value1")
+    test "inserts :tombstone value if no key-value exists", c do
+      assert [] == :ets.tab2list(c.table)
+      assert true == MemTable.delete(c.table, :k, 0)
+      assert [{:k, 0, :tombstone}] == :ets.tab2list(c.table)
+    end
   end
 
-  test "upsert/3 does not upsert :tombstone" do
-    assert %{} == MemTable.upsert(MemTable.new(), 0, "key", :tombstone)
+  describe "read/3" do
+    test "reads nothing if no commit seq exists", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+
+      assert :not_found == MemTable.read(c.table, :k1, nil)
+      assert :not_found == MemTable.read(c.table, :k2, nil)
+      assert :not_found == MemTable.read(c.table, :k3, nil)
+    end
+
+    test "reads from latest committed seq no if seq not provided", c do
+      MemTable.upsert(c.table, :k, 0, :v)
+      MemTable.put_commit_seq(c.table, 0)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
+    end
+
+    test "reads from latest provided seq no", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+
+      assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, 2)
+      assert {:k2, 1, :v2} == MemTable.read(c.table, :k2, 2)
+      assert {:k3, 2, :v3} == MemTable.read(c.table, :k3, 2)
+
+      assert :not_found == MemTable.read(c.table, :k1, -1)
+      assert :not_found == MemTable.read(c.table, :k2, 0)
+      assert :not_found == MemTable.read(c.table, :k3, 1)
+    end
   end
 
-  test "delete/2 puts value with :tombstone" do
-    assert %{"key" => {0, :tombstone}} == MemTable.delete(MemTable.new(), 0, "key")
+  describe "clean_seq_range/2" do
+    test "deletes entries below provided seq no", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] == :ets.tab2list(c.table)
+
+      assert 1 == MemTable.clean_seq_range(c.table, 0)
+      assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == :ets.tab2list(c.table)
+
+      assert 2 == MemTable.clean_seq_range(c.table, 2)
+      assert [] == :ets.tab2list(c.table)
+    end
   end
 
-  test "delete/2 replaces value with :tombstone" do
-    assert %{"key" => {0, "value"}} =
-             mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+  describe "get_range/3" do
+    test "returns nothing if commit seq does not exist", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
 
-    assert %{"key" => {1, :tombstone}} == MemTable.delete(mem_table, 1, "key")
+      assert [] == MemTable.get_range(c.table, :k1, :k3)
+    end
+
+    test "returns all keys", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      MemTable.upsert(c.table, :k4, 3, :v4)
+      MemTable.put_commit_seq(c.table, 3)
+
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}, {:k4, 3, :v4}] ==
+               MemTable.get_range(c.table, nil, nil)
+    end
+
+    test "returns subset range over min and max keys (inclusive)", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      MemTable.upsert(c.table, :k4, 3, :v4)
+      MemTable.put_commit_seq(c.table, 3)
+
+      assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, :k2, :k3)
+    end
+
+    test "returns subset range from min and onwards (inclusive)", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      MemTable.upsert(c.table, :k4, 3, :v4)
+      MemTable.put_commit_seq(c.table, 3)
+
+      assert [{:k2, 1, :v2}, {:k3, 2, :v3}, {:k4, 3, :v4}] ==
+               MemTable.get_range(c.table, :k2, nil)
+    end
+
+    test "returns subset range from smallest to max (inclusive)", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      MemTable.upsert(c.table, :k4, 3, :v4)
+      MemTable.put_commit_seq(c.table, 3)
+
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] ==
+               MemTable.get_range(c.table, nil, :k3)
+    end
   end
 
-  test "read/2 returns value" do
-    assert %{"key" => {0, "value"}} =
-             mem_table = MemTable.upsert(MemTable.new(), 0, "key", "value")
+  describe "get_seq_range/2" do
+    test "returns list of keys inbetween smallest and provided seq no", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      MemTable.upsert(c.table, :k4, 3, :v4)
 
-    assert {:value, 0, "value"} == MemTable.read(mem_table, "key")
-  end
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}] == MemTable.get_seq_range(c.table, 1)
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_seq_range(c.table, 2)
 
-  test "read/2 returns :not_found if no value set" do
-    assert :not_found == MemTable.read(MemTable.new(), "key")
-  end
-
-  test "read/2 returns {:value, seq, :tombstone} for deleted key" do
-    mem_table =
-      MemTable.new()
-      |> MemTable.upsert(0, "key", "value")
-      |> MemTable.delete(1, "key")
-
-    assert {:value, 1, :tombstone} == MemTable.read(mem_table, "key")
-  end
-
-  test "has_overflow/2 returns boolean on overflow" do
-    assert false == MemTable.has_overflow(MemTable.new(), 2)
-
-    mem_table =
-      MemTable.new()
-      |> MemTable.upsert(0, "v1", "k1")
-      |> MemTable.upsert(1, "v2", "k2")
-      |> MemTable.upsert(2, "v3", "k3")
-
-    assert true == MemTable.has_overflow(mem_table, 2)
-  end
-
-  test "is_disjoint/2 returns boolean" do
-    assert true == MemTable.is_disjoint(MemTable.new(), MemTable.new())
-
-    mem_table1 =
-      MemTable.new()
-      |> MemTable.upsert(0, "k1", "v1")
-      |> MemTable.upsert(1, "k2", "v2")
-      |> MemTable.upsert(2, "k3", "v3")
-
-    mem_table2 =
-      MemTable.new()
-      |> MemTable.upsert(3, "k2", "v2")
-      |> MemTable.upsert(4, "k3", "v3")
-      |> MemTable.upsert(5, "k4", "v4")
-
-    mem_table3 =
-      MemTable.new()
-      |> MemTable.upsert(6, "k4", "v4")
-      |> MemTable.upsert(7, "k5", "v5")
-      |> MemTable.upsert(8, "k6", "v6")
-
-    assert false == MemTable.is_disjoint(mem_table1, mem_table1)
-    assert true == MemTable.is_disjoint(mem_table1, mem_table3)
-    assert false == MemTable.is_disjoint(mem_table1, mem_table2)
-    assert false == MemTable.is_disjoint(mem_table2, mem_table3)
-  end
-
-  test "merge/2 merges to mem_tables" do
-    mem_table1 =
-      MemTable.new()
-      |> MemTable.upsert(0, "k1", "v1")
-      |> MemTable.upsert(1, "k2", "v2")
-      |> MemTable.upsert(2, "k3", "v3")
-
-    mem_table2 =
-      MemTable.new()
-      |> MemTable.upsert(3, "k4", "v4")
-      |> MemTable.upsert(4, "k5", "v5")
-      |> MemTable.upsert(5, "k6", "v6")
-
-    assert %{
-             "k1" => {0, "v1"},
-             "k2" => {1, "v2"},
-             "k3" => {2, "v3"},
-             "k4" => {3, "v4"},
-             "k5" => {4, "v5"},
-             "k6" => {5, "v6"}
-           } == MemTable.merge(mem_table1, mem_table2)
-  end
-
-  test "merge/2 with empty tables" do
-    mem_table = MemTable.new() |> MemTable.upsert(0, "key", "value")
-
-    assert mem_table == MemTable.merge(MemTable.new(), mem_table)
-    assert mem_table == MemTable.merge(mem_table, MemTable.new())
-    assert %{} == MemTable.merge(MemTable.new(), MemTable.new())
-  end
-
-  test "merge/2 overwrites keys from first table" do
-    mem_table1 =
-      MemTable.new()
-      |> MemTable.upsert(0, "key1", "old_value")
-      |> MemTable.upsert(1, "key2", "value2")
-
-    mem_table2 =
-      MemTable.new()
-      |> MemTable.upsert(2, "key1", "new_value")
-      |> MemTable.upsert(3, "key3", "value3")
-
-    assert %{
-             "key1" => {2, "new_value"},
-             "key2" => {1, "value2"},
-             "key3" => {3, "value3"}
-           } == MemTable.merge(mem_table1, mem_table2)
-  end
-
-  test "merge/2 handles tombstones" do
-    mem_table1 =
-      MemTable.new()
-      |> MemTable.upsert(0, "key1", "value1")
-      |> MemTable.delete(1, "key2")
-
-    mem_table2 =
-      MemTable.new()
-      |> MemTable.upsert(2, "key2", "value2")
-      |> MemTable.delete(3, "key3")
-
-    assert %{
-             "key1" => {0, "value1"},
-             "key2" => {2, "value2"},
-             "key3" => {3, :tombstone}
-           } == MemTable.merge(mem_table1, mem_table2)
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}, {:k4, 3, :v4}] ==
+               MemTable.get_seq_range(c.table, 3)
+    end
   end
 end
