@@ -18,21 +18,14 @@ defmodule Goblin.Tx do
         end
       end)
 
-  ## Snapshot isolation
-
-  Transactions operate on a snapshot of the database at the time the
-  transaction starts. Reads within a transaction see a consistent view
-  of the data, even if other transactions commit changes.
-
-  If two transactions modify the same keys, the second transaction to
-  commit will fail with `{:error, :in_conflict}`.
-
   ## Return values
 
   Transaction functions must return either:
 
   - `{:commit, tx, result}` - Commits the transaction and returns `result`
   - `:cancel` - Cancels the transaction and returns `:ok`
+
+  Returning anything else causes the transaction to raise.
   """
 
   @opaque t :: Goblin.Writer.Transaction.t()
@@ -90,12 +83,13 @@ defmodule Goblin.Tx do
   Retrieves a value within a transaction.
 
   Reads from the transaction's snapshot, including any uncommitted writes
-  made within the same transaction. Returns `nil` if the key is not found.
+  made within the same transaction. 
 
   ## Parameters
 
   - `tx` - The transaction struct
   - `key` - The key to look up
+  - `default` - A default value if the key is not found, defaults to `nil`
 
   ## Returns
 
@@ -104,7 +98,7 @@ defmodule Goblin.Tx do
   ## Examples
 
       Goblin.transaction(db, fn tx ->
-        {val, tx} = Goblin.Tx.get(tx, :counter) || 0
+        value = Goblin.Tx.get(tx, :counter, 0)
         tx = Goblin.Tx.put(tx, :counter, value + 1)
         {:commit, tx, value + 1}
       end)
