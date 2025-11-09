@@ -1,7 +1,6 @@
 defmodule Goblin.Manifest do
   @moduledoc false
   use GenServer
-  import Goblin.ProcessRegistry, only: [via: 1]
 
   @manifest_file "manifest.goblin"
   @wal_file "wal.goblin"
@@ -15,6 +14,7 @@ defmodule Goblin.Manifest do
           count: non_neg_integer(),
           seq: Goblin.db_sequence()
         }
+  @type manifest :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :log,
@@ -27,56 +27,53 @@ defmodule Goblin.Manifest do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    registry = opts[:registry]
+    name = opts[:name]
 
-    args =
-      Keyword.take(opts, [
-        :db_dir,
-        :name,
-        :manifest_file,
-        :manifest_max_size
-      ])
+    args = [
+      local_name: opts[:local_name] || name,
+      db_dir: opts[:db_dir],
+      manifest_max_size: opts[:manifest_max_size]
+    ]
 
-    GenServer.start_link(__MODULE__, args, name: via(registry))
+    GenServer.start_link(__MODULE__, args, name: name)
   end
 
-  @spec log_rotation(Goblin.registry(), Goblin.db_file()) :: :ok | {:error, term()}
-  def log_rotation(registry, wal) do
-    GenServer.call(via(registry), {:log_edit, {:wal_added, wal}})
+  @spec log_rotation(manifest(), Goblin.db_file()) :: :ok | {:error, term()}
+  def log_rotation(manifest, wal) do
+    GenServer.call(manifest, {:log_edit, {:wal_added, wal}})
   end
 
-  @spec log_flush(Goblin.registry(), [Goblin.db_file()], Goblin.db_file()) ::
+  @spec log_flush(manifest(), [Goblin.db_file()], Goblin.db_file()) ::
           :ok | {:error, term()}
-  def log_flush(registry, files, wal) do
+  def log_flush(manifest, files, wal) do
     added_edits = Enum.map(files, &{:file_added, &1})
     removed_edit = {:wal_removed, wal}
-    GenServer.call(via(registry), {:log_edit, added_edits ++ [removed_edit]})
+    GenServer.call(manifest, {:log_edit, added_edits ++ [removed_edit]})
   end
 
-  @spec log_sequence(Goblin.registry(), Goblin.db_sequence()) :: :ok | {:error, term()}
-  def log_sequence(registry, seq) do
-    GenServer.call(via(registry), {:log_edit, {:seq, seq}})
+  @spec log_sequence(manifest(), Goblin.db_sequence()) :: :ok | {:error, term()}
+  def log_sequence(manifest, seq) do
+    GenServer.call(manifest, {:log_edit, {:seq, seq}})
   end
 
-  @spec log_compaction(Goblin.registry(), [Goblin.db_file()], [Goblin.db_file()]) ::
+  @spec log_compaction(manifest(), [Goblin.db_file()], [Goblin.db_file()]) ::
           :ok | {:error, term()}
-  def log_compaction(registry, rotated_files, new_files) do
+  def log_compaction(manifest, rotated_files, new_files) do
     added_edits = Enum.map(new_files, &{:file_added, &1})
     removed_edits = Enum.map(rotated_files, &{:file_removed, &1})
-    GenServer.call(via(registry), {:log_edit, added_edits ++ removed_edits})
+    GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
-  @spec get_version(Goblin.registry(), [:files | :wals | :count | :seq]) :: version()
-  def get_version(registry, keys \\ []) do
-    GenServer.call(via(registry), {:get_version, keys})
+  @spec get_version(manifest(), [:files | :wals | :count | :seq]) :: version()
+  def get_version(manifest, keys \\ []) do
+    GenServer.call(manifest, {:get_version, keys})
   end
 
   @impl GenServer
   def init(args) do
-    name = Module.concat(args[:name], Manifest)
-    file = args[:manifest_file] || @manifest_file
+    name = args[:local_name]
     db_dir = args[:db_dir]
-    file = Path.join(db_dir, file)
+    file = Path.join(db_dir, @manifest_file)
     max_size = args[:manifest_max_size] || @manifest_max_size
 
     if File.exists?(rotated_file(file)) do
@@ -95,7 +92,7 @@ defmodule Goblin.Manifest do
          version: version
        }}
     else
-      error -> {:stop, error}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
