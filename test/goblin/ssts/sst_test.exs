@@ -129,7 +129,7 @@ defmodule Goblin.SSTs.SSTTest do
       level_key = 2
       bloom_filter = BloomFilter.new() |> BloomFilter.put("key1") |> BloomFilter.generate()
       key_range = {"a", "z"}
-      priority = 1000
+      seq_range = {123, 456}
       offset = 5120
       no_of_blocks = 10
       size = 5120
@@ -139,7 +139,7 @@ defmodule Goblin.SSTs.SSTTest do
           level_key,
           bloom_filter,
           key_range,
-          priority,
+          seq_range,
           offset,
           no_of_blocks,
           size
@@ -158,8 +158,8 @@ defmodule Goblin.SSTs.SSTTest do
                 bf_size,
                 key_range_pos,
                 key_range_size,
-                priority_pos,
-                priority_size,
+                seq_range_pos,
+                seq_range_size,
                 ^no_of_blocks,
                 total_size,
                 ^offset
@@ -169,8 +169,8 @@ defmodule Goblin.SSTs.SSTTest do
       assert bf_size > 0
       assert key_range_pos > bf_pos
       assert key_range_size > 0
-      assert priority_pos > key_range_pos
-      assert priority_size > 0
+      assert seq_range_pos > key_range_pos
+      assert seq_range_size > 0
       assert total_size > size
     end
 
@@ -210,17 +210,17 @@ defmodule Goblin.SSTs.SSTTest do
     end
   end
 
-  describe "decode_priority/1" do
-    test "decodes valid priority" do
-      priority = 12345
-      encoded = :erlang.term_to_binary({:priority, priority})
+  describe "decode_seq_range/1" do
+    test "decodes valid sequence range" do
+      seq_range = {123, 456}
+      encoded = :erlang.term_to_binary({:seq_range, seq_range})
 
-      assert {:ok, ^priority} = SST.decode_priority(encoded)
+      assert {:ok, ^seq_range} = SST.decode_seq_range(encoded)
     end
 
-    test "returns error for invalid priority" do
-      invalid_encoded = :erlang.term_to_binary({:not_priority, "data"})
-      assert {:error, :invalid_priority} = SST.decode_priority(invalid_encoded)
+    test "returns error for invalid seq_range" do
+      invalid_encoded = :erlang.term_to_binary({:not_seq_range, "data"})
+      assert {:error, :invalid_seq_range} = SST.decode_seq_range(invalid_encoded)
     end
   end
 
@@ -229,7 +229,7 @@ defmodule Goblin.SSTs.SSTTest do
       level_key = 1
       bloom_filter = BloomFilter.new() |> BloomFilter.put("test") |> BloomFilter.generate()
       key_range = {"aaa", "zzz"}
-      priority = 5000
+      seq_range = {123, 456}
       offset = 2048
       no_of_blocks = 4
       size = 2048
@@ -239,7 +239,7 @@ defmodule Goblin.SSTs.SSTTest do
           level_key,
           bloom_filter,
           key_range,
-          priority,
+          seq_range,
           offset,
           no_of_blocks,
           size
@@ -255,8 +255,8 @@ defmodule Goblin.SSTs.SSTTest do
                 bf_size,
                 key_range_pos,
                 key_range_size,
-                priority_pos,
-                priority_size,
+                seq_range_pos,
+                seq_range_size,
                 ^no_of_blocks,
                 _total_size,
                 ^offset
@@ -269,8 +269,8 @@ defmodule Goblin.SSTs.SSTTest do
       key_range_binary = :binary.part(footer, key_range_pos - offset, key_range_size)
       assert {:ok, ^key_range} = SST.decode_key_range(key_range_binary)
 
-      priority_binary = :binary.part(footer, priority_pos - offset, priority_size)
-      assert {:ok, ^priority} = SST.decode_priority(priority_binary)
+      seq_range_binary = :binary.part(footer, seq_range_pos - offset, seq_range_size)
+      assert {:ok, ^seq_range} = SST.decode_seq_range(seq_range_binary)
     end
   end
 end

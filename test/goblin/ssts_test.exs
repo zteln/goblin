@@ -13,9 +13,9 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, "key1", "value1"},
-          {2, "key2", "value2"},
-          {3, "key3", "value3"}
+          {"key1", 1, "value1"},
+          {"key2", 2, "value2"},
+          {"key3", 3, "value3"}
         ]
         |> stream_flush_data(10)
 
@@ -24,7 +24,7 @@ defmodule Goblin.SSTsTest do
                 %{
                   file: file,
                   bloom_filter: bloom_filter,
-                  priority: priority,
+                  seq_range: seq_range,
                   size: size,
                   key_range: key_range
                 }
@@ -32,7 +32,7 @@ defmodule Goblin.SSTsTest do
                SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert %BloomFilter{} = bloom_filter
-      assert priority == 1
+      assert seq_range == {1, 3}
       assert size > 0
       assert key_range == {"key1", "key3"}
       assert File.exists?(file)
@@ -48,14 +48,14 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, "key1", "value1"},
-          {2, "key2", "value2"},
-          {3, "key3", "value3"},
-          {4, "key4", "value4"},
-          {5, "key5", "value5"},
-          {6, "key6", "value6"},
-          {7, "key7", "value7"},
-          {8, "key8", "value8"}
+          {"key1", 1, "value1"},
+          {"key2", 2, "value2"},
+          {"key3", 3, "value3"},
+          {"key4", 4, "value4"},
+          {"key5", 5, "value5"},
+          {"key6", 6, "value6"},
+          {"key7", 7, "value7"},
+          {"key8", 8, "value8"}
         ]
         |> stream_flush_data(key_limit)
 
@@ -82,9 +82,9 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, "key1", "value1"},
-          {2, "key2", "value2"},
-          {3, "key4", "value4"}
+          {"key1", 1, "value1"},
+          {"key2", 2, "value2"},
+          {"key4", 3, "value4"}
         ]
         |> stream_flush_data(10)
 
@@ -103,7 +103,7 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, "key1", large_value}
+          {"key1", 1, large_value}
         ]
         |> stream_flush_data(10)
 
@@ -119,9 +119,9 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, "key1", "value1"},
-          {2, "key2", :tombstone},
-          {3, "key3", "value3"}
+          {"key1", 1, "value1"},
+          {"key2", 2, :tombstone},
+          {"key3", 3, "value3"}
         ]
         |> stream_flush_data(10)
 
@@ -139,14 +139,14 @@ defmodule Goblin.SSTsTest do
       stream =
         for n <- 1..100 do
           key = String.pad_leading("#{n}", 3, "0")
-          {n, key, "value#{n}"}
+          {key, n, "value#{n}"}
         end
         |> stream_flush_data(100)
 
-      assert {:ok, [%{priority: priority, key_range: key_range}]} =
+      assert {:ok, [%{seq_range: seq_range, key_range: key_range}]} =
                SSTs.new([stream], level_key, file_getter: fn -> file end)
 
-      assert priority == 1
+      assert seq_range == {1, 100}
       assert key_range == {"001", "100"}
 
       for n <- 1..100 do
@@ -162,7 +162,7 @@ defmodule Goblin.SSTsTest do
 
         stream =
           [
-            {1, "key1", "value1"}
+            {"key1", 1, "value1"}
           ]
           |> stream_flush_data(100)
 
@@ -179,8 +179,8 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {5, "key1", "value1"},
-          {6, "key2", "value2"}
+          {"key1", 5, "value1"},
+          {"key2", 6, "value2"}
         ]
         |> stream_flush_data(100)
 
@@ -189,7 +189,7 @@ defmodule Goblin.SSTsTest do
       assert {:ok,
               %{
                 level_key: ^level_key,
-                priority: priority,
+                seq_range: seq_range,
                 size: size,
                 key_range: key_range,
                 bloom_filter: bloom_filter
@@ -197,7 +197,7 @@ defmodule Goblin.SSTsTest do
                SSTs.fetch_sst(file)
 
       assert %BloomFilter{} = bloom_filter
-      assert priority == 5
+      assert seq_range == {5, 6}
       assert size > 0
       assert key_range == {"key1", "key2"}
     end
@@ -224,9 +224,9 @@ defmodule Goblin.SSTsTest do
       level_key = 0
 
       data = [
-        {1, "a", "value_a"},
-        {2, "b", "value_b"},
-        {3, "c", "value_c"}
+        {"a", 1, "value_a"},
+        {"b", 2, "value_b"},
+        {"c", 3, "value_c"}
       ]
 
       stream = stream_flush_data(data, 100)
@@ -265,18 +265,18 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, "key1", "value1"},
-          {2, "key2", "value2"},
-          {3, "key3", "value3"}
+          {"key1", 1, "value1"},
+          {"key2", 2, "value2"},
+          {"key3", 3, "value3"}
         ]
         |> stream_flush_data(100)
 
       SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       iter = SSTs.iterate(file)
-      assert {{1, "key1", "value1"}, iter} = SSTs.iterate(iter)
-      assert {{2, "key2", "value2"}, iter} = SSTs.iterate(iter)
-      assert {{3, "key3", "value3"}, iter} = SSTs.iterate(iter)
+      assert {{"key1", 1, "value1"}, iter} = SSTs.iterate(iter)
+      assert {{"key2", 2, "value2"}, iter} = SSTs.iterate(iter)
+      assert {{"key3", 3, "value3"}, iter} = SSTs.iterate(iter)
       assert :ok = SSTs.iterate(iter)
     end
   end
@@ -286,7 +286,7 @@ defmodule Goblin.SSTsTest do
       file = Path.join(c.tmp_dir, "delete.goblin")
       level_key = 0
 
-      stream = [{1, "key1", "value1"}] |> stream_flush_data(100)
+      stream = [{"key1", 1, "value1"}] |> stream_flush_data(100)
       SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert File.exists?(file)
@@ -309,8 +309,8 @@ defmodule Goblin.SSTsTest do
 
       stream =
         [
-          {1, {:compound, "key"}, %{nested: [1, 2, 3]}},
-          {2, %{map: "key"}, [nested: %{data: "value"}]}
+          {{:compound, "key"}, 1, %{nested: [1, 2, 3]}},
+          {%{map: "key"}, 2, [nested: %{data: "value"}]}
         ]
         |> stream_flush_data(100)
 

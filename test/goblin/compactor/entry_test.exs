@@ -24,11 +24,11 @@ defmodule Goblin.Compactor.EntryTest do
     entry = %Entry{}
     assert %{buffer: buffer} = entry
     assert map_size(buffer) == 0
-    entry = Entry.place_in_buffer(entry, {0, :k, :v})
+    entry = Entry.place_in_buffer(entry, {:k, 0, :v})
     assert %{buffer: %{:k => {0, :v}}} = entry
-    entry = Entry.place_in_buffer(entry, {1, :l, :w})
+    entry = Entry.place_in_buffer(entry, {:l, 1, :w})
     assert %{buffer: %{:k => {0, :v}, :l => {1, :w}}} = entry
-    entry = Entry.place_in_buffer(entry, {2, :k, :u})
+    entry = Entry.place_in_buffer(entry, {:k, 2, :u})
     assert %{buffer: %{:k => {2, :u}, :l => {1, :w}}} = entry
   end
 end
