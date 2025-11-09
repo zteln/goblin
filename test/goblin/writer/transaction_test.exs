@@ -1,106 +1,41 @@
 defmodule Goblin.Writer.TransactionTest do
   use ExUnit.Case, async: true
   alias Goblin.Writer.Transaction
-  alias Goblin.Writer.MemTable
 
-  test "new/3 returns new Transaction struct" do
-    assert %Transaction{
-             owner: :owner,
-             mem_table: %{},
-             reads: %{},
-             writes: [],
-             retries: 0,
-             timeout: :infinity
-           } = Transaction.new(:owner, [])
+  describe "put/3" do
+    test "prepends to writes in transaction" do
+      assert %{writes: [], seq: 0} = tx = Transaction.new(0)
+      assert %{writes: [{:put, 0, :k1, :v1}], seq: 1} = tx = Transaction.put(tx, :k1, :v1)
 
-    assert %Transaction{
-             owner: :owner,
-             mem_table: %{},
-             reads: %{},
-             writes: [],
-             retries: 5,
-             timeout: 200
-           } = Transaction.new(:owner, [retries: 5, timeout: 200])
+      assert %{writes: [{:put, 1, :k2, :v2}, {:put, 0, :k1, :v1}], seq: 2} =
+               Transaction.put(tx, :k2, :v2)
+    end
   end
 
-  test "put/3 writes to MemTable and inserts a write command" do
-    tx = Transaction.new(:owner, [])
+  describe "remove/2" do
+    test "prepends to writes in transaction" do
+      assert %{writes: [], seq: 0} = tx = Transaction.new(0)
+      assert %{writes: [{:remove, 0, :k1}], seq: 1} = tx = Transaction.remove(tx, :k1)
 
-    assert %Transaction{writes: [{0, :put, :k, :v}], mem_table: %{k: {0, :v}}} =
-             tx =
-             Transaction.put(tx, :k, :v)
-
-    assert %Transaction{writes: [{1, :put, :k, :w}, {0, :put, :k, :v}], mem_table: %{k: {1, :w}}} =
-             Transaction.put(tx, :k, :w)
+      assert %{writes: [{:remove, 1, :k2}, {:remove, 0, :k1}], seq: 2} =
+               Transaction.remove(tx, :k2)
+    end
   end
 
-  test "remove/2 writes to MemTable and inserts a write command" do
-    tx = Transaction.new(:owner, []) |> Transaction.put(:k, :v)
+  describe "get/3" do
+    test "reads from tx's writes" do
+      tx = Transaction.new(0)
+      tx = Transaction.put(tx, :k1, :v1)
+      tx = Transaction.remove(tx, :k2)
 
-    assert %Transaction{
-             writes: [{1, :remove, :k}, {0, :put, :k, :v}],
-             mem_table: %{k: {1, :tombstone}}
-           } =
-             Transaction.remove(tx, :k)
-  end
+      assert :v1 == Transaction.get(tx, :k1)
+      assert nil == Transaction.get(tx, :k2)
+      assert :default == Transaction.get(tx, :k2, :default)
+    end
 
-  test "remove/2 removes key not written during transaction" do
-    tx = Transaction.new(:owner, [])
-
-    assert %Transaction{writes: [{0, :remove, :k}], mem_table: %{k: {0, :tombstone}}} =
-             Transaction.remove(tx, :k)
-  end
-
-  test "has_conflict/2 returns false if no writes are written" do
-    {nil, tx} = Transaction.new(:owner, []) |> Transaction.get(:k3)
-
-    mem_tables = [
-      MemTable.upsert(MemTable.new(), 0, :k1, :v1),
-      MemTable.upsert(MemTable.new(), 1, :k2, :v1),
-      MemTable.upsert(MemTable.new(), 2, :k3, :v1)
-    ]
-
-    refute Transaction.has_conflict(tx, mem_tables)
-  end
-
-  test "has_conflict/2 returns true on write conflict" do
-    tx =
-      Transaction.new(:owner, [])
-      |> Transaction.put(:k1, :v0)
-      |> Transaction.put(:k2, :v0)
-      |> Transaction.put(:k3, :v0)
-
-    mem_tables = [
-      MemTable.upsert(MemTable.new(), 0, :k1, :v1),
-      MemTable.upsert(MemTable.new(), 1, :k2, :v1),
-      MemTable.upsert(MemTable.new(), 2, :k3, :v1)
-    ]
-
-    assert Transaction.has_conflict(tx, mem_tables)
-  end
-
-  test "has_conflict/2 returns false on no conflicts" do
-    {nil, tx} =
-      Transaction.new(:owner, [])
-      |> Transaction.put(:k1, :v0)
-      |> Transaction.get(:k2)
-
-    mem_table = MemTable.new() |> MemTable.upsert(0, :k3, :v1)
-    refute Transaction.has_conflict(tx, [mem_table])
-  end
-
-  test "get/3 updates read table and returns value" do
-    tx = Transaction.new(:owner, []) |> Transaction.put(:k, :v)
-    assert {:v, %{reads: %{k: {0, :v}}}} = Transaction.get(tx, :k)
-  end
-
-  test "get/3 returns value from fallback reader" do
-    tx = Transaction.new(:owner, [], &{0, &1})
-    assert {:k, %{reads: %{k: {0, :k}}}} = Transaction.get(tx, :k)
-  end
-
-  test "get/3 returns default if not found" do
-    tx = Transaction.new(:owner, [])
-    assert {:w, %{reads: %{k: :not_found}}} = Transaction.get(tx, :k, :w)
+    test "fallback read is called if not found in tx's writes" do
+      tx = Transaction.new(0, fn _key -> {:value, 0, :from_fallback_read} end)
+      assert :from_fallback_read == Transaction.get(tx, :k1)
+    end
   end
 end

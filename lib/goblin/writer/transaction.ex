@@ -1,113 +1,55 @@
 defmodule Goblin.Writer.Transaction do
   @moduledoc false
-  alias Goblin.Writer.MemTable
-
-  @default_timeout :infinity
-  @default_retries 0
 
   defstruct [
-    :owner,
     :fallback_read,
-    :timestamp,
-    :timeout,
-    :retries,
-    seq: 0,
-    mem_table: MemTable.new(),
-    writes: [],
-    reads: %{}
+    :seq,
+    writes: []
   ]
 
   @type t :: %__MODULE__{}
 
-  @spec new(pid(), (term() -> term())) :: t()
-  def new(pid, opts, fallback_read \\ fn _ -> :not_found end) do
-    timeout = opts[:timeout] || @default_timeout
-    retries = opts[:retries] || @default_retries
-    timestamp = opts[:timestamp]
-
+  @spec new(Goblin.seq_no(), (Goblin.db_key() -> term())) :: t()
+  def new(seq, fallback_read \\ fn _ -> :not_found end) do
     %__MODULE__{
-      owner: pid,
       fallback_read: fallback_read,
-      timestamp: timestamp,
-      timeout: timeout,
-      retries: retries
+      seq: seq
     }
   end
 
   @spec put(t(), Goblin.db_key(), Goblin.db_value()) :: t()
   def put(tx, key, value) do
-    write = {tx.seq, :put, key, value}
-    mem_table = MemTable.upsert(tx.mem_table, tx.seq, key, value)
-    %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
+    write = {:put, tx.seq, key, value}
+    %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
   end
 
   @spec remove(t(), Goblin.db_key()) :: t()
   def remove(tx, key) do
-    write = {tx.seq, :remove, key}
-    mem_table = MemTable.delete(tx.mem_table, tx.seq, key)
-    %{tx | seq: tx.seq + 1, mem_table: mem_table, writes: [write | tx.writes]}
+    write = {:remove, tx.seq, key}
+    %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
   end
 
-  @spec get(t(), Goblin.db_key(), term()) :: {Goblin.db_value() | nil, t()}
+  @spec get(t(), Goblin.db_key(), term()) :: Goblin.db_value()
   def get(tx, key, default \\ nil) do
-    read =
-      case MemTable.read(tx.mem_table, key) do
-        {:value, seq, value} -> {seq, value}
-        :not_found -> tx.fallback_read.(key)
-      end
+    %{
+      writes: writes,
+      fallback_read: fallback_read
+    } = tx
 
-    val =
-      case read do
-        :not_found -> nil
-        {_seq, :tombstone} -> nil
-        {_seq, val} -> val
-      end
-
-    reads = Map.put(tx.reads, key, read)
-    tx = %{tx | reads: reads}
-    {val || default, tx}
-  end
-
-  @spec has_conflict(t(), [MemTable.t()]) :: boolean()
-  def has_conflict(tx, mem_tables) do
-    if has_writes(tx.writes) do
-      has_read_conflict(tx.reads, mem_tables) or has_write_conflict(tx.mem_table, mem_tables)
-    else
-      false
-    end
-  end
-
-  defp has_writes([]), do: false
-  defp has_writes(_), do: true
-
-  defp has_read_conflict(_, []), do: false
-
-  defp has_read_conflict(reads, [mem_table | mem_tables]) do
-    read_conflict? =
-      Enum.any?(reads, fn
-        {key, :not_found} ->
-          case MemTable.read(mem_table, key) do
-            :not_found -> false
-            {:value, _read_seq, _read_value} -> true
-          end
-
-        {key, seq, value} ->
-          case MemTable.read(mem_table, key) do
-            :not_found -> false
-            {:value, read_seq, read_value} -> read_seq != seq and read_value != value
-          end
+    tx_read =
+      Enum.find(writes, fn
+        {:put, _seq, ^key, _value} -> true
+        {:remove, _seq, ^key} -> true
+        _ -> false
       end)
 
-    if read_conflict?, do: true, else: has_read_conflict(reads, mem_tables)
-  end
+    read = tx_read || fallback_read.(key)
 
-  defp has_write_conflict(_mem_table, []), do: false
-
-  defp has_write_conflict(mem_table1, [mem_table2 | mem_tables]) do
-    if MemTable.is_disjoint(mem_table1, mem_table2) do
-      has_write_conflict(mem_table1, mem_tables)
-    else
-      true
+    case read do
+      :not_found -> default
+      {:value, _seq, value} -> value
+      {:put, _seq, _key, value} -> value
+      {:remove, _seq, _key} -> default
     end
   end
 end
