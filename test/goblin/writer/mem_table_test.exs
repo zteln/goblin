@@ -9,31 +9,32 @@ defmodule Goblin.Writer.MemTableTest do
 
   describe "upsert/4" do
     test "inserts new key-value pair", c do
-      assert [] == :ets.tab2list(c.table)
+      assert 0 == MemTable.size(c.table)
       assert true == MemTable.upsert(c.table, :k, 0, :v)
-      assert [{:k, 0, :v}] == :ets.tab2list(c.table)
+      assert 1 == MemTable.size(c.table)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, 0)
     end
 
     test "updates key-value pair", c do
       assert true == MemTable.upsert(c.table, :k, 0, :v)
-      assert [{:k, 0, :v}] == :ets.tab2list(c.table)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, 0)
       assert true == MemTable.upsert(c.table, :k, 0, :w)
-      assert [{:k, 0, :w}] == :ets.tab2list(c.table)
+      assert {:k, 0, :w} == MemTable.read(c.table, :k, 0)
     end
   end
 
   describe "delete/3" do
     test "updates existing value with :tombstone", c do
       assert true == MemTable.upsert(c.table, :k, 0, :v)
-      assert [{:k, 0, :v}] == :ets.tab2list(c.table)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, 0)
       assert true == MemTable.delete(c.table, :k, 1)
-      assert [{:k, 1, :tombstone}] == :ets.tab2list(c.table)
+      assert {:k, 1, :tombstone} == MemTable.read(c.table, :k, 1)
     end
 
     test "inserts :tombstone value if no key-value exists", c do
-      assert [] == :ets.tab2list(c.table)
+      assert 0 == MemTable.size(c.table)
       assert true == MemTable.delete(c.table, :k, 0)
-      assert [{:k, 0, :tombstone}] == :ets.tab2list(c.table)
+      assert {:k, 0, :tombstone} == MemTable.read(c.table, :k, 0)
     end
   end
 
@@ -74,13 +75,16 @@ defmodule Goblin.Writer.MemTableTest do
       MemTable.upsert(c.table, :k1, 0, :v1)
       MemTable.upsert(c.table, :k2, 1, :v2)
       MemTable.upsert(c.table, :k3, 2, :v3)
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] == :ets.tab2list(c.table)
+      MemTable.put_commit_seq(c.table, 2)
+
+      assert 4 == MemTable.size(c.table)
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, nil, nil)
 
       assert 1 == MemTable.clean_seq_range(c.table, 0)
-      assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == :ets.tab2list(c.table)
+      assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, nil, nil)
 
       assert 2 == MemTable.clean_seq_range(c.table, 2)
-      assert [] == :ets.tab2list(c.table)
+      assert [] == MemTable.get_range(c.table, nil, nil)
     end
   end
 
@@ -134,6 +138,18 @@ defmodule Goblin.Writer.MemTableTest do
 
       assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] ==
                MemTable.get_range(c.table, nil, :k3)
+    end
+
+    test "range is ordered by key", c do
+      for n <- 1..5 do
+        MemTable.upsert(c.table, :"k#{n}", n - 1, :"v#{n}")
+      end
+
+      MemTable.put_commit_seq(c.table, 5)
+
+      range = MemTable.get_range(c.table, nil, nil)
+
+      assert List.keysort(range, 0) == range
     end
   end
 
