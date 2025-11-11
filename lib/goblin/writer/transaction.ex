@@ -47,7 +47,7 @@ defmodule Goblin.Writer.Transaction do
 
     case read do
       :not_found -> default
-      {:value, _seq, value} -> value
+      {_seq, value} -> value
       {:put, _seq, _key, value} -> value
       {:remove, _seq, _key} -> default
     end
