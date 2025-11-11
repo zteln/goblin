@@ -1,15 +1,13 @@
 defmodule Goblin.ProcessSupervisor do
   @moduledoc false
   use Supervisor
-  import Goblin.ProcessRegistry, only: [via: 1, via: 2]
 
   @default_key_limit 50_000
   @default_level_limit 128 * 1024 * 1024
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    registry = opts[:registry]
-    Supervisor.start_link(__MODULE__, opts, name: via(registry))
+    Supervisor.start_link(__MODULE__, opts, name: opts[:name])
   end
 
   @impl true
@@ -17,46 +15,60 @@ defmodule Goblin.ProcessSupervisor do
     db_dir = args[:db_dir]
     key_limit = args[:key_limit] || @default_key_limit
     level_limit = args[:level_limit] || @default_level_limit
-
-    name = args[:name]
-    registry = args[:registry]
     pub_sub = args[:pub_sub]
-    task_sup = via(registry, Goblin.TaskSupervisor)
+
+    %{
+      writer: {writer, registered_writer},
+      store: {store, registered_store},
+      manifest: {manifest, registered_manifest},
+      wal: {wal, registered_wal},
+      compactor: {_compactor, registered_compactor},
+      task_sup: {_, registered_task_sup}
+    } = args[:names]
 
     children = [
-      {Task.Supervisor, name: task_sup},
-      {Goblin.RWLocks, Keyword.merge(args, registry: registry)},
+      {Task.Supervisor, name: registered_task_sup},
       {Goblin.Manifest,
        Keyword.merge(
          args,
-         name: name,
-         registry: registry,
+         name: registered_manifest,
+         local_name: manifest,
          db_dir: db_dir
        )},
       {Goblin.WAL,
        Keyword.merge(
          args,
-         name: name,
-         registry: registry,
+         name: registered_wal,
+         local_name: wal,
          db_dir: db_dir
        )},
       {Goblin.Compactor,
        Keyword.merge(args,
-         registry: registry,
-         task_sup: task_sup,
+         name: registered_compactor,
+         store: registered_store,
+         manifest: registered_manifest,
+         task_sup: registered_task_sup,
          key_limit: key_limit,
          level_limit: level_limit
        )},
       {Goblin.Store,
        Keyword.merge(args,
-         registry: registry,
+         name: registered_store,
+         local_name: store,
+         compactor: registered_compactor,
+         manifest: registered_manifest,
          dir: db_dir
        )},
       {Goblin.Writer,
        Keyword.merge(args,
-         registry: registry,
+         name: registered_writer,
+         local_name: writer,
+         store: registered_store,
+         store_name: store,
+         manifest: registered_manifest,
+         wal: registered_wal,
          pub_sub: pub_sub,
-         task_sup: task_sup,
+         task_sup: registered_task_sup,
          key_limit: key_limit
        )}
     ]

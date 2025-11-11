@@ -5,7 +5,7 @@ defmodule Goblin.WAL do
   @log_file "wal.goblin"
   @rotated_log_suffix ".rot"
 
-  @type wal :: module() | {:via, Registry, {module(), module()}}
+  @typep wal :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :log,

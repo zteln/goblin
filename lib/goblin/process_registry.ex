@@ -15,9 +15,9 @@ defmodule Goblin.ProcessRegistry do
     )
   end
 
-  defmacro via(registry, key \\ nil) do
+  defmacro via(registry, key) do
     quote do
-      {:via, Registry, {unquote(registry), unquote(key) || __MODULE__}}
+      {:via, Registry, {unquote(registry), unquote(key)}}
     end
   end
 end

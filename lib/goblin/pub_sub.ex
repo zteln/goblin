@@ -3,6 +3,8 @@ defmodule Goblin.PubSub do
 
   @topic :db_writes
 
+  @typep pub_sub :: module()
+
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(args) do
     Registry.start_link(
@@ -21,17 +23,17 @@ defmodule Goblin.PubSub do
     )
   end
 
-  @spec subscribe(Goblin.registry()) :: {:ok, pid()} | {:error, term()}
+  @spec subscribe(pub_sub()) :: {:ok, pid()} | {:error, term()}
   def subscribe(pub_sub) do
     Registry.register(pub_sub, @topic, [])
   end
 
-  @spec unsubscribe(Goblin.registry()) :: :ok
+  @spec unsubscribe(pub_sub()) :: :ok
   def unsubscribe(pub_sub) do
     Registry.unregister(pub_sub, @topic)
   end
 
-  @spec publish(Goblin.registry(), term()) :: :ok
+  @spec publish(pub_sub(), term()) :: :ok
   def publish(pub_sub, writes) do
     Registry.dispatch(pub_sub, @topic, fn entries ->
       for {pid, _} <- entries do

@@ -14,7 +14,7 @@ defmodule Goblin.Manifest do
           count: non_neg_integer(),
           seq: Goblin.db_sequence()
         }
-  @type manifest :: module() | {:via, Registry, {module(), module()}}
+  @typep manifest :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :log,

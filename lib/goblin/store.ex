@@ -8,7 +8,7 @@ defmodule Goblin.Store do
 
   @file_suffix ".goblin"
 
-  @type store :: module() | {:via, Registry, {module(), module()}}
+  @typep store :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :dir,
@@ -162,7 +162,7 @@ defmodule Goblin.Store do
       key_range: key_range
     } = sst
 
-    Compactor.put(compactor, level_key, {file, min_seq, size, key_range})
+    Compactor.put(compactor, level_key, file, min_seq, size, key_range)
   end
 
   defp file_path(dir, count), do: Path.join(dir, to_string(count) <> @file_suffix)
