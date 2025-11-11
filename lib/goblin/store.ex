@@ -8,7 +8,7 @@ defmodule Goblin.Store do
 
   @file_suffix ".goblin"
 
-  @typep store :: module() | {:via, Registry, {module(), module()}}
+  @type store :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :dir,

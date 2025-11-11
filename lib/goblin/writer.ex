@@ -13,7 +13,7 @@ defmodule Goblin.Writer do
 
   @flush_level 0
 
-  @typep writer :: module() | {:via, Registry, {module(), module()}}
+  @type writer :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :bf_fpp,
