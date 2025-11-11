@@ -26,16 +26,11 @@ defmodule Goblin.SSTs do
   @spec find(Goblin.db_file(), Goblin.db_key()) ::
           {:ok, {:value, Goblin.db_sequence(), Goblin.db_value()}} | :not_found | {:error, term()}
   def find(file, key) do
-    disk = Disk.open!(file)
-
-    result =
-      with :ok <- valid_ss_table(disk),
-           {:ok, {_, _, _, _, _, _, _, no_of_blocks, _, _}} <- read_metadata(disk) do
-        binary_search(disk, key, 0, no_of_blocks)
-      end
-
-    Disk.close(disk)
-    result
+    with {:ok, disk} <- Disk.open(file) do
+      search_result = search_sst(disk, key)
+      Disk.close(disk)
+      search_result
+    end
   end
 
   @spec fetch_sst(Goblin.db_file()) ::
@@ -44,7 +39,7 @@ defmodule Goblin.SSTs do
     disk = Disk.open!(file)
 
     result =
-      with :ok <- valid_ss_table(disk),
+      with :ok <- valid_sst(disk),
            {:ok,
             {
               level_key,
@@ -52,21 +47,21 @@ defmodule Goblin.SSTs do
               bf_size,
               key_range_pos,
               key_range_size,
-              priority_pos,
-              priority_size,
+              seq_range_pos,
+              seq_range_size,
               _,
               size,
               _
             }} <- read_metadata(disk),
            {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size),
            {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
-           {:ok, priority} <- read_priority(disk, priority_pos, priority_size) do
+           {:ok, seq_range} <- read_seq_range(disk, seq_range_pos, seq_range_size) do
         {:ok,
          %SST{
            file: file,
            bloom_filter: bf,
            level_key: level_key,
-           priority: priority,
+           seq_range: seq_range,
            key_range: key_range,
            size: size
          }}
@@ -151,13 +146,13 @@ defmodule Goblin.SSTs do
     disk = Disk.open!(file, write?: true)
 
     result =
-      with {:ok, _disk, bloom_filter, priority, size, key_range} <-
+      with {:ok, _disk, bloom_filter, seq_range, size, key_range} <-
              write_sst(disk, level_key, data, bf_fpp) do
         {:ok,
          %SST{
            bloom_filter: bloom_filter,
            level_key: level_key,
-           priority: priority,
+           seq_range: seq_range,
            size: size,
            key_range: key_range
          }}
@@ -168,7 +163,14 @@ defmodule Goblin.SSTs do
     result
   end
 
-  defp valid_ss_table(disk) do
+  defp search_sst(disk, key) do
+    with :ok <- valid_sst(disk),
+         {:ok, {_, _, _, _, _, _, _, no_of_blocks, _, _}} <- read_metadata(disk) do
+      binary_search(disk, key, 0, no_of_blocks)
+    end
+  end
+
+  defp valid_sst(disk) do
     with {:ok, magic} <- Disk.read_from_end(disk, SST.size(:magic), SST.size(:magic)),
          true <- SST.is_ss_table(magic) do
       :ok
@@ -201,9 +203,9 @@ defmodule Goblin.SSTs do
     end
   end
 
-  defp read_priority(disk, pos, size) do
-    with {:ok, encoded_priority} <- Disk.read(disk, pos, size) do
-      SST.decode_priority(encoded_priority)
+  defp read_seq_range(disk, pos, size) do
+    with {:ok, encoded_seq_range} <- Disk.read(disk, pos, size) do
+      SST.decode_seq_range(encoded_seq_range)
     end
   end
 
@@ -213,7 +215,7 @@ defmodule Goblin.SSTs do
     mid = div(low + high, 2)
     position = (mid - 1) * SST.size(:block)
 
-    with {:ok, seq, k, v} <- read_block(disk, position) do
+    with {:ok, k, seq, v} <- read_block(disk, position) do
       cond do
         key == k ->
           {:ok, {:value, seq, v}}
@@ -233,8 +235,8 @@ defmodule Goblin.SSTs do
     with {:ok, encoded_header} <- Disk.read(disk, position, SST.size(:block_header)),
          {:ok, span} <- SST.block_span(encoded_header),
          {:ok, encoded} <- Disk.read(disk, position, SST.size(:block) * span),
-         {:ok, {seq, key, value}} <- SST.decode_block(encoded) do
-      {:ok, seq, key, value}
+         {:ok, {key, seq, value}} <- SST.decode_block(encoded) do
+      {:ok, key, seq, value}
     else
       {:error, :not_block_start} ->
         read_block(disk, position - SST.size(:block))
@@ -256,38 +258,45 @@ defmodule Goblin.SSTs do
   defp write_sst(disk, level_key, data, bf_fpp) do
     with {:ok, disk, data} <- write_data(disk, data),
          {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data, bf_fpp) do
-      {:ok, disk, bloom_filter, data.priority, data.size + meta_size, data.key_range}
+      {:ok, disk, bloom_filter, data.seq_range, data.size + meta_size, data.key_range}
     end
   end
 
   defp write_data(disk, data) do
     init = %{
-      priority: nil,
-      no_of_keys: 0,
       no_of_blocks: 0,
       key_range: {nil, nil},
+      seq_range: {nil, 0},
       bloom_filter: BloomFilter.new(),
       size: 0
     }
 
-    Enum.reduce_while(data, {:ok, disk, init}, fn {seq, k, v}, {:ok, disk, acc} ->
-      block = SST.encode_block(seq, k, v)
+    Enum.reduce_while(data, {:ok, disk, init}, fn {k, seq, v}, {:ok, disk, acc} ->
+      block = SST.encode_block(k, seq, v)
       block_size = byte_size(block)
       span = SST.span(block_size)
-      priority = if acc.priority, do: acc.priority, else: seq
-      {smallest, _largest} = acc.key_range
-      smallest = if smallest, do: smallest, else: k
-      largest = k
+      {min_seq, max_seq} = acc.seq_range
+
+      min_seq =
+        if is_nil(min_seq) do
+          seq
+        else
+          min(min_seq, seq)
+        end
+
+      max_seq = max(max_seq, seq)
+      {min_key, _max_key} = acc.key_range
+      min_key = if min_key, do: min_key, else: k
+      max_key = k
       bloom_filter = BloomFilter.put(acc.bloom_filter, k)
 
       case Disk.write(disk, block) do
         {:ok, disk} ->
           acc = %{
             acc
-            | no_of_keys: acc.no_of_keys + 1,
-              no_of_blocks: acc.no_of_blocks + span,
-              key_range: {smallest, largest},
-              priority: priority,
+            | no_of_blocks: acc.no_of_blocks + span,
+              key_range: {min_key, max_key},
+              seq_range: {min_seq, max_seq},
               bloom_filter: bloom_filter,
               size: acc.size + block_size
           }
@@ -308,10 +317,10 @@ defmodule Goblin.SSTs do
         level_key,
         bloom_filter,
         data.key_range,
-        data.priority,
+        data.seq_range,
         disk.offset,
-        data.no_of_keys,
-        data.no_of_blocks
+        data.no_of_blocks,
+        data.size
       )
 
     with {:ok, disk} <- Disk.write(disk, footer) do

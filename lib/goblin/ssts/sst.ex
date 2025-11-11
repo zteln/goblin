@@ -5,8 +5,8 @@ defmodule Goblin.SSTs.SST do
   defstruct [
     :file,
     :level_key,
-    :priority,
     :key_range,
+    :seq_range,
     :bloom_filter,
     :size
   ]
@@ -61,8 +61,8 @@ defmodule Goblin.SSTs.SST do
   def size(:block_header), do: @block_header_size
 
   @spec encode_block(Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()) :: binary()
-  def encode_block(seq, key, value) do
-    encoded = encode({seq, key, value})
+  def encode_block(key, seq, value) do
+    encoded = encode({key, seq, value})
     block_size = byte_size(<<@block_id::binary, 0::integer-16, encoded::binary>>)
     span = span(block_size)
     padding = span * @block_size - block_size
@@ -82,7 +82,7 @@ defmodule Goblin.SSTs.SST do
         level_key,
         %BloomFilter{} = bloom_filter,
         key_range,
-        priority,
+        seq_range,
         offset,
         no_of_blocks,
         size
@@ -93,15 +93,15 @@ defmodule Goblin.SSTs.SST do
     enc_key_range = encode({:key_range, key_range})
     key_range_pos = bf_pos + bf_size
     key_range_size = byte_size(enc_key_range)
-    enc_priority = encode({:priority, priority})
-    priority_pos = key_range_pos + key_range_size
-    priority_size = byte_size(enc_priority)
+    enc_seq_range = encode({:seq_range, seq_range})
+    seq_range_pos = key_range_pos + key_range_size
+    seq_range_size = byte_size(enc_seq_range)
 
     size =
       size +
         bf_size +
         key_range_size +
-        priority_size +
+        seq_range_size +
         @metadata_size +
         @separator_size +
         @magic_size
@@ -113,8 +113,8 @@ defmodule Goblin.SSTs.SST do
         bf_size::integer-64,
         key_range_pos::integer-64,
         key_range_size::integer-64,
-        priority_pos::integer-64,
-        priority_size::integer-64,
+        seq_range_pos::integer-64,
+        seq_range_size::integer-64,
         no_of_blocks::integer-64,
         size::integer-64,
         offset::integer-64
@@ -124,7 +124,7 @@ defmodule Goblin.SSTs.SST do
       @separator::binary,
       enc_bf::binary,
       enc_key_range::binary,
-      enc_priority::binary,
+      enc_seq_range::binary,
       metadata::binary,
       @magic::binary
     >>
@@ -148,8 +148,8 @@ defmodule Goblin.SSTs.SST do
         bf_size::integer-64,
         key_range_pos::integer-64,
         key_range_size::integer-64,
-        priority_pos::integer-64,
-        priority_size::integer-64,
+        seq_range_pos::integer-64,
+        seq_range_size::integer-64,
         no_of_blocks::integer-64,
         size::integer-64,
         offset::integer-64
@@ -161,8 +161,8 @@ defmodule Goblin.SSTs.SST do
        bf_size,
        key_range_pos,
        key_range_size,
-       priority_pos,
-       priority_size,
+       seq_range_pos,
+       seq_range_size,
        no_of_blocks,
        size,
        offset
@@ -189,12 +189,12 @@ defmodule Goblin.SSTs.SST do
     end
   end
 
-  @spec decode_priority(binary()) ::
-          {:ok, Goblin.db_sequence()} | {:error, :invalid_range}
-  def decode_priority(encoded) do
+  @spec decode_seq_range(binary()) ::
+          {:ok, {Goblin.db_sequence(), Goblin.db_sequence()}} | {:error, :invalid_seq_range}
+  def decode_seq_range(encoded) do
     case decode(encoded) do
-      {:priority, priority} -> {:ok, priority}
-      _ -> {:error, :invalid_priority}
+      {:seq_range, seq_range} -> {:ok, seq_range}
+      _ -> {:error, :invalid_seq_range}
     end
   end
 
