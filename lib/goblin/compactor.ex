@@ -1,18 +1,17 @@
 defmodule Goblin.Compactor do
   @moduledoc false
   use GenServer
-  import Goblin.ProcessRegistry, only: [via: 1]
   require Logger
   alias Goblin.Compactor.Entry
   alias Goblin.Compactor.Level
   alias Goblin.SSTs
   alias Goblin.Store
   alias Goblin.Manifest
-  alias Goblin.RWLocks
 
   defstruct [
     :bf_fpp,
-    :registry,
+    :manifest,
+    :store,
     :task_sup,
     :task_mod,
     :key_limit,
@@ -20,38 +19,37 @@ defmodule Goblin.Compactor do
     levels: %{}
   ]
 
-  @type data :: {
-          Goblin.db_file(),
-          Goblin.db_sequence(),
-          non_neg_integer(),
-          {Goblin.db_key(), Goblin.db_key()}
-        }
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    registry = opts[:registry]
-
     args =
       Keyword.take(opts, [
         :bf_fpp,
-        :registry,
+        :store,
+        :manifest,
         :key_limit,
         :level_limit,
         :task_sup,
         :task_mod
       ])
 
-    GenServer.start_link(__MODULE__, args, name: via(registry))
+    GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec put(Goblin.registry(), Goblin.db_level_key(), data()) :: :ok
-  def put(registry, level_key, data) do
-    GenServer.call(via(registry), {:put, level_key, data})
+  @spec put(
+          Goblin.registry(),
+          Goblin.db_level_key(),
+          Goblin.db_file(),
+          Goblin.seq_no(),
+          non_neg_integer(),
+          {Goblin.db_key(), Goblin.db_key()}
+        ) :: :ok
+  def put(compactor, level_key, file, priority, size, key_range) do
+    GenServer.call(compactor, {:put, level_key, file, priority, size, key_range})
   end
 
   @spec is_compacting(Goblin.registry()) :: boolean()
-  def is_compacting(registry) do
-    GenServer.call(via(registry), :is_compacting)
+  def is_compacting(compactor) do
+    GenServer.call(compactor, :is_compacting)
   end
 
   @impl GenServer
@@ -59,7 +57,8 @@ defmodule Goblin.Compactor do
     {:ok,
      %__MODULE__{
        bf_fpp: args[:bf_fpp],
-       registry: args[:registry],
+       store: args[:store],
+       manifest: args[:manifest],
        key_limit: args[:key_limit],
        level_limit: args[:level_limit],
        task_sup: args[:task_sup],
@@ -68,7 +67,7 @@ defmodule Goblin.Compactor do
   end
 
   @impl GenServer
-  def handle_call({:put, level_key, {file, priority, size, key_range}}, _from, state) do
+  def handle_call({:put, level_key, file, priority, size, key_range}, _from, state) do
     entry = %Entry{
       id: file,
       priority: priority,
@@ -184,7 +183,8 @@ defmodule Goblin.Compactor do
   defp compact(state, source_level, target_level, retry \\ 5) do
     %{
       bf_fpp: bf_fpp,
-      registry: registry,
+      manifest: manifest,
+      store: store,
       levels: levels,
       key_limit: key_limit,
       task_sup: task_sup,
@@ -225,14 +225,14 @@ defmodule Goblin.Compactor do
           end)
 
         opts = [
-          file_getter: fn -> Store.new_file(registry) end,
+          file_getter: fn -> Store.new_file(store) end,
           bf_fpp: bf_fpp
         ]
 
         with {:ok, new} <- SSTs.new(data, level_key, opts),
-             :ok <- Manifest.log_compaction(registry, sources ++ old, Enum.map(new, & &1.file)),
-             :ok <- put_new_files_in_store(new, target_level.level_key, registry),
-             :ok <- remove_old_files(sources ++ old, registry) do
+             :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, & &1.file)),
+             :ok <- update_store(sources ++ old, new, store),
+             :ok <- clean_old(sources ++ old) do
           {:ok, sources ++ old, source_level_key, target_level.level_key}
         end
       end)
@@ -277,8 +277,8 @@ defmodule Goblin.Compactor do
 
   defp init_buffer(buffer) do
     buffer
-    |> Enum.map(fn {key, {seq, value}} -> {seq, key, value} end)
-    |> Enum.sort_by(fn {_seq, key, _value} -> key end, :asc)
+    |> Enum.map(fn {key, {seq, value}} -> {key, seq, value} end)
+    |> Enum.sort_by(fn {key, _seq, _value} -> key end, :asc)
   end
 
   defp iter_merge_data({nil, [], nil}), do: {:halt, :ok}
@@ -306,7 +306,7 @@ defmodule Goblin.Compactor do
     {[next], {iter, buffer, placeholder}}
   end
 
-  defp choose_next({seq1, key1, _} = data1, {seq2, key2, _} = data2) do
+  defp choose_next({key1, seq1, _} = data1, {key2, seq2, _} = data2) do
     cond do
       key1 == key2 and seq1 > seq2 -> {data1, nil, nil}
       key1 == key2 and seq1 < seq2 -> {data2, nil, nil}
@@ -315,21 +315,17 @@ defmodule Goblin.Compactor do
     end
   end
 
-  defp put_new_files_in_store([], _level_key, _store), do: :ok
-
-  defp put_new_files_in_store([sst | ssts], level_key, registry) do
-    Store.put(registry, sst)
-    put_new_files_in_store(ssts, level_key, registry)
+  defp update_store(old, new, store) do
+    with :ok <- Store.remove(store, old) do
+      Store.put(store, new)
+    end
   end
 
-  defp remove_old_files([], _registry), do: :ok
+  defp clean_old([]), do: :ok
 
-  defp remove_old_files([file | old], registry) do
-    with :ok <- Store.remove(registry, file),
-         :ok <- RWLocks.wlock(registry, file),
-         :ok <- SSTs.delete(file),
-         :ok <- RWLocks.unlock(registry, file) do
-      remove_old_files(old, registry)
+  defp clean_old([file | files]) do
+    with :ok <- SSTs.delete(file) do
+      clean_old(files)
     end
   end
 

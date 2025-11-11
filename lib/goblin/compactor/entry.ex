@@ -24,7 +24,7 @@ defmodule Goblin.Compactor.Entry do
 
   @spec place_in_buffer(t(), {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}) ::
           t()
-  def place_in_buffer(entry, {seq, key, value}) do
+  def place_in_buffer(entry, {key, seq, value}) do
     buffer =
       Map.merge(entry.buffer, %{key => {seq, value}}, fn _k, {s1, v1}, {s2, v2} ->
         cond do
