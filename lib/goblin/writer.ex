@@ -1,7 +1,6 @@
 defmodule Goblin.Writer do
   @moduledoc false
   use GenServer
-  import Goblin.ProcessRegistry, only: [via: 1]
   require Logger
   alias Goblin.Writer.MemTable
   alias Goblin.Writer.Transaction
@@ -14,147 +13,151 @@ defmodule Goblin.Writer do
 
   @flush_level 0
 
+  @typep writer :: module() | {:via, Registry, {module(), module()}}
+
   defstruct [
     :bf_fpp,
-    :registry,
+    :manifest,
+    :store,
+    :store_name,
+    :wal,
     :pub_sub,
     :task_sup,
     :task_mod,
     :key_limit,
+    :mem_table,
+    :writer,
+    :flushing,
     seq: 0,
-    mem_table: MemTable.new(),
-    transactions: %{},
-    flushing: []
+    write_queue: :queue.new()
   ]
 
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    registry = opts[:registry]
+    name = opts[:name]
+    local_name = opts[:local_name] || name
 
     args =
-      Keyword.take(opts, [
+      opts
+      |> Keyword.take([
         :bf_fpp,
-        :registry,
+        :store,
+        :store_name,
+        :wal,
+        :manifest,
         :pub_sub,
         :task_sup,
         :task_mod,
         :key_limit
       ])
+      |> Keyword.merge(local_name: local_name)
 
-    GenServer.start_link(__MODULE__, args, name: via(registry))
+    GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec get(Goblin.registry(), Goblin.db_key()) :: {:ok, Goblin.db_value()} | :error
-  def get(registry, key) do
-    GenServer.call(via(registry), {:get, key})
+  @spec get(writer(), Goblin.db_key(), nil | non_neg_integer()) ::
+          {:value, non_neg_integer(), Goblin.db_value()} | :not_found
+  def get(writer_name, key, seq \\ nil) do
+    case MemTable.read(writer_name, key, seq) do
+      :not_found -> :not_found
+      {_key, seq, value} -> {:value, seq, value}
+    end
   end
 
-  @spec get_multi(Goblin.registry(), [Goblin.db_key()]) :: {:ok, Goblin.db_value()} | :error
-  def get_multi(registry, keys) do
-    GenServer.call(via(registry), {:get_multi, keys})
+  @spec get_multi(writer(), [Goblin.db_key()], nil | non_neg_integer()) ::
+          {[Goblin.triple()], [Goblin.db_key()]}
+  def get_multi(writer_name, keys, seq \\ nil) do
+    Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
+      case MemTable.read(writer_name, key, seq) do
+        :not_found -> {found, [key | not_found]}
+        result -> {[result | found], not_found}
+      end
+    end)
   end
 
-  @spec get_iterators(Goblin.registry()) :: [
-          {(-> [Goblin.triple()]),
-           ([Goblin.triple()] -> :ok | {Goblin.triple(), [Goblin.triple()]})}
-        ]
-  def get_iterators(registry) do
-    GenServer.call(via(registry), :get_iterators)
+  @spec iterators(writer(), Goblin.db_key() | nil, Goblin.db_key() | nil) ::
+          {[Goblin.triple()], ([Goblin.triple()] -> {Goblin.triple(), [Goblin.triple()]})}
+  def iterators(writer_name, min, max) do
+    range = MemTable.get_range(writer_name, min, max)
+
+    iter_f = fn
+      [] -> :ok
+      [next | range] -> {next, range}
+    end
+
+    {range, iter_f}
   end
 
-  @spec put(Goblin.registry(), Goblin.db_key(), Goblin.db_value()) :: :ok | {:error, term()}
-  def put(registry, key, value) do
-    transaction(registry, fn tx ->
+  @spec is_flushing(writer()) :: boolean()
+  def is_flushing(writer) do
+    GenServer.call(writer, :is_flushing)
+  end
+
+  @spec put(writer(), Goblin.key(), Goblin.value()) :: :ok | {:error, term()}
+  def put(writer, key, value) do
+    transaction(writer, fn tx ->
       tx = Transaction.put(tx, key, value)
       {:commit, tx, :ok}
     end)
   end
 
-  @spec put_multi(Goblin.registry(), [{Goblin.db_key(), Goblin.db_value()}]) ::
-          :ok | {:error, term()}
-  def put_multi(registry, pairs) do
-    transaction(registry, fn tx ->
+  @spec put_multi(writer(), [Goblin.pair()]) :: :ok | {:error, term()}
+  def put_multi(writer, pairs) do
+    transaction(writer, fn tx ->
       tx = Enum.reduce(pairs, tx, fn {k, v}, acc -> Transaction.put(acc, k, v) end)
       {:commit, tx, :ok}
     end)
   end
 
-  @spec remove(Goblin.registry(), Goblin.db_key()) :: :ok | {:error, term()}
-  def remove(registry, key) do
-    transaction(registry, fn tx ->
+  @spec remove(writer(), Goblin.db_key()) :: :ok | {:error, term()}
+  def remove(writer, key) do
+    transaction(writer, fn tx ->
       tx = Transaction.remove(tx, key)
       {:commit, tx, :ok}
     end)
   end
 
-  @spec remove_multi(Goblin.registry(), [Goblin.db_key()]) :: :ok | {:error, term()}
-  def remove_multi(registry, keys) do
-    transaction(registry, fn tx ->
+  @spec remove_multi(writer(), [Goblin.db_key()]) :: :ok | {:error, term()}
+  def remove_multi(writer, keys) do
+    transaction(writer, fn tx ->
       tx = Enum.reduce(keys, tx, fn k, acc -> Transaction.remove(acc, k) end)
       {:commit, tx, :ok}
     end)
   end
 
-  @spec is_flushing(Goblin.registry()) :: boolean()
-  def is_flushing(registry), do: GenServer.call(via(registry), :is_flushing)
-
-  @spec transaction(
-          Goblin.registry(),
-          (Transaction.t() -> Goblin.transaction_return()),
-          keyword()
-        ) ::
+  @spec transaction(writer(), (Transaction.t() -> Goblin.tx_return())) ::
           term() | :ok | {:error, term()}
-  def transaction(registry, f, opts \\ []) do
-    writer = via(registry)
-    opts = Keyword.take(opts, [:timeout, :retries])
-    do_transaction(writer, f, opts)
-  end
-
-  defp do_transaction(writer, f, opts) do
-    with {:ok, tx} <- start_transaction(writer, opts),
+  def transaction(writer, f) do
+    with {:ok, tx} <- start_transaction(writer),
          {:ok, tx, reply} <- run_transaction(writer, f, tx),
-         :ok <- commit_transaction(writer, f, tx, opts) do
+         :ok <- commit_transaction(writer, tx) do
       reply
     end
   end
 
-  defp start_transaction(writer, opts),
-    do: GenServer.call(writer, {:start_transaction, self(), opts})
+  defp start_transaction(writer),
+    do: GenServer.call(writer, :start_transaction)
 
   defp run_transaction(writer, f, tx) do
-    me = self()
-
     case f.(tx) do
       {:commit, tx, reply} ->
         {:ok, tx, reply}
 
       :cancel ->
-        cancel_transaction(writer, me)
+        cancel_transaction(writer)
 
       _ ->
-        cancel_transaction(writer, me)
+        cancel_transaction(writer)
         raise "Invalid return type from transaction."
     end
   end
 
-  defp commit_transaction(writer, f, tx, opts) do
-    me = self()
-
-    case GenServer.call(writer, {:commit_transaction, tx, me}) do
-      :ok ->
-        :ok
-
-      :retry ->
-        opts = Keyword.replace(opts, :retries, (opts[:retries] || 0) - 1)
-        do_transaction(writer, f, opts)
-
-      {:error, _reason} = error ->
-        error
-    end
+  defp commit_transaction(writer, tx) do
+    GenServer.call(writer, {:commit_transaction, tx})
   end
 
-  defp cancel_transaction(writer, pid) do
-    GenServer.call(writer, {:cancel_transaction, pid})
+  defp cancel_transaction(writer) do
+    GenServer.call(writer, :cancel_transaction)
   end
 
   @impl GenServer
@@ -162,240 +165,194 @@ defmodule Goblin.Writer do
     {:ok,
      %__MODULE__{
        bf_fpp: args[:bf_fpp],
-       registry: args[:registry],
+       manifest: args[:manifest],
+       store: args[:store],
+       store_name: args[:store_name] || args[:store],
+       wal: args[:wal],
        pub_sub: args[:pub_sub],
        task_sup: args[:task_sup],
        task_mod: args[:task_mod] || Task.Supervisor,
        key_limit: args[:key_limit],
-       mem_table: MemTable.new()
+       mem_table: MemTable.new(args[:local_name])
      }, {:continue, :recover_state}}
   end
 
   @impl GenServer
-  def handle_call({:get, key}, {pid, _}, state) do
-    reply =
-      case Map.get(state.transactions, pid) do
-        %{immutable_mem_tables: immutable_mem_tables} ->
-          search_for_key(immutable_mem_tables, key)
-
-        _ ->
-          mem_tables = mem_tables_snapshot(state)
-          search_for_key(mem_tables, key)
-      end
-
-    {:reply, reply, state}
+  def handle_call(:start_transaction, {pid, _ref}, %{writer: nil} = state) do
+    monitor_ref = Process.monitor(pid)
+    tx = new_tx(state)
+    {:reply, {:ok, tx}, %{state | writer: {pid, monitor_ref}}}
   end
 
-  def handle_call({:get_multi, keys}, _from, state) do
-    flushing_mem_tables =
-      state.flushing
-      |> Enum.map(fn {_, mem_table, _, _} -> mem_table end)
-
-    mem_tables = [state.mem_table | flushing_mem_tables]
-
-    reply =
-      Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
-        case search_for_key(mem_tables, key) do
-          :not_found -> {found, [key | not_found]}
-          {:ok, {:value, seq, value}} -> {[{seq, key, value} | found], not_found}
-        end
-      end)
-
-    {:reply, reply, state}
+  def handle_call(:start_transaction, {pid, _ref}, %{writer: {pid, _monitor_ref}} = state) do
+    {:reply, {:error, :already_in_tx}, state}
   end
 
-  def handle_call(:get_iterators, _from, state) do
-    current_iterator = into_iterator(state.mem_table)
-
-    flushing_iterators =
-      state.flushing
-      |> Enum.map(fn {_, mem_table, _, _} ->
-        into_iterator(mem_table)
-      end)
-
-    {:reply, [current_iterator | flushing_iterators], state}
+  def handle_call(:start_transaction, from, state) do
+    write_queue = :queue.in(from, state.write_queue)
+    {:noreply, %{state | write_queue: write_queue}}
   end
 
-  def handle_call({:start_transaction, pid, opts}, _from, state) do
-    if not Map.has_key?(state.transactions, pid) do
-      registry = state.registry
-      immutable_mem_tables = mem_tables_snapshot(state)
-      max_seq = state.seq
-      reader = &Reader.get(&1, registry, max_seq)
-      opts = Keyword.put(opts, :timestamp, now())
-      tx = Transaction.new(pid, opts, reader)
+  def handle_call({:commit_transaction, tx}, {pid, _ref}, %{writer: {pid, monitor_ref}} = state) do
+    Process.demonitor(monitor_ref)
 
-      transactions =
-        Map.put(state.transactions, pid, %{
-          commits: [],
-          immutable_mem_tables: immutable_mem_tables
-        })
+    %{
+      wal: wal,
+      mem_table: mem_table
+    } = state
 
-      {:reply, {:ok, tx}, %{state | transactions: transactions}}
-    else
-      {:reply, {:error, :already_in_transaction}, state}
+    case WAL.append(wal, tx.writes) do
+      :ok ->
+        tx.writes
+        |> Enum.reverse()
+        |> tap(&publish_commit(&1, state))
+        |> Enum.each(&apply_write(mem_table, &1))
+
+        seq = tx.seq
+        MemTable.put_commit_seq(mem_table, seq)
+
+        {:reply, :ok, %{state | seq: seq, writer: nil}, {:continue, :next_tx}}
+
+      {:error, reason} ->
+        {:stop, reason, state}
     end
   end
 
-  def handle_call({:commit_transaction, tx, pid}, _from, state) do
-    case Map.get(state.transactions, pid) do
-      nil ->
-        {:reply, {:error, :tx_not_found}, state}
-
-      %{commits: commits} ->
-        cond do
-          is_integer(tx.timeout) and now() - tx.timestamp >= tx.timeout ->
-            state = %{state | transactions: clean_transaction(state.transactions, pid)}
-            {:reply, {:error, :tx_timed_out}, state}
-
-          Transaction.has_conflict(tx, commits) and tx.retries <= 0 ->
-            state = %{state | transactions: clean_transaction(state.transactions, pid)}
-            {:reply, {:error, :tx_in_conflict}, state}
-
-          Transaction.has_conflict(tx, commits) ->
-            state = %{state | transactions: clean_transaction(state.transactions, pid)}
-            {:reply, :retry, state}
-
-          true ->
-            transactions =
-              state.transactions
-              |> clean_transaction(pid)
-              |> add_commit_to_running_transactions(tx.mem_table)
-
-            mem_table = merge_tx_mem_table(state.mem_table, tx.mem_table, state.seq)
-            writes = Enum.map(tx.writes, &advance_seq_in_write(&1, state.seq))
-            WAL.append(state.registry, writes)
-            publish_writes(state, writes)
-
-            state = %{
-              state
-              | transactions: transactions,
-                mem_table: mem_table,
-                seq: state.seq + length(writes)
-            }
-
-            {:reply, :ok, state, {:continue, :flush}}
-        end
-    end
+  def handle_call({:commit_transaction, _tx}, _from, state) do
+    {:reply, {:error, :not_tx_holder}, state}
   end
 
-  def handle_call({:cancel_transaction, pid}, _from, state) do
-    transactions = Map.delete(state.transactions, pid)
-    state = %{state | transactions: transactions}
-    {:reply, :ok, state}
+  def handle_call(:cancel_transaction, {pid, _ref}, %{writer: {pid, _monitor_ref}} = state) do
+    {:reply, :ok, %{state | writer: nil}, {:continue, :next_tx}}
+  end
+
+  def handle_call(:cancel_transaction, _from, state) do
+    {:reply, {:error, :not_tx_holder}, state}
   end
 
   def handle_call(:is_flushing, _from, state) do
-    is_flushing = length(state.flushing) != 0
-    {:reply, is_flushing, state}
+    {:reply, not is_nil(state.flushing), state}
   end
 
   @impl GenServer
+  def handle_continue(:next_tx, state) do
+    case :queue.out(state.write_queue) do
+      {:empty, _write_queue} ->
+        {:noreply, state, {:continue, :maybe_flush}}
+
+      {{:value, {pid, _ref} = from}, write_queue} ->
+        monitor_ref = Process.monitor(pid)
+        tx = new_tx(state)
+        GenServer.reply(from, {:ok, tx})
+        state = %{state | write_queue: write_queue, writer: {pid, monitor_ref}}
+        {:noreply, state}
+    end
+  end
+
+  def handle_continue(:maybe_flush, state) do
+    case maybe_flush(state) do
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:stop, reason, state}
+    end
+  end
+
   def handle_continue(:recover_state, state) do
     case recover_writes(state) do
-      {:ok, state} ->
-        {:noreply, state}
-
-      {:error, _reason} = error ->
-        {:stop, error, state}
-    end
-  end
-
-  def handle_continue(:flush, state) do
-    case maybe_flush(state) do
-      {:ok, state} ->
-        {:noreply, state}
-
-      {:error, _reason} = error ->
-        {:stop, error, state}
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:stop, reason, state}
     end
   end
 
   @impl GenServer
-  def handle_info({ref, {:ok, :flushed}}, state) do
-    state = clean_flush(state, ref)
+  def handle_info({_ref, {:ok, :flushed}}, state) do
+    %{
+      flushing: {_ref, flushed_seq, _retry, _rotated_wal},
+      mem_table: mem_table
+    } = state
+
+    MemTable.clean_seq_range(mem_table, flushed_seq)
+    {:noreply, %{state | flushing: nil}, {:continue, :maybe_flush}}
+  end
+
+  def handle_info(
+        {_, {:error, reason}},
+        %{flushing: {_, _seq, 0, _rotated_wal}} = state
+      ) do
+    Logger.error(fn ->
+      "Failed to flush after 5 attempts with reason: #{inspect(reason)}. Exiting."
+    end)
+
+    {:stop, {:error, :failed_to_flush}, state}
+  end
+
+  def handle_info({_ref, {:error, reason}}, state) do
+    %{
+      flushing: {_ref, seq, retry, rotated_wal}
+    } = state
+
+    Logger.error(fn ->
+      "Failed to flush with reason: #{inspect(reason)}. Retrying..."
+    end)
+
+    {ref, retry} = flush(state, seq, rotated_wal, retry - 1)
+    state = %{state | flushing: {ref, seq, retry, rotated_wal}}
     {:noreply, state}
   end
 
-  def handle_info({ref, {:error, reason}}, state) do
-    case Enum.find(state.flushing, fn
-           {^ref, _, _, _} -> true
-           _ -> false
-         end) do
-      {_, _, _, 0} ->
-        Logger.error(fn ->
-          "Flush failed after 5 attempts with reason: #{inspect(reason)}. Exiting."
-        end)
-
-        {:stop, {:error, :failed_to_flush}, state}
-
-      {_, mem_table, rotated_wal, retry} ->
-        Logger.warning(fn ->
-          "Flush failed with reason: #{inspect(reason)}. Retrying..."
-        end)
-
-        state = clean_flush(state, ref)
-        flush = flush(state, rotated_wal, mem_table, retry - 1)
-        state = %{state | flushing: [flush | state.flushing]}
-        {:noreply, state}
-
-      _ ->
-        state = clean_flush(state, ref)
-        {:noreply, state}
-    end
+  def handle_info({:DOWN, monitor_ref, _, pid, _}, %{writer: {pid, monitor_ref}} = state) do
+    state = %{state | writer: nil}
+    {:noreply, state, {:continue, :next_tx}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp merge_tx_mem_table(mem_table, tx_mem_table, seq) do
-    tx_mem_table = MemTable.advance_seq(tx_mem_table, seq)
-    MemTable.merge(mem_table, tx_mem_table)
-  end
+  defp maybe_flush(state, rotated_wal \\ nil)
 
-  defp clean_flush(state, ref) do
-    flushing =
-      Enum.reject(state.flushing, fn
-        {^ref, _, _, _} -> true
-        _ -> false
-      end)
+  defp maybe_flush(%{writer: nil, flushing: nil} = state, rotated_wal) do
+    %{
+      seq: seq,
+      mem_table: mem_table,
+      key_limit: key_limit
+    } = state
 
-    %{state | flushing: flushing}
-  end
-
-  defp clean_transaction(transactions, pid), do: Map.delete(transactions, pid)
-
-  defp add_commit_to_running_transactions(transactions, mem_table) do
-    Enum.into(transactions, %{}, fn {pid, tx_data} ->
-      commits = [mem_table | tx_data.commits]
-      {pid, Map.replace(tx_data, :commits, commits)}
-    end)
-  end
-
-  defp advance_seq_in_write({seq1, :put, k, v}, seq2), do: {seq1 + seq2, :put, k, v}
-  defp advance_seq_in_write({seq1, :remove, k}, seq2), do: {seq1 + seq2, :remove, k}
-
-  defp maybe_flush(state, rotated_wal \\ nil) do
-    if MemTable.has_overflow(state.mem_table, state.key_limit) do
-      start_flush(state, rotated_wal)
+    if MemTable.size(mem_table) >= key_limit do
+      with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
+        {ref, retry} = flush(state, seq, rotated_wal)
+        state = %{state | flushing: {ref, seq, retry, rotated_wal}}
+        {:ok, state}
+      end
     else
       {:ok, state}
     end
   end
 
-  defp start_flush(state, rotated_wal) do
-    with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
-      flush = flush(state, rotated_wal)
-      state = %{state | mem_table: MemTable.new(), flushing: [flush | state.flushing]}
-      {:ok, state}
+  defp maybe_flush(state, _rotated_wal) do
+    {:ok, state}
+  end
+
+  defp maybe_rotate(state, nil) do
+    %{
+      wal: wal,
+      manifest: manifest,
+      seq: seq
+    } = state
+
+    with {:ok, rotated_wal} <- WAL.rotate(wal),
+         :ok <- Manifest.log_rotation(manifest, rotated_wal),
+         :ok <- Manifest.log_sequence(manifest, seq) do
+      {:ok, rotated_wal}
     end
   end
 
-  defp flush(state, rotated_wal, mem_table \\ nil, retry \\ 5) do
-    mem_table = mem_table || state.mem_table
+  defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
 
+  defp flush(state, seq, rotated_wal, retry \\ 5) do
     %{
+      mem_table: mem_table,
       bf_fpp: bf_fpp,
-      registry: registry,
+      store: store,
+      manifest: manifest,
+      wal: wal,
       task_sup: task_sup,
       task_mod: task_mod,
       key_limit: key_limit
@@ -403,135 +360,90 @@ defmodule Goblin.Writer do
 
     %{ref: ref} =
       task_mod.async(task_sup, fn ->
-        stream =
-          mem_table
-          |> MemTable.sort()
-          |> MemTable.flatten()
-          |> flush_stream(key_limit)
+        data =
+          MemTable.get_seq_range(mem_table, seq)
+          |> Enum.chunk_every(key_limit)
 
         opts = [
-          file_getter: fn -> Store.new_file(registry) end,
+          file_getter: fn -> Store.new_file(store) end,
           bf_fpp: bf_fpp
         ]
 
-        with {:ok, flushed} <- SSTs.new([stream], @flush_level, opts),
-             :ok <- Manifest.log_flush(registry, Enum.map(flushed, & &1.file), rotated_wal),
-             :ok <- WAL.clean(registry, rotated_wal),
-             :ok <- put_in_store(flushed, registry) do
+        with {:ok, flushed} <- SSTs.new([data], @flush_level, opts),
+             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, & &1.file), rotated_wal),
+             :ok <- WAL.clean(wal, rotated_wal),
+             :ok <- Store.put(store, flushed) do
           {:ok, :flushed}
         end
       end)
 
-    {ref, mem_table, rotated_wal, retry}
+    {ref, retry}
   end
 
-  defp flush_stream(data, key_limit) do
-    Stream.resource(
-      fn -> data end,
-      &iter_flush_data/1,
-      fn _ -> :ok end
-    )
-    |> Stream.chunk_every(key_limit)
-  end
-
-  defp iter_flush_data([]), do: {:halt, :ok}
-  defp iter_flush_data([next | data]), do: {[next], data}
-
-  defp publish_writes(state, writes) do
+  defp publish_commit(writes, state) do
     %{
-      pub_sub: pub_sub,
+      task_sup: task_sup,
       task_mod: task_mod,
-      task_sup: task_sup
+      pub_sub: pub_sub
     } = state
 
     task_mod.async(task_sup, fn ->
-      writes =
-        Enum.map(writes, fn
-          {_seq, :put, k, v} -> {:put, k, v}
-          {_seq, :remove, k} -> {:remove, k}
-        end)
-
       PubSub.publish(pub_sub, writes)
     end)
   end
 
-  defp put_in_store([], _store), do: :ok
-
-  defp put_in_store([sst | ssts], registry) do
-    Store.put(registry, sst)
-    put_in_store(ssts, registry)
-  end
-
-  defp maybe_rotate(state, nil) do
+  defp new_tx(state) do
     %{
-      registry: registry,
+      store_name: store,
+      mem_table: mem_table,
       seq: seq
     } = state
 
-    with {:ok, rotated_wal} <- WAL.rotate(registry),
-         :ok <- Manifest.log_rotation(registry, rotated_wal),
-         :ok <- Manifest.log_sequence(registry, seq) do
-      {:ok, rotated_wal}
-    end
-  end
-
-  defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
-
-  defp mem_tables_snapshot(state) do
-    flushing_mem_tables =
-      state.flushing
-      |> Enum.map(fn {_, mem_table, _, _} -> mem_table end)
-
-    [state.mem_table | flushing_mem_tables]
-  end
-
-  defp search_for_key([], _key), do: :not_found
-
-  defp search_for_key([mem_table | mem_tables], key) do
-    case MemTable.read(mem_table, key) do
-      {:value, seq, value} ->
-        {:ok, {:value, seq, value}}
-
-      :not_found ->
-        search_for_key(mem_tables, key)
-    end
-  end
-
-  defp into_iterator(mem_table) do
-    {fn -> mem_table |> MemTable.sort() |> MemTable.flatten() end,
-     fn
-       [] -> :ok
-       [next | data] -> {next, data}
-     end}
+    fallback_read = &Reader.get(&1, mem_table, store, seq)
+    Transaction.new(seq, fallback_read)
   end
 
   defp recover_writes(state) do
-    %{seq: seq} = Manifest.get_version(state.registry, [:seq])
+    %{
+      manifest: manifest,
+      wal: wal,
+      mem_table: mem_table
+    } = state
 
-    with {:ok, logs} <- WAL.recover(state.registry) do
-      recover_state(logs, %{state | seq: seq})
+    %{seq: flushed_seq} = Manifest.get_version(manifest, [:seq])
+
+    with {:ok, logs} <- WAL.recover(wal),
+         {:ok, state} <- recover_state(state, logs, flushed_seq) do
+      MemTable.put_commit_seq(mem_table, state.seq)
+      {:ok, state}
     end
   end
 
-  defp recover_state([], state), do: {:ok, state}
+  defp recover_state(state, [], _default_seq), do: {:ok, state}
 
-  defp recover_state([{rotated_wal_file, writes} | logs], state) do
-    state = Enum.reduce(writes, state, &apply_write/2)
+  defp recover_state(state, [{_wal, []} | logs], default_seq) do
+    state = %{state | seq: default_seq}
+    recover_state(state, logs, default_seq)
+  end
 
-    with {:ok, state} <- maybe_flush(state, rotated_wal_file) do
-      recover_state(logs, state)
+  defp recover_state(state, [{rotated_wal, writes} | logs], default_seq) do
+    %{mem_table: mem_table} = state
+
+    seq =
+      writes
+      |> Enum.max_by(&elem(&1, 1), fn -> default_seq end)
+      |> elem(1)
+
+    Enum.each(writes, &apply_write(mem_table, &1))
+    state = %{state | seq: seq + 1}
+
+    with {:ok, state} <- maybe_flush(state, rotated_wal) do
+      recover_state(state, logs, seq)
     end
   end
 
-  defp apply_write({seq, :put, k, v}, state) do
-    mem_table = MemTable.upsert(state.mem_table, seq, k, v)
-    %{state | mem_table: mem_table, seq: seq}
-  end
+  defp apply_write(mem_table, {:put, seq, key, value}),
+    do: MemTable.upsert(mem_table, key, seq, value)
 
-  defp apply_write({seq, :remove, k}, state) do
-    mem_table = MemTable.delete(state.mem_table, seq, k)
-    %{state | mem_table: mem_table, seq: seq}
-  end
-
-  defp now, do: System.monotonic_time(:millisecond)
+  defp apply_write(mem_table, {:remove, seq, key}), do: MemTable.delete(mem_table, key, seq)
 end
