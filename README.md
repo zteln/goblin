@@ -4,13 +4,18 @@ An embedded LSM-Tree database for Elixir.
 
 ## What is an LSM-Tree?
 
-A Log-Structured Merge-Tree (LSM-Tree) is a data structure optimized for write-heavy workloads. Instead of updating data in place, writes are first appended to an in-memory structure (MemTable) and a write-ahead log (WAL) for durability. When the MemTable fills up, it's flushed to disk as an immutable sorted file (SST). Reads check the MemTable first, then search SST files from newest to oldest. Background compaction merges SST files to reduce read amplification and reclaim space from deleted entries. This design provides excellent write throughput while maintaining reasonable read performance through bloom filters and sorted data structures.
+A Log-Structured Merge-Tree (LSM-Tree) is a data structure optimized for write-heavy workloads. 
+Instead of updating data in place, writes are first appended to a write-ahead log (WAL) for durability, then to an in-memory structure (MemTable).
+When the MemTable fills up, it's flushed to disk as an immutable sorted file (SST).
+Reads check the MemTable first, then search SST files from newest to oldest.
+Background compaction merges SST files to reduce read amplification and reclaim space from deleted entries.
+This design provides excellent write throughput while maintaining reasonable read performance through bloom filters and sorted data structures.
 
 ## Features
 
 - **LSM-Tree architecture**: Write-optimized storage with efficient compaction
-- **ACID transactions**: Snapshot isolation with conflict detection
-- **Concurrent reads**: Multiple readers can access data simultaneously using RW locks
+- **ACID transactions**: True serial execution of transactions
+- **Concurrent reads**: Multiple readers can access data simultaneously
 - **Write-ahead logging (WAL)**: Durability and crash recovery
 - **Bloom filters**: Fast negative lookups to skip unnecessary SST scans
 - **Automatic compaction**: Background merging of SST files across levels
@@ -35,7 +40,8 @@ Then run `mix deps.get`.
   name: MyApp.DB,
   db_dir: "/path/to/db",
   key_limit: 50_000,
-  level_limit: 128 * 1024 * 1024
+  level_limit: 128 * 1024 * 1024,
+  bf_fpp: 0.05
 )
 ```
 
@@ -44,6 +50,7 @@ Options:
 - `db_dir` - Directory path for storing database files (required)
 - `key_limit` - Maximum keys in MemTable before flushing (default: 50,000)
 - `level_limit` - Size threshold in bytes for level 0 compaction (default: 128 MB)
+- `bf_fpp` - Bloom filter false positive probability (default: 0.05)
 
 ### Basic operations
 
@@ -92,13 +99,13 @@ Goblin.put_multi(db, [
   {5, "five"}
 ])
 
-Goblin.select(db, min: 2, max: 4)
+Goblin.select(db, min: 2, max: 4) |> Enum.to_list()
 # => [{2, "two"}, {3, "three"}, {4, "four"}]
 
-Goblin.select(db, min: 3)
+Goblin.select(db, min: 3) |> Enum.to_list()
 # => [{3, "three"}, {4, "four"}, {5, "five"}]
 
-Goblin.select(db, max: 2)
+Goblin.select(db, max: 2) |> Enum.to_list()
 # => [{1, "one"}, {2, "two"}]
 ```
 
@@ -108,14 +115,14 @@ Goblin.select(db, max: 2)
 alias Goblin.Tx
 
 Goblin.transaction(db, fn tx ->
-  count = Tx.get(tx, :counter) || 0
+  count = Tx.get(tx, :counter, 0)
   tx = Tx.put(tx, :counter, count + 1)
   {:commit, tx, count + 1}
 end)
 # => 1
 
 Goblin.transaction(db, fn tx ->
-  balance = Tx.get(tx, :account_balance) || 0
+  balance = Tx.get(tx, :account_balance, 0)
   
   if balance >= 100 do
     tx = Tx.put(tx, :account_balance, balance - 100)
@@ -127,8 +134,8 @@ end)
 # => :ok (if cancelled) or :ok (if committed)
 ```
 
-Transactions provide snapshot isolation. If a conflict is detected (another transaction modified the same keys), the transaction returns `{:error, :tx_in_conflict}`.
-Conflicts can arise if one transaction's read or write set is not disjoint from another simultaneous transaction's write set. However, a transaction with only a read set and empty write set will have no conflicts even if another transaction writes to those keys at the same time.
+Transactions are executed in serial order. 
+Writers are blocked until the current writer completes its transaction.
 
 ### PubSub
 
@@ -175,21 +182,20 @@ Goblin implements a Log-Structured Merge-Tree (LSM-Tree) with the following comp
 - **Compactor**: Merges SST files across levels to reduce read amplification
 - **WAL**: Write-ahead log for durability
 - **Manifest**: Tracks database state and file metadata
-- **RWLocks**: Coordinates concurrent access to SST files
 
 ### Flushing
 
 When the MemTable reaches the configured `key_limit`, the Writer initiates a flush:
 
 1. **WAL rotation**: The current WAL file is rotated to preserve unflushed writes
-2. **MemTable snapshot**: The current MemTable is frozen and a new empty one is created
-3. **SST creation**: The frozen MemTable is sorted and written to one or more SST files at level 0
-4. **Bloom filter generation**: A bloom filter is created for each SST to enable fast negative lookups
-5. **Manifest update**: The new SST files are logged in the manifest
-6. **WAL cleanup**: The rotated WAL file is deleted after successful flush
-7. **Store registration**: SST files are registered in the Store for read access
+2. **SST creation**: The frozen MemTable is sorted and written to one or more SST files at level 0
+3. **Bloom filter generation**: A bloom filter is created for each SST to enable fast negative lookups
+4. **Manifest update**: The new SST files are logged in the manifest
+5. **WAL cleanup**: The rotated WAL file is deleted after successful flush
+6. **Store registration**: SST files are registered in the Store for read access
 
-Flushing happens asynchronously in a supervised task. Multiple flushes can be in progress simultaneously, and reads continue to access the flushing MemTables until they complete.
+Flushing happens asynchronously in a supervised task.
+Only a single flush can occur at a given point in time.
 
 ### Compacting
 
@@ -204,11 +210,11 @@ Compaction merges SST files to reduce read amplification and reclaim space:
 7. **Manifest update**: Old files are marked for deletion and new files are logged
 8. **File cleanup**: Old SST files are deleted after acquiring write locks
 
-Compaction runs asynchronously and retries up to 5 times on failure. The compactor uses RW locks to ensure files aren't deleted while being read.
+Compaction runs asynchronously and retries up to 5 times on failure.
 
 ## SST file format
 
-SST files use the `.goblin` extension and follow this binary structure:
+SST files use the `<no>.goblin` format and follow this binary structure:
 
 ```
 ┌─────────────────┬──────────────┬─────────────────┐
@@ -246,8 +252,5 @@ The metadata section stores:
 
 ## References
 
-- [RocksDB Documentation](https://github.com/facebook/rocksdb/wiki) - Facebook's LSM key-value store
-
-## Inspiration
-
 - [CubDB](https://github.com/lucaong/cubdb) - Embedded COW B+Tree database
+- [RocksDB Documentation](https://github.com/facebook/rocksdb/wiki) - Facebook's LSM key-value store

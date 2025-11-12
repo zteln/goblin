@@ -1,6 +1,14 @@
 # Changelog
 
-## v0.1.5 ()
+## v0.2.0 (2025-11-12)
+* Enhancements
+    * The transaction model is changed to true serial execution. 
+    * The MemTable and Store utilize ETS tables to allow concurrent reads.
+    * Bloom filter false positive probability is configurable
+* Bug fixes
+    * Change how hashes are stored in BloomFilter structs. Anonymous functions are no longer stored directly in the struct, instead the salt and range for the hash is stored instead. This prevents `BadFunctionError` if the module is updated.
+
+## v0.1.5 (2025-11-02)
 * Improvements
     * Filter SSTs in `Goblin.Store.get/2` by checking key range in directly in memory
 * Enhancements
