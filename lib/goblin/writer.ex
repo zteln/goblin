@@ -55,20 +55,20 @@ defmodule Goblin.Writer do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec get(writer(), Goblin.db_key(), nil | non_neg_integer()) ::
+  @spec get(writer(), Goblin.db_key()) ::
           {:value, non_neg_integer(), Goblin.db_value()} | :not_found
-  def get(writer_name, key, seq \\ nil) do
-    case MemTable.read(writer_name, key, seq) do
+  def get(writer_name, key) do
+    case MemTable.read(writer_name, key) do
       :not_found -> :not_found
       {_key, seq, value} -> {:value, seq, value}
     end
   end
 
-  @spec get_multi(writer(), [Goblin.db_key()], nil | non_neg_integer()) ::
+  @spec get_multi(writer(), [Goblin.db_key()]) ::
           {[Goblin.triple()], [Goblin.db_key()]}
-  def get_multi(writer_name, keys, seq \\ nil) do
+  def get_multi(writer_name, keys) do
     Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
-      case MemTable.read(writer_name, key, seq) do
+      case MemTable.read(writer_name, key) do
         :not_found -> {found, [key | not_found]}
         result -> {[result | found], not_found}
       end
@@ -399,7 +399,8 @@ defmodule Goblin.Writer do
       seq: seq
     } = state
 
-    fallback_read = &Reader.get(&1, mem_table, store, seq)
+    # TODO: remove seq from read, only one writer at a time (true serial execution)
+    fallback_read = &Reader.get(&1, mem_table, store)
     Transaction.new(seq, fallback_read)
   end
 

@@ -44,9 +44,9 @@ defmodule Goblin.Writer.MemTableTest do
       MemTable.upsert(c.table, :k2, 1, :v2)
       MemTable.upsert(c.table, :k3, 2, :v3)
 
-      assert :not_found == MemTable.read(c.table, :k1, nil)
-      assert :not_found == MemTable.read(c.table, :k2, nil)
-      assert :not_found == MemTable.read(c.table, :k3, nil)
+      assert :not_found == MemTable.read(c.table, :k1)
+      assert :not_found == MemTable.read(c.table, :k2)
+      assert :not_found == MemTable.read(c.table, :k3)
     end
 
     test "reads from latest committed seq no if seq not provided", c do

@@ -34,7 +34,7 @@ defmodule Goblin.Writer.TransactionTest do
     end
 
     test "fallback read is called if not found in tx's writes" do
-      tx = Transaction.new(0, fn _key -> {:value, 0, :from_fallback_read} end)
+      tx = Transaction.new(0, fn _key -> {0, :from_fallback_read} end)
       assert :from_fallback_read == Transaction.get(tx, :k1)
     end
   end

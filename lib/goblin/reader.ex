@@ -4,10 +4,10 @@ defmodule Goblin.Reader do
   alias Goblin.Writer
   alias Goblin.Store
 
-  @spec get(Goblin.db_key(), Goblin.Writer.writer(), Goblin.Store.store(), Goblin.seq_no() | nil) ::
+  @spec get(Goblin.db_key(), Goblin.Writer.writer(), Goblin.Store.store()) ::
           {Goblin.seq_no(), Goblin.db_value()} | :not_found
-  def get(key, writer, store, max_seq \\ nil) do
-    case try_writer(writer, key, max_seq) do
+  def get(key, writer, store) do
+    case try_writer(writer, key) do
       {:value, _seq, :tombstone} ->
         :not_found
 
@@ -134,16 +134,15 @@ defmodule Goblin.Reader do
     end
   end
 
-  defp try_writer(writer, key, max_seq \\ nil)
-  defp try_writer(writer, keys, _max_seq) when is_list(keys), do: Writer.get_multi(writer, keys)
-  defp try_writer(writer, key, max_seq), do: Writer.get(writer, key, max_seq)
+  defp try_writer(writer, keys) when is_list(keys), do: Writer.get_multi(writer, keys)
+  defp try_writer(writer, key), do: Writer.get(writer, key)
 
-  defp try_store(store, keys, max_seq \\ nil)
+  defp try_store(store, keys)
 
-  defp try_store(store, keys, max_seq) when is_list(keys) do
+  defp try_store(store, keys) when is_list(keys) do
     Store.get_multi(store, keys)
     |> Task.async_stream(fn {key, ssts} ->
-      case read_ssts(key, ssts, max_seq) do
+      case read_ssts(key, ssts) do
         [] -> :not_found
         [{:value, _seq, :tombstone}] -> :not_found
         [{:value, seq, value}] -> {key, seq, value}
@@ -154,28 +153,23 @@ defmodule Goblin.Reader do
     |> Enum.to_list()
   end
 
-  defp try_store(store, key, max_seq) do
+  defp try_store(store, key) do
     {_key, ssts} = Store.get(store, key)
 
-    case read_ssts(key, ssts, max_seq) do
+    case read_ssts(key, ssts) do
       [] -> :not_found
       [{:value, _seq, :tombstone}] -> :not_found
       [{:value, seq, value}] -> {seq, value}
     end
   end
 
-  defp read_ssts(key, ssts, max_seq) do
+  defp read_ssts(key, ssts) do
     Task.async_stream(ssts, fn sst ->
       SSTs.find(sst.file, key)
     end)
     |> Stream.map(fn {:ok, res} -> res end)
     |> Stream.filter(&match?({:ok, _}, &1))
     |> Stream.map(fn {:ok, res} -> res end)
-    |> Stream.filter(fn
-      {:value, _seq, _value} when is_nil(max_seq) -> true
-      {:value, seq, _value} when seq <= max_seq -> true
-      _ -> false
-    end)
     |> Enum.sort_by(&elem(&1, 1), :desc)
     |> Enum.take(1)
   end

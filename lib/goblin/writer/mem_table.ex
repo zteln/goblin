@@ -29,7 +29,7 @@ defmodule Goblin.Writer.MemTable do
 
   @spec read(t(), Goblin.db_key(), nil | Goblin.seq_no()) ::
           {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()} | :not_found
-  def read(table, key, nil) do
+  def read(table, key) do
     commit_seq = commit_seq(table)
     read(table, key, commit_seq)
   end
