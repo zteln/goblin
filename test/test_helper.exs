@@ -13,22 +13,26 @@ defmodule TestHelper do
   defmacro setup_db(opts \\ []) do
     quote do
       setup c do
-        start_db(c.tmp_dir, Keyword.merge(unquote(opts), Map.get(c, :db_opts, [])))
+        opts =
+          Keyword.merge(
+            unquote(opts),
+            [name: __MODULE__] ++ Map.get(c, :db_opts, [])
+          )
+
+        start_db(c.tmp_dir, opts)
       end
     end
   end
 
   def start_db(db_dir, opts \\ []) do
-    id = opts[:id]
-
     db =
       ExUnit.Callbacks.start_link_supervised!(
         {Goblin, [db_dir: db_dir] ++ opts},
-        id: id
+        id: opts[:name]
       )
 
     [
-      {proc_sup, _, _, _},
+      {_, proc_sup, _, _},
       {registry, _, _, _},
       {_, _, _, _}
     ] = Supervisor.which_children(db)
@@ -39,21 +43,41 @@ defmodule TestHelper do
       {Goblin.Compactor, compactor, _, _},
       {Goblin.WAL, wal, _, _},
       {Goblin.Manifest, manifest, _, _},
-      {Goblin.RWLocks, rw_locks, _, _},
       {_, _, _, _}
-    ] = Supervisor.which_children(Goblin.ProcessRegistry.via(registry, proc_sup))
+    ] = Supervisor.which_children(proc_sup)
 
     %{
       db: db,
-      db_id: id,
       registry: registry,
       writer: writer,
       store: store,
       compactor: compactor,
       wal: wal,
-      manifest: manifest,
-      rw_locks: rw_locks
+      manifest: manifest
     }
+  end
+
+  def stop_db(id) do
+    ExUnit.Callbacks.stop_supervised!(id)
+  end
+
+  def stream_flush_data(data, key_limit) do
+    Stream.resource(
+      fn -> data end,
+      fn
+        [] -> {:halt, :ok}
+        [next | data] -> {[next], data}
+      end,
+      fn _ -> :ok end
+    )
+    |> Stream.chunk_every(key_limit)
+  end
+
+  def fake_sst(file, data) do
+    {:ok, [sst]} =
+      Goblin.SSTs.new([[data]], 0, file_getter: fn -> file end)
+
+    sst
   end
 
   defmacro assert_eventually(opts \\ [], do: block) do
@@ -80,26 +104,6 @@ defmodule TestHelper do
         Process.sleep(step)
         assert_eventually(f, timeout - step, step)
     end
-  end
-
-  def stream_flush_data(data, key_limit) do
-    Stream.resource(
-      fn -> data end,
-      fn
-        [] -> {:halt, :ok}
-        [next | data] -> {[next], data}
-      end,
-      fn _ -> :ok end
-    )
-    |> Stream.chunk_every(key_limit)
-  end
-
-  def write_sst(dir, name, level_key, key_limit, data) do
-    stream = stream_flush_data(data, key_limit)
-    file_getter = fn -> Path.join(dir, "#{name}.goblin") end
-    opts = [file_getter: file_getter]
-    Goblin.SSTs.new([stream], level_key, opts)
-    file_getter.()
   end
 end
 

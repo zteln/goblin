@@ -93,38 +93,6 @@ defmodule Goblin.Writer do
     GenServer.call(writer, :is_flushing)
   end
 
-  @spec put(writer(), Goblin.key(), Goblin.value()) :: :ok | {:error, term()}
-  def put(writer, key, value) do
-    transaction(writer, fn tx ->
-      tx = Transaction.put(tx, key, value)
-      {:commit, tx, :ok}
-    end)
-  end
-
-  @spec put_multi(writer(), [Goblin.pair()]) :: :ok | {:error, term()}
-  def put_multi(writer, pairs) do
-    transaction(writer, fn tx ->
-      tx = Enum.reduce(pairs, tx, fn {k, v}, acc -> Transaction.put(acc, k, v) end)
-      {:commit, tx, :ok}
-    end)
-  end
-
-  @spec remove(writer(), Goblin.db_key()) :: :ok | {:error, term()}
-  def remove(writer, key) do
-    transaction(writer, fn tx ->
-      tx = Transaction.remove(tx, key)
-      {:commit, tx, :ok}
-    end)
-  end
-
-  @spec remove_multi(writer(), [Goblin.db_key()]) :: :ok | {:error, term()}
-  def remove_multi(writer, keys) do
-    transaction(writer, fn tx ->
-      tx = Enum.reduce(keys, tx, fn k, acc -> Transaction.remove(acc, k) end)
-      {:commit, tx, :ok}
-    end)
-  end
-
   @spec transaction(writer(), (Transaction.t() -> Goblin.tx_return())) ::
           term() | :ok | {:error, term()}
   def transaction(writer, f) do
@@ -399,7 +367,6 @@ defmodule Goblin.Writer do
       seq: seq
     } = state
 
-    # TODO: remove seq from read, only one writer at a time (true serial execution)
     fallback_read = &Reader.get(&1, mem_table, store)
     Transaction.new(seq, fallback_read)
   end
@@ -416,6 +383,7 @@ defmodule Goblin.Writer do
     with {:ok, logs} <- WAL.recover(wal),
          {:ok, state} <- recover_state(state, logs, flushed_seq) do
       MemTable.put_commit_seq(mem_table, state.seq)
+      MemTable.set_ready(mem_table)
       {:ok, state}
     end
   end

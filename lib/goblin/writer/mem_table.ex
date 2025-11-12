@@ -17,6 +17,11 @@ defmodule Goblin.Writer.MemTable do
     :ets.insert(table, {:commit_seq, seq})
   end
 
+  @spec set_ready(t()) :: true
+  def set_ready(table) do
+    :ets.insert(table, {:ready})
+  end
+
   @spec upsert(t(), Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()) :: true
   def upsert(table, key, seq, value) do
     :ets.insert(table, {key, seq, value})
@@ -27,22 +32,35 @@ defmodule Goblin.Writer.MemTable do
     :ets.insert(table, {key, seq, :tombstone})
   end
 
-  @spec read(t(), Goblin.db_key(), nil | Goblin.seq_no()) ::
+  @spec read(t(), Goblin.db_key()) ::
           {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()} | :not_found
   def read(table, key) do
-    commit_seq = commit_seq(table)
-    read(table, key, commit_seq)
+    if memtable_ready?(table) do
+      commit_seq = commit_seq(table)
+
+      :ets.select(table, [
+        {
+          {:"$1", :"$2", :_},
+          [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", commit_seq}}],
+          [:"$_"]
+        }
+      ])
+      |> Enum.max_by(&elem(&1, 1), fn -> :not_found end)
+    else
+      Process.sleep(50)
+      read(table, key)
+    end
   end
 
-  def read(table, key, seq) do
-    :ets.select(table, [
-      {
-        {:"$1", :"$2", :_},
-        [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", seq}}],
-        [:"$_"]
-      }
-    ])
-    |> Enum.max_by(&elem(&1, 1), fn -> :not_found end)
+  @spec get_range(t(), Goblin.db_key(), Goblin.db_key()) :: [Goblin.triple()]
+  def get_range(table, min_key, max_key) do
+    if memtable_ready?(table) do
+      commit_seq = commit_seq(table)
+      :ets.select(table, range_ms(min_key, max_key, commit_seq))
+    else
+      Process.sleep(50)
+      get_range(table, min_key, max_key)
+    end
   end
 
   @spec clean_seq_range(t(), Goblin.seq_no()) :: non_neg_integer()
@@ -50,16 +68,13 @@ defmodule Goblin.Writer.MemTable do
     :ets.select_delete(table, seq_range_ms(seq, true))
   end
 
-  @spec get_range(t(), Goblin.db_key(), Goblin.db_key()) :: [Goblin.triple()]
-  def get_range(table, min_key, max_key) do
-    commit_seq = commit_seq(table)
-
-    :ets.select(table, range_ms(min_key, max_key, commit_seq))
-  end
-
   @spec get_seq_range(t(), Goblin.seq_no()) :: [Goblin.triple()]
   def get_seq_range(table, seq) do
     :ets.select(table, seq_range_ms(seq))
+  end
+
+  defp memtable_ready?(table) do
+    :ets.member(table, :ready)
   end
 
   defp commit_seq(table) do

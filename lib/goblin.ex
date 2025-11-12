@@ -63,22 +63,24 @@ defmodule Goblin do
   - **Compactor** - Merges SST files across levels
   - **WAL** - Write-ahead log for durability
   - **Manifest** - Tracks database state and file metadata
-  - **RWLocks** - Coordinates concurrent access to SST files
   """
   use Supervisor
-  require Goblin.ProcessRegistry
+  import Goblin.ProcessRegistry
 
-  @opaque db_key_limit :: non_neg_integer()
-  @opaque db_level_limit :: non_neg_integer()
-  @opaque db_level_key :: non_neg_integer()
-  @opaque db_sequence :: non_neg_integer()
-  @opaque triple :: {Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()}
-  @opaque db_file :: String.t()
+  @typedoc false
+  @type db_level_key :: non_neg_integer()
+  @typedoc false
+  @type seq_no :: non_neg_integer()
+  @typedoc false
+  @type db_file :: String.t()
+  @type db_key_limit :: non_neg_integer()
+  @type db_level_limit :: non_neg_integer()
   @type db_key :: term()
-  @type db_value :: term() | nil
+  @type db_value :: term()
+  @type pair :: {Goblin.db_key(), Goblin.db_value()}
+  @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
   @type db_server :: Supervisor.supervisor()
-  @type registry :: module()
-  @type transaction_return :: {:commit, Goblin.Tx.t(), term()} | :cancel
+  @type tx_return :: {:commit, Goblin.Tx.t(), term()} | :cancel
 
   @doc """
   Executes a function within a database transaction.
@@ -99,16 +101,15 @@ defmodule Goblin do
 
   - `result` - The value returned from the transaction function on successful commit
   - `:ok` - When the transaction is cancelled
-  - `{:error, :tx_in_conflict}` - When a write conflict is detected
-  - `{:error, :tx_timed_out}` - When a transaction times out
-  - `{:error, :tx_not_found}` - If not transaction was found for the current process
-  - `{:error, :already_in_transaction}` - If the current process is already in a transaction
+  - `{:error, :tx_not_found}` - If a transaction was not found for the current process
+  - `{:error, :already_in_tx}` - If the current process is already in a transaction
+  - `{:error, :not_tx_holder}` - If the process is not the current writer
   - `{:error, term()}` - Other errors
 
   ## Examples
 
       Goblin.transaction(db, fn tx ->
-        count = Goblin.Tx.get(tx, :counter) || 0
+        count = Goblin.Tx.get(tx, :counter, 0)
         tx = Goblin.Tx.put(tx, :counter, count + 1)
         {:commit, tx, count + 1}
       end)
@@ -118,21 +119,15 @@ defmodule Goblin do
         :cancel
       end)
       # => :ok
-
-      Goblin.transaction(db, fn tx -> 
-        count = Goblin.Tx.get(tx, :counter) || 0
-        tx = Goblin.Tx.put(tx, :counter, count + 1)
-        {:commit, tx, count + 1}
-      end, retries: 3, timeout: 5000)
   """
-  @spec transaction(db_server(), (Goblin.Tx.t() -> transaction_return()), keyword()) ::
+  @spec transaction(db_server(), (Goblin.Tx.t() -> tx_return())) ::
           term()
           | :ok
-          | {:error,
-             :tx_in_conflict | :tx_timed_out | :tx_not_found | :already_in_transaction | term()}
-  def transaction(db, f, opts \\ []) do
+          | {:error, :not_tx_holder | :tx_not_found | :already_in_tx | term()}
+  def transaction(db, f) do
     registry = name(db, ProcessRegistry)
-    Goblin.Writer.transaction(registry, f, opts)
+    writer = name(db, Writer)
+    Goblin.Writer.transaction(via(registry, writer), f)
   end
 
   @doc """
@@ -162,7 +157,12 @@ defmodule Goblin do
   @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
     registry = name(db, ProcessRegistry)
-    Goblin.Writer.put(registry, key, value)
+    writer = name(db, Writer)
+
+    Goblin.Writer.transaction(via(registry, writer), fn tx ->
+      tx = Goblin.Writer.Transaction.put(tx, key, value)
+      {:commit, tx, :ok}
+    end)
   end
 
   @doc """
@@ -192,7 +192,16 @@ defmodule Goblin do
   @spec put_multi(db_server(), [{db_key(), db_value()}]) :: :ok
   def put_multi(db, pairs) do
     registry = name(db, ProcessRegistry)
-    Goblin.Writer.put_multi(registry, pairs)
+    writer = name(db, Writer)
+
+    Goblin.Writer.transaction(via(registry, writer), fn tx ->
+      tx =
+        Enum.reduce(pairs, tx, fn {k, v}, acc ->
+          Goblin.Writer.Transaction.put(acc, k, v)
+        end)
+
+      {:commit, tx, :ok}
+    end)
   end
 
   @doc """
@@ -221,7 +230,12 @@ defmodule Goblin do
   @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
     registry = name(db, ProcessRegistry)
-    Goblin.Writer.remove(registry, key)
+    writer = name(db, Writer)
+
+    Goblin.Writer.transaction(via(registry, writer), fn tx ->
+      tx = Goblin.Writer.Transaction.remove(tx, key)
+      {:commit, tx, :ok}
+    end)
   end
 
   @doc """
@@ -247,7 +261,16 @@ defmodule Goblin do
   @spec remove_multi(db_server(), [db_key()]) :: :ok
   def remove_multi(db, keys) do
     registry = name(db, ProcessRegistry)
-    Goblin.Writer.remove_multi(registry, keys)
+    writer = name(db, Writer)
+
+    Goblin.Writer.transaction(via(registry, writer), fn tx ->
+      tx =
+        Enum.reduce(keys, tx, fn key, acc ->
+          Goblin.Writer.Transaction.remove(acc, key)
+        end)
+
+      {:commit, tx, :ok}
+    end)
   end
 
   @doc """
@@ -280,9 +303,10 @@ defmodule Goblin do
   """
   @spec get(db_server(), db_key(), db_value()) :: db_value()
   def get(db, key, default \\ nil) do
-    registry = name(db, ProcessRegistry)
+    writer = name(db, Writer)
+    store = name(db, Store)
 
-    case Goblin.Reader.get(key, registry) do
+    case Goblin.Reader.get(key, writer, store) do
       :not_found -> default
       {_seq, value} -> value
     end
@@ -318,14 +342,13 @@ defmodule Goblin do
   """
   @spec get_multi(db_server(), [db_key()]) :: [{db_key(), db_value()}]
   def get_multi(db, keys) when is_list(keys) do
-    registry = name(db, ProcessRegistry)
+    writer = name(db, Writer)
+    store = name(db, Store)
 
-    Goblin.Reader.get_multi(keys, registry)
-    |> Enum.map(fn {_seq, key, value} -> {key, value} end)
+    Goblin.Reader.get_multi(keys, writer, store)
+    |> Enum.map(fn {key, _seq, value} -> {key, value} end)
     |> List.keysort(0)
   end
-
-  def get_multi(_, _), do: raise("`keys` not a list.")
 
   @doc """
   Retrieves all key-value pairs within a specified range from the database.
@@ -372,8 +395,9 @@ defmodule Goblin do
   def select(db, opts \\ []) do
     min = opts[:min]
     max = opts[:max]
-    registry = name(db, ProcessRegistry)
-    Goblin.Reader.select(min, max, registry)
+    writer = name(db, Writer)
+    store = name(db, Store)
+    Goblin.Reader.select(min, max, writer, store)
   end
 
   @doc """
@@ -389,8 +413,9 @@ defmodule Goblin do
   """
   @spec is_compacting(db_server()) :: boolean()
   def is_compacting(db) do
-    registry = name(db, ProcessRegistry)
-    Goblin.Compactor.is_compacting(registry)
+    registry = name(db, Registry)
+    compactor = name(db, Compactor)
+    Goblin.Compactor.is_compacting(via(registry, compactor))
   end
 
   @doc """
@@ -406,8 +431,9 @@ defmodule Goblin do
   """
   @spec is_flushing(db_server()) :: boolean()
   def is_flushing(db) do
-    registry = name(db, ProcessRegistry)
-    Goblin.Writer.is_flushing(registry)
+    registry = name(db, Registry)
+    writer = name(db, Writer)
+    Goblin.Writer.is_flushing(via(registry, writer))
   end
 
   @doc """
@@ -505,7 +531,23 @@ defmodule Goblin do
   def init(args) do
     name = args[:name] || __MODULE__
     registry = name(name, ProcessRegistry)
+    proc_sup = name(name, ProcessSupervisor)
     pub_sub = name(name, PubSub)
+    writer = name(name, Writer)
+    store = name(name, Store)
+    compactor = name(name, Compactor)
+    manifest = name(name, Manifest)
+    wal = name(name, WAL)
+    task_sup = name(name, TaskSupervisor)
+
+    names = %{
+      writer: {writer, via(registry, writer)},
+      store: {store, via(registry, store)},
+      compactor: {compactor, via(registry, compactor)},
+      manifest: {manifest, via(registry, manifest)},
+      wal: {wal, via(registry, wal)},
+      task_sup: {task_sup, via(registry, task_sup)}
+    }
 
     children =
       [
@@ -514,7 +556,8 @@ defmodule Goblin do
         {Goblin.ProcessSupervisor,
          Keyword.merge(
            args,
-           name: name,
+           name: via(registry, proc_sup),
+           names: names,
            registry: registry,
            pub_sub: pub_sub
          )}

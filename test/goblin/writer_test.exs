@@ -4,6 +4,12 @@ defmodule Goblin.WriterTest do
   import ExUnit.CaptureLog
   alias Goblin.Writer
 
+  defmodule FakeTask do
+    def async(_sup, _f) do
+      %{ref: make_ref()}
+    end
+  end
+
   defmodule FailingTask do
     def async(_sup, _f) do
       Task.async(fn -> {:error, :failed} end)
@@ -13,20 +19,20 @@ defmodule Goblin.WriterTest do
   @moduletag :tmp_dir
 
   describe "get/3, get_multi/3" do
-    setup c, do: start_writer(c.tmp_dir)
+    setup c, do: start_writer(c.tmp_dir, Map.get(c, :extra_opts, []))
 
     test "returns :not_found for non-existing key" do
       assert :not_found == Writer.get(__MODULE__, :k)
     end
 
     test "returns corresponding value", c do
-      Writer.put(c.writer, :k, :v)
+      put(c.writer, :k, :v)
       assert {:value, 0, :v} == Writer.get(__MODULE__, :k)
     end
 
     test "returns tuple of keys found and keys not found", c do
-      Writer.put(c.writer, :k1, :v1)
-      Writer.put(c.writer, :k2, :v2)
+      put(c.writer, :k1, :v1)
+      put(c.writer, :k2, :v2)
 
       assert {[{:k2, 1, :v2}, {:k1, 0, :v1}], []} ==
                Writer.get_multi(__MODULE__, [:k1, :k2])
@@ -36,8 +42,29 @@ defmodule Goblin.WriterTest do
     end
 
     test "returns :tombstone as value if key is removed", c do
-      Writer.remove(c.writer, :k)
+      remove(c.writer, :k)
       assert {:value, 0, :tombstone} == Writer.get(__MODULE__, :k)
+    end
+
+    @tag extra_opts: [task_mod: FakeTask]
+    test "can read during flush", c do
+      data =
+        for n <- 1..10 do
+          {:"k#{n}", :"v#{n}"}
+        end
+
+      put_multi(c.writer, data)
+
+      assert %{flushing: {_, _, _, _}} = :sys.get_state(c.writer)
+
+      for n <- 1..10 do
+        assert {:value, n - 1, :"v#{n}"} == Writer.get(__MODULE__, :"k#{n}")
+      end
+
+      keys = for(n <- 1..10, do: :"k#{n}")
+
+      assert {for(n <- 10..1//-1, do: {:"k#{n}", n - 1, :"v#{n}"}), []} ==
+               Writer.get_multi(__MODULE__, keys)
     end
   end
 
@@ -49,17 +76,17 @@ defmodule Goblin.WriterTest do
     end
 
     test "returns iterator over MemTable data", c do
-      Writer.put(c.writer, :k1, :v1)
-      Writer.put(c.writer, :k2, :v2)
+      put(c.writer, :k1, :v1)
+      put(c.writer, :k2, :v2)
 
       assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} =
                Writer.iterators(__MODULE__, nil, nil)
     end
 
     test "returns iterator over MemTable subset of data", c do
-      Writer.put(c.writer, :k1, :v1)
-      Writer.put(c.writer, :k2, :v2)
-      Writer.put(c.writer, :k3, :v3)
+      put(c.writer, :k1, :v1)
+      put(c.writer, :k2, :v2)
+      put(c.writer, :k3, :v3)
 
       assert {[{:k2, 1, :v2}], _} = Writer.iterators(__MODULE__, :k2, :k2)
       assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} = Writer.iterators(__MODULE__, nil, :k2)
@@ -67,9 +94,9 @@ defmodule Goblin.WriterTest do
     end
 
     test "iterates over provided range", c do
-      Writer.put(c.writer, :k1, :v1)
-      Writer.put(c.writer, :k2, :v2)
-      Writer.put(c.writer, :k3, :v3)
+      put(c.writer, :k1, :v1)
+      put(c.writer, :k2, :v2)
+      put(c.writer, :k3, :v3)
 
       assert {[{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] = range, iter_f} =
                Writer.iterators(__MODULE__, nil, nil)
@@ -81,72 +108,8 @@ defmodule Goblin.WriterTest do
     end
   end
 
-  describe "put/3, put_multi/2, remove/2, remove_multi/2" do
-    setup c, do: start_writer(c.tmp_dir, Map.get(c, :extra_opts, []))
-
-    test "works as expected", c do
-      assert :not_found == Writer.get(__MODULE__, :k)
-      assert :ok == Writer.put(c.writer, :k, :v)
-      assert {:value, 0, :v} == Writer.get(__MODULE__, :k)
-      assert :ok == Writer.remove(c.writer, :k)
-      assert {:value, 1, :tombstone} == Writer.get(__MODULE__, :k)
-
-      assert :ok == Writer.put_multi(c.writer, [{:k1, :v1}, {:k2, :v2}])
-      assert {[{:k2, 3, :v2}, {:k1, 2, :v1}], []} == Writer.get_multi(__MODULE__, [:k1, :k2])
-      assert :ok == Writer.remove_multi(c.writer, [:k1, :k2])
-
-      assert {[{:k2, 5, :tombstone}, {:k1, 4, :tombstone}], []} ==
-               Writer.get_multi(__MODULE__, [:k1, :k2])
-    end
-
-    test "flushes to SST if MemTable exceeds key limit", c do
-      data =
-        for n <- 1..10 do
-          {:"k#{n}", :"v#{n}"}
-        end
-
-      files = File.ls!(c.tmp_dir)
-      no_of_files = length(files)
-
-      assert :ok == Writer.put_multi(c.writer, data)
-
-      assert_eventually do
-        new_files = File.ls!(c.tmp_dir)
-        assert no_of_files + 1 == length(new_files)
-        [sst_file] = new_files -- files
-
-        assert {:ok, %{seq_range: {0, 9}, key_range: {:k1, :k9}}} =
-                 Goblin.SSTs.fetch_sst(Path.join(c.tmp_dir, sst_file))
-      end
-
-      for n <- 1..10 do
-        assert :not_found == Writer.get(__MODULE__, :"k#{n}")
-      end
-    end
-
-    @tag extra_opts: [task_mod: FailingTask]
-    test "retries flush on failure", c do
-      writer = c.writer
-      Process.flag(:trap_exit, true)
-
-      data =
-        for n <- 1..10 do
-          {:"k#{n}", :"v#{n}"}
-        end
-
-      log =
-        capture_log(fn ->
-          assert :ok == Writer.put_multi(c.writer, data)
-          assert_receive {:EXIT, ^writer, {:error, :failed_to_flush}}
-        end)
-
-      assert log =~ "Failed to flush with reason: :failed. Retrying..."
-      assert log =~ "Failed to flush after 5 attempts with reason: :failed. Exiting."
-    end
-  end
-
   describe "transaction/2" do
-    setup c, do: start_writer(c.tmp_dir)
+    setup c, do: start_writer(c.tmp_dir, Map.get(c, :extra_opts, []))
 
     test "commits writes to MemTable", c do
       assert :ok ==
@@ -213,6 +176,10 @@ defmodule Goblin.WriterTest do
                    end)
         end)
 
+      receive do
+        :ready -> :ok
+      end
+
       spawn(fn ->
         assert :ok ==
                  Writer.transaction(c.writer, fn tx ->
@@ -220,12 +187,10 @@ defmodule Goblin.WriterTest do
                  end)
       end)
 
-      receive do
-        :ready -> :ok
+      assert_eventually do
+        assert %{write_queue: wq} = :sys.get_state(c.writer)
+        refute :queue.is_empty(wq)
       end
-
-      assert %{write_queue: wq} = :sys.get_state(c.writer)
-      refute :queue.is_empty(wq)
 
       send(pid1, :cont)
 
@@ -234,6 +199,76 @@ defmodule Goblin.WriterTest do
         assert :queue.is_empty(wq)
       end
     end
+
+    test "flushes to SST if MemTable exceeds key limit", c do
+      data =
+        for n <- 1..10 do
+          {:"k#{n}", :"v#{n}"}
+        end
+
+      files = File.ls!(c.tmp_dir)
+      no_of_files = length(files)
+
+      assert :ok == put_multi(c.writer, data)
+
+      assert_eventually do
+        new_files = File.ls!(c.tmp_dir)
+        assert no_of_files + 1 == length(new_files)
+        [sst_file] = new_files -- files
+
+        assert {:ok, %{seq_range: {0, 9}, key_range: {:k1, :k9}}} =
+                 Goblin.SSTs.fetch_sst(Path.join(c.tmp_dir, sst_file))
+      end
+
+      for n <- 1..10 do
+        assert :not_found == Writer.get(__MODULE__, :"k#{n}")
+      end
+    end
+
+    @tag extra_opts: [task_mod: FailingTask]
+    test "retries flush on failure", c do
+      writer = c.writer
+      Process.flag(:trap_exit, true)
+
+      data =
+        for n <- 1..10 do
+          {:"k#{n}", :"v#{n}"}
+        end
+
+      log =
+        capture_log(fn ->
+          assert :ok == put_multi(c.writer, data)
+          assert_receive {:EXIT, ^writer, {:error, :failed_to_flush}}
+        end)
+
+      assert log =~ "Failed to flush with reason: :failed. Retrying..."
+      assert log =~ "Failed to flush after 5 attempts with reason: :failed. Exiting."
+    end
+  end
+
+  defp remove(writer, k) do
+    Writer.transaction(writer, fn tx ->
+      tx = Writer.Transaction.remove(tx, k)
+      {:commit, tx, :ok}
+    end)
+  end
+
+  defp put(writer, k, v) do
+    Writer.transaction(writer, fn tx ->
+      tx = Writer.Transaction.put(tx, k, v)
+      {:commit, tx, :ok}
+    end)
+  end
+
+  defp put_multi(writer, pairs) do
+    Goblin.Writer.transaction(writer, fn tx ->
+      tx =
+        Enum.reduce(pairs, tx, fn {k, v}, acc ->
+          Goblin.Writer.Transaction.put(acc, k, v)
+        end)
+
+      {:commit, tx, :ok}
+    end)
   end
 
   defp start_writer(dir, opts \\ []) do
