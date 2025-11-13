@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.1 (2025-11-13)
+* Enhancements
+    * Add checksum verification to SST files
+    * Data and metadata are compressed in SSTs for levels > 1
+
 ## v0.2.0 (2025-11-12)
 * Enhancements
     * The transaction model is changed to true serial execution. 
@@ -10,7 +15,7 @@
 
 ## v0.1.5 (2025-11-02)
 * Improvements
-    * Filter SSTs in `Goblin.Store.get/2` by checking key range in directly in memory
+    * Improved SST filtering from store
 * Enhancements
     * Add benchmarking scripts
 

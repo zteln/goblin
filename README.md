@@ -211,17 +211,16 @@ Compaction merges SST files to reduce read amplification and reclaim space:
 8. **File cleanup**: Old SST files are deleted after acquiring write locks
 
 Compaction runs asynchronously and retries up to 5 times on failure.
+Data is compressed for levels larger than 1.
 
 ## SST file format
 
 SST files use the `<no>.goblin` format and follow this binary structure:
 
-```
-┌─────────────────┬──────────────┬─────────────────┐
-│ DATA BLOCKS     │ SEPARATOR    │ FOOTER          │
-│ (n × 512 bytes) │ (16 bytes)   │ (variable size) │
-└─────────────────┴──────────────┴─────────────────┘
-```
+| DATA BLOCKS | SEPARATOR | FOOTER |
+| --- | --- | --- |
+| n * 512 bytes | 16 bytes | variable size |
+
 
 ### Data blocks
 
@@ -249,6 +248,7 @@ The metadata section stores:
 - Number of blocks (8 bytes)
 - Total file size (8 bytes)
 - Data section size (8 bytes)
+- CRC (4 bytes)
 
 ## References
 
