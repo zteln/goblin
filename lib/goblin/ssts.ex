@@ -128,13 +128,12 @@ defmodule Goblin.SSTs do
 
   defp write_stream(stream, level_key, opts) do
     file_getter = opts[:file_getter]
-    bf_fpp = opts[:bf_fpp]
 
     Enum.reduce_while(stream, {:ok, []}, fn chunk, {:ok, acc} ->
       file = file_getter.()
       tmp_file = tmp_file(file)
 
-      case write(tmp_file, level_key, chunk, bf_fpp) do
+      case write(tmp_file, level_key, chunk, opts) do
         {:ok, sst} ->
           {:cont, {:ok, [{tmp_file, file, sst} | acc]}}
 
@@ -144,12 +143,12 @@ defmodule Goblin.SSTs do
     end)
   end
 
-  defp write(file, level_key, data, bf_fpp) do
+  defp write(file, level_key, data, opts) do
     disk = Disk.open!(file, write?: true)
 
     result =
       with {:ok, _disk, bloom_filter, seq_range, size, key_range} <-
-             write_sst(disk, level_key, data, bf_fpp) do
+             write_sst(disk, level_key, data, opts) do
         {:ok,
          %SST{
            bloom_filter: bloom_filter,
@@ -257,14 +256,16 @@ defmodule Goblin.SSTs do
     end
   end
 
-  defp write_sst(disk, level_key, data, bf_fpp) do
-    with {:ok, disk, data} <- write_data(disk, data),
-         {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data, bf_fpp) do
+  defp write_sst(disk, level_key, data, opts) do
+    with {:ok, disk, data} <- write_data(disk, data, opts),
+         {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data, opts) do
       {:ok, disk, bloom_filter, data.seq_range, data.size + meta_size, data.key_range}
     end
   end
 
-  defp write_data(disk, data) do
+  defp write_data(disk, data, opts) do
+    compress? = opts[:compress?] || false
+
     init = %{
       no_of_blocks: 0,
       key_range: {nil, nil},
@@ -275,7 +276,7 @@ defmodule Goblin.SSTs do
     }
 
     Enum.reduce_while(data, {:ok, disk, init}, fn {k, seq, v}, {:ok, disk, acc} ->
-      block = SST.encode_block(k, seq, v)
+      block = SST.encode_block(k, seq, v, compress?)
       block_size = byte_size(block)
       span = SST.span(block_size)
       {min_seq, max_seq} = acc.seq_range
@@ -314,7 +315,9 @@ defmodule Goblin.SSTs do
     end)
   end
 
-  defp write_meta(disk, level_key, data, bf_fpp) do
+  defp write_meta(disk, level_key, data, opts) do
+    bf_fpp = opts[:bf_fpp]
+    compress? = opts[:compress?] || false
     bloom_filter = BloomFilter.generate(data.bloom_filter, bf_fpp)
 
     footer =
@@ -326,7 +329,8 @@ defmodule Goblin.SSTs do
         disk.offset,
         data.no_of_blocks,
         data.size,
-        data.crc
+        data.crc,
+        compress?
       )
 
     with {:ok, disk} <- Disk.write(disk, footer) do

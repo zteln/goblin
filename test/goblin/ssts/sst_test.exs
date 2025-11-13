@@ -84,7 +84,7 @@ defmodule Goblin.SSTs.SSTTest do
       key = "test_key"
       value = "test_value"
 
-      block = SST.encode_block(seq, key, value)
+      block = SST.encode_block(seq, key, value, false)
 
       assert <<"GOBLINBLOCK00000", span::integer-16, _rest::binary>> = block
       assert span == 1
@@ -93,12 +93,39 @@ defmodule Goblin.SSTs.SSTTest do
       assert {:ok, {^seq, ^key, ^value}} = SST.decode_block(block)
     end
 
+    test "encode compresses data in block" do
+      seq = 0
+      key = "test_key"
+      value = List.duplicate(:a, 50)
+
+      compressed_block = SST.encode_block(seq, key, value, true)
+      block = SST.encode_block(seq, key, value, false)
+
+      assert <<"GOBLINBLOCK00000", _span::integer-16, compressed_rest::binary>> = compressed_block
+      assert <<"GOBLINBLOCK00000", _span::integer-16, rest::binary>> = block
+
+      compressed_data = remove_padding(compressed_rest)
+      data = remove_padding(rest)
+      assert byte_size(compressed_data) < byte_size(data)
+    end
+
+    defp remove_padding([0 | rest]), do: remove_padding(rest)
+
+    defp remove_padding(rest) when is_list(rest),
+      do: Enum.reverse(rest) |> :binary.list_to_bin()
+
+    defp remove_padding(bin) do
+      :binary.bin_to_list(bin)
+      |> Enum.reverse()
+      |> remove_padding()
+    end
+
     test "encodes and decodes a block with large value" do
       seq = 42
       key = "large_key"
       value = String.duplicate("v", 600)
 
-      block = SST.encode_block(seq, key, value)
+      block = SST.encode_block(seq, key, value, false)
 
       assert <<"GOBLINBLOCK00000", span::integer-16, _rest::binary>> = block
       assert span == 2
@@ -112,7 +139,7 @@ defmodule Goblin.SSTs.SSTTest do
       key = {:compound, "key", 123}
       value = %{data: [1, 2, 3], nested: %{foo: "bar"}}
 
-      block = SST.encode_block(seq, key, value)
+      block = SST.encode_block(seq, key, value, false)
 
       assert {:ok, {^seq, ^key, ^value}} = SST.decode_block(block)
     end
@@ -144,7 +171,8 @@ defmodule Goblin.SSTs.SSTTest do
           offset,
           no_of_blocks,
           size,
-          crc
+          crc,
+          false
         )
 
       assert <<"GOBLINSEP0000000", _rest::binary>> = footer
@@ -247,7 +275,8 @@ defmodule Goblin.SSTs.SSTTest do
           offset,
           no_of_blocks,
           size,
-          crc
+          crc,
+          false
         )
 
       metadata_offset = byte_size(footer) - SST.size(:magic) - SST.size(:metadata)

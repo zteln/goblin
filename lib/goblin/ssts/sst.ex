@@ -61,9 +61,10 @@ defmodule Goblin.SSTs.SST do
   def size(:metadata), do: @metadata_size
   def size(:block_header), do: @block_header_size
 
-  @spec encode_block(Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value()) :: binary()
-  def encode_block(key, seq, value) do
-    encoded = encode({key, seq, value})
+  @spec encode_block(Goblin.db_sequence(), Goblin.db_key(), Goblin.db_value(), boolean()) ::
+          binary()
+  def encode_block(key, seq, value, compress?) do
+    encoded = encode({key, seq, value}, compress?)
     block_size = byte_size(<<@block_id::binary, 0::integer-16, encoded::binary>>)
     span = span(block_size)
     padding = span * @block_size - block_size
@@ -78,7 +79,8 @@ defmodule Goblin.SSTs.SST do
           offset(),
           no_of_blocks(),
           size(),
-          non_neg_integer()
+          non_neg_integer(),
+          boolean()
         ) :: binary()
   def encode_footer(
         level_key,
@@ -88,15 +90,16 @@ defmodule Goblin.SSTs.SST do
         offset,
         no_of_blocks,
         size,
-        crc
+        crc,
+        compress?
       ) do
-    enc_bf = encode({:bloom_filter, bloom_filter})
+    enc_bf = encode({:bloom_filter, bloom_filter}, compress?)
     bf_pos = offset + @separator_size
     bf_size = byte_size(enc_bf)
-    enc_key_range = encode({:key_range, key_range})
+    enc_key_range = encode({:key_range, key_range}, compress?)
     key_range_pos = bf_pos + bf_size
     key_range_size = byte_size(enc_key_range)
-    enc_seq_range = encode({:seq_range, seq_range})
+    enc_seq_range = encode({:seq_range, seq_range}, compress?)
     seq_range_pos = key_range_pos + key_range_size
     seq_range_size = byte_size(enc_seq_range)
 
@@ -204,6 +207,7 @@ defmodule Goblin.SSTs.SST do
     end
   end
 
-  defp encode(term), do: :erlang.term_to_binary(term)
+  defp encode(term, true), do: :erlang.term_to_binary(term, [:compressed])
+  defp encode(term, false), do: :erlang.term_to_binary(term)
   defp decode(binary), do: :erlang.binary_to_term(binary)
 end

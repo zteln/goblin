@@ -334,7 +334,8 @@ defmodule Goblin.Writer do
 
         opts = [
           file_getter: fn -> Store.new_file(store) end,
-          bf_fpp: bf_fpp
+          bf_fpp: bf_fpp,
+          compress?: false
         ]
 
         with {:ok, flushed} <- SSTs.new([data], @flush_level, opts),

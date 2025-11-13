@@ -228,7 +228,8 @@ defmodule Goblin.Compactor do
 
         opts = [
           file_getter: fn -> Store.new_file(store) end,
-          bf_fpp: bf_fpp
+          bf_fpp: bf_fpp,
+          compress?: level_key > 1
         ]
 
         with {:ok, new} <- SSTs.new(data, level_key, opts),
