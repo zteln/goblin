@@ -51,8 +51,10 @@ defmodule Goblin.SSTs do
               seq_range_size,
               _,
               size,
-              _
+              offset,
+              crc
             }} <- read_metadata(disk),
+           :ok <- verify_crc(disk, 0, offset, crc),
            {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size),
            {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
            {:ok, seq_range} <- read_seq_range(disk, seq_range_pos, seq_range_size) do
@@ -165,7 +167,7 @@ defmodule Goblin.SSTs do
 
   defp search_sst(disk, key) do
     with :ok <- valid_sst(disk),
-         {:ok, {_, _, _, _, _, _, _, no_of_blocks, _, _}} <- read_metadata(disk) do
+         {:ok, {_, _, _, _, _, _, _, no_of_blocks, _, _, _}} <- read_metadata(disk) do
       binary_search(disk, key, 0, no_of_blocks)
     end
   end
@@ -268,7 +270,8 @@ defmodule Goblin.SSTs do
       key_range: {nil, nil},
       seq_range: {nil, 0},
       bloom_filter: BloomFilter.new(),
-      size: 0
+      size: 0,
+      crc: :erlang.crc32(<<>>)
     }
 
     Enum.reduce_while(data, {:ok, disk, init}, fn {k, seq, v}, {:ok, disk, acc} ->
@@ -289,6 +292,7 @@ defmodule Goblin.SSTs do
       min_key = if min_key, do: min_key, else: k
       max_key = k
       bloom_filter = BloomFilter.put(acc.bloom_filter, k)
+      crc = :erlang.crc32(acc.crc, block)
 
       case Disk.write(disk, block) do
         {:ok, disk} ->
@@ -298,7 +302,8 @@ defmodule Goblin.SSTs do
               key_range: {min_key, max_key},
               seq_range: {min_seq, max_seq},
               bloom_filter: bloom_filter,
-              size: acc.size + block_size
+              size: acc.size + block_size,
+              crc: crc
           }
 
           {:cont, {:ok, disk, acc}}
@@ -320,7 +325,8 @@ defmodule Goblin.SSTs do
         data.seq_range,
         disk.offset,
         data.no_of_blocks,
-        data.size
+        data.size,
+        data.crc
       )
 
     with {:ok, disk} <- Disk.write(disk, footer) do
@@ -334,6 +340,30 @@ defmodule Goblin.SSTs do
   defp switch([{from, to, sst} | to_switch], acc) do
     with :ok <- Disk.rename(from, to) do
       switch(to_switch, [%{sst | file: to} | acc])
+    end
+  end
+
+  defp verify_crc(disk, start_pos, end_pos, target_crc, crc \\ :erlang.crc32(<<>>))
+
+  defp verify_crc(_disk, end_pos, end_pos, target_crc, crc) do
+    if target_crc == crc do
+      :ok
+    else
+      {:error, :corrupted_sst}
+    end
+  end
+
+  defp verify_crc(disk, start_pos, end_pos, target_crc, crc) do
+    inc =
+      if end_pos - start_pos < 4096 do
+        end_pos - start_pos
+      else
+        4096
+      end
+
+    with {:ok, chunk} <- Disk.read(disk, start_pos, inc) do
+      crc = :erlang.crc32(crc, chunk)
+      verify_crc(disk, start_pos + inc, end_pos, target_crc, crc)
     end
   end
 

@@ -70,7 +70,7 @@ defmodule Goblin.SSTs.SSTTest do
     end
 
     test "returns correct size for metadata" do
-      assert SST.size(:metadata) == 76
+      assert SST.size(:metadata) == 80
     end
 
     test "returns correct size for block_header" do
@@ -133,6 +133,7 @@ defmodule Goblin.SSTs.SSTTest do
       offset = 5120
       no_of_blocks = 10
       size = 5120
+      crc = 123
 
       footer =
         SST.encode_footer(
@@ -142,7 +143,8 @@ defmodule Goblin.SSTs.SSTTest do
           seq_range,
           offset,
           no_of_blocks,
-          size
+          size,
+          crc
         )
 
       assert <<"GOBLINSEP0000000", _rest::binary>> = footer
@@ -162,7 +164,8 @@ defmodule Goblin.SSTs.SSTTest do
                 seq_range_size,
                 ^no_of_blocks,
                 total_size,
-                ^offset
+                ^offset,
+                ^crc
               }} = SST.decode_metadata(metadata)
 
       assert bf_pos > offset
@@ -233,6 +236,7 @@ defmodule Goblin.SSTs.SSTTest do
       offset = 2048
       no_of_blocks = 4
       size = 2048
+      crc = 123
 
       footer =
         SST.encode_footer(
@@ -242,7 +246,8 @@ defmodule Goblin.SSTs.SSTTest do
           seq_range,
           offset,
           no_of_blocks,
-          size
+          size,
+          crc
         )
 
       metadata_offset = byte_size(footer) - SST.size(:magic) - SST.size(:metadata)
@@ -259,7 +264,8 @@ defmodule Goblin.SSTs.SSTTest do
                 seq_range_size,
                 ^no_of_blocks,
                 _total_size,
-                ^offset
+                ^offset,
+                ^crc
               }} = SST.decode_metadata(metadata)
 
       bf_binary = :binary.part(footer, bf_pos - offset, bf_size)

@@ -33,7 +33,8 @@ defmodule Goblin.SSTs.SST do
                    0::integer-64,
                    0::integer-64,
                    0::integer-64,
-                   0::integer-64
+                   0::integer-64,
+                   0::integer-32
                  >>)
 
   @block_id "GOBLINBLOCK00000"
@@ -76,7 +77,8 @@ defmodule Goblin.SSTs.SST do
           Goblin.db_sequence(),
           offset(),
           no_of_blocks(),
-          size()
+          size(),
+          non_neg_integer()
         ) :: binary()
   def encode_footer(
         level_key,
@@ -85,7 +87,8 @@ defmodule Goblin.SSTs.SST do
         seq_range,
         offset,
         no_of_blocks,
-        size
+        size,
+        crc
       ) do
     enc_bf = encode({:bloom_filter, bloom_filter})
     bf_pos = offset + @separator_size
@@ -117,7 +120,8 @@ defmodule Goblin.SSTs.SST do
         seq_range_size::integer-64,
         no_of_blocks::integer-64,
         size::integer-64,
-        offset::integer-64
+        offset::integer-64,
+        crc::integer-32
       >>
 
     <<
@@ -140,7 +144,7 @@ defmodule Goblin.SSTs.SST do
   @spec decode_metadata(binary()) ::
           {:ok,
            {Goblin.db_level_key(), size(), position(), size(), position(), size(), position(),
-            no_of_blocks(), size(), offset()}}
+            no_of_blocks(), size(), offset(), non_neg_integer()}}
           | {:error, :invalid_metadata}
   def decode_metadata(<<
         level_key::integer-32,
@@ -152,7 +156,8 @@ defmodule Goblin.SSTs.SST do
         seq_range_size::integer-64,
         no_of_blocks::integer-64,
         size::integer-64,
-        offset::integer-64
+        offset::integer-64,
+        crc::integer-32
       >>) do
     {:ok,
      {
@@ -165,7 +170,8 @@ defmodule Goblin.SSTs.SST do
        seq_range_size,
        no_of_blocks,
        size,
-       offset
+       offset,
+       crc
      }}
   end
 
