@@ -30,8 +30,9 @@ defmodule Goblin.BloomFilter do
 
   @spec is_member(t(), term()) :: boolean()
   def is_member(bf, key) do
-    Enum.all?(bf.hashes, fn {salt, range} ->
-      1 == :array.get(hash(key, salt, range), bf.array)
+    Enum.all?(bf.hashes, fn hash ->
+      hash = calc_hash(hash, key)
+      1 == :array.get(hash, bf.array)
     end)
   end
 
@@ -44,9 +45,10 @@ defmodule Goblin.BloomFilter do
   end
 
   defp update(bf, key) do
-    for {salt, range} <- bf.hashes, reduce: bf do
+    for hash <- bf.hashes, reduce: bf do
       acc ->
-        array = :array.set(hash(key, salt, range), 1, acc.array)
+        hash = calc_hash(hash, key)
+        array = :array.set(hash, 1, acc.array)
         %{acc | array: array}
     end
   end
@@ -63,11 +65,11 @@ defmodule Goblin.BloomFilter do
   defp hashes(0, _range, hashes), do: hashes
 
   defp hashes(salt, range, hashes) do
-    hash = {salt, range}
+    hash = {:erlang, :phash2, [salt, range]}
     hashes(salt - 1, range, [hash | hashes])
   end
 
-  defp hash(key, salt, range) do
-    :erlang.phash2({key, salt}, range)
+  defp calc_hash({m, f, [salt, range]}, key) do
+    apply(m, f, [{key, salt}, range])
   end
 end
