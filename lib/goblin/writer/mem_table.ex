@@ -35,32 +35,36 @@ defmodule Goblin.Writer.MemTable do
   @spec read(t(), Goblin.db_key()) ::
           {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()} | :not_found
   def read(table, key) do
-    if memtable_ready?(table) do
-      commit_seq = commit_seq(table)
+    wait_until_memtable_ready(table)
 
-      :ets.select(table, [
-        {
-          {:"$1", :"$2", :_},
-          [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", commit_seq}}],
-          [:"$_"]
-        }
-      ])
-      |> Enum.max_by(&elem(&1, 1), fn -> :not_found end)
-    else
-      Process.sleep(50)
-      read(table, key)
-    end
+    commit_seq = commit_seq(table)
+
+    :ets.select(table, [
+      {
+        {:"$1", :"$2", :_},
+        [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", commit_seq}}],
+        [:"$_"]
+      }
+    ])
+    |> Enum.max_by(&elem(&1, 1), fn -> :not_found end)
   end
 
   @spec get_range(t(), Goblin.db_key(), Goblin.db_key()) :: [Goblin.triple()]
-  def get_range(table, min_key, max_key) do
-    if memtable_ready?(table) do
-      commit_seq = commit_seq(table)
-      :ets.select(table, range_ms(min_key, max_key, commit_seq))
-    else
-      Process.sleep(50)
-      get_range(table, min_key, max_key)
-    end
+  def get_range(table, min, max) do
+    wait_until_memtable_ready(table)
+
+    commit_seq = commit_seq(table)
+
+    guard =
+      cond do
+        is_nil(min) and is_nil(max) -> [{:"=<", :"$2", commit_seq}]
+        is_nil(min) -> [{:and, {:"=<", :"$1", max}, {:"=<", :"$2", commit_seq}}]
+        is_nil(max) -> [{:and, {:"=<", min, :"$1"}, {:"=<", :"$2", commit_seq}}]
+        true -> [{:and, {:"=<", :"$1", max}, {:"=<", min, :"$1"}, {:"=<", :"$2", commit_seq}}]
+      end
+
+    ms = [{{:"$1", :"$2", :_}, guard, [:"$_"]}]
+    :ets.select(table, ms)
   end
 
   @spec clean_seq_range(t(), Goblin.seq_no()) :: non_neg_integer()
@@ -73,8 +77,16 @@ defmodule Goblin.Writer.MemTable do
     :ets.select(table, seq_range_ms(seq))
   end
 
-  defp memtable_ready?(table) do
-    :ets.member(table, :ready)
+  defp wait_until_memtable_ready(table, timeout \\ 5000)
+  defp wait_until_memtable_ready(_table, 0), do: raise("MemTable failed to get ready")
+
+  defp wait_until_memtable_ready(table, timeout) do
+    if :ets.member(table, :ready) do
+      :ok
+    else
+      Process.sleep(50)
+      wait_until_memtable_ready(table, timeout - 50)
+    end
   end
 
   defp commit_seq(table) do
@@ -82,24 +94,6 @@ defmodule Goblin.Writer.MemTable do
       [] -> -1
       [{_, commit_seq}] -> commit_seq
     end
-  end
-
-  defp range_ms(min, max, seq) do
-    guard =
-      cond do
-        is_nil(min) and is_nil(max) -> [{:"=<", :"$2", seq}]
-        is_nil(min) -> [{:and, {:"=<", :"$1", max}, {:"=<", :"$2", seq}}]
-        is_nil(max) -> [{:and, {:"=<", min, :"$1"}, {:"=<", :"$2", seq}}]
-        true -> [{:and, {:"=<", :"$1", max}, {:"=<", min, :"$1"}, {:"=<", :"$2", seq}}]
-      end
-
-    [
-      {
-        {:"$1", :"$2", :_},
-        guard,
-        [:"$_"]
-      }
-    ]
   end
 
   defp seq_range_ms(seq, match \\ :"$_") do

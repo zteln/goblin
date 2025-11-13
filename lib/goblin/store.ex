@@ -34,6 +34,8 @@ defmodule Goblin.Store do
 
   @spec get(store(), Goblin.db_key()) :: {Goblin.db_key(), [Goblin.SSTs.SST.t()]}
   def get(store, key) do
+    wait_until_store_ready(store)
+
     ssts =
       :ets.select(store, [
         {
@@ -52,6 +54,7 @@ defmodule Goblin.Store do
 
   @spec get_multi(store(), [Goblin.db_key()]) :: [{Goblin.db_key(), [Goblin.SSTs.SST.t()]}]
   def get_multi(store, keys) do
+    wait_until_store_ready(store)
     Enum.map(keys, &get(store, &1))
   end
 
@@ -60,6 +63,8 @@ defmodule Goblin.Store do
            (Goblin.SSTs.iterator() -> {Goblin.triple(), Goblin.SSTs.iterator()})}
         ]
   def iterators(store, min, max) do
+    wait_until_store_ready(store)
+
     guard =
       cond do
         is_nil(min) and is_nil(max) -> []
@@ -124,7 +129,7 @@ defmodule Goblin.Store do
   end
 
   def handle_call(:new_file, _from, state) do
-    file = file_path(state.dir, state.max_file_count) 
+    file = file_path(state.dir, state.max_file_count)
     {:reply, file, %{state | max_file_count: state.max_file_count + 1}}
   end
 
@@ -143,7 +148,10 @@ defmodule Goblin.Store do
     end
   end
 
-  defp recover_ssts([], _table_name, _compactor), do: :ok
+  defp recover_ssts([], table_name, _compactor) do
+    :ets.insert(table_name, {:ready})
+    :ok
+  end
 
   defp recover_ssts([file | files], table_name, compactor) do
     with {:ok, sst} <- SSTs.fetch_sst(file) do
@@ -163,6 +171,18 @@ defmodule Goblin.Store do
     } = sst
 
     Compactor.put(compactor, level_key, file, min_seq, size, key_range)
+  end
+
+  defp wait_until_store_ready(store, timeout \\ 5000)
+  defp wait_until_store_ready(_store, 0), do: raise("Store failed to get ready within timeout")
+
+  defp wait_until_store_ready(store, timeout) do
+    if :ets.member(store, :ready) do
+      :ok
+    else
+      Process.sleep(50)
+      wait_until_store_ready(store, timeout - 50)
+    end
   end
 
   defp file_path(dir, count), do: Path.join(dir, to_string(count) <> @file_suffix)
