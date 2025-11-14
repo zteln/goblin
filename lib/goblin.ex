@@ -413,7 +413,7 @@ defmodule Goblin do
   """
   @spec is_compacting(db_server()) :: boolean()
   def is_compacting(db) do
-    registry = name(db, Registry)
+    registry = name(db, ProcessRegistry)
     compactor = name(db, Compactor)
     Goblin.Compactor.is_compacting(via(registry, compactor))
   end
@@ -431,7 +431,7 @@ defmodule Goblin do
   """
   @spec is_flushing(db_server()) :: boolean()
   def is_flushing(db) do
-    registry = name(db, Registry)
+    registry = name(db, ProcessRegistry)
     writer = name(db, Writer)
     Goblin.Writer.is_flushing(via(registry, writer))
   end
