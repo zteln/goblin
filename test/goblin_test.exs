@@ -25,6 +25,14 @@ defmodule GoblinTest do
     end
   end
 
+  describe "stop/3" do
+    test "stops started database", c do
+      {:ok, db} = Goblin.start_link(db_dir: c.tmp_dir)
+      assert :ok == Goblin.stop(db)
+      refute Process.alive?(db)
+    end
+  end
+
   describe "transaction/2" do
     setup_db(key_limit: 10, level_limit: 512)
 

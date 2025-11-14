@@ -527,6 +527,24 @@ defmodule Goblin do
     Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc """
+  Stops the Goblin database supervisor.
+
+  ## Parameters
+
+  - `db` - Database supervisor pid or registered name
+  - `reason` - Supervisor reason, defaults to `:normal`
+  - `timeout` - Defaults to `:infinity`
+
+  ## Returns
+
+  - `:ok`
+  """
+  @spec stop(db_server(), term(), non_neg_integer | :infinity) :: :ok
+  def stop(db, reason \\ :normal, timeout \\ :infinity) do
+    Supervisor.stop(db, reason, timeout)
+  end
+
   @impl true
   def init(args) do
     name = args[:name] || __MODULE__
