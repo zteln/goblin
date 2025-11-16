@@ -132,9 +132,20 @@ Goblin.transaction(db, fn tx ->
   end
 end)
 # => :ok (if cancelled) or :ok (if committed)
+
+Goblin.transaction(db, fn tx -> 
+  root = Tx.get(tx, :root)
+  next = Tx.get(tx, next) 
+  Tx.get(tx, next)
+end, read_only: true)
+# => next
 ```
 
-Transactions are executed in serial order. 
+There are two types of transactions: read and write.
+
+Read transactions do not block each other and are not allowed to write anything (causes a raise).
+
+Write transactions are executed in serial order. 
 Writers are blocked until the current writer completes its transaction.
 
 ### PubSub

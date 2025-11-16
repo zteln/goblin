@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.2 (2025-11-16)
+* Enhancements
+    * Added `Goblin.stop/3` function, allows one to stop the database supervisor
+    * Added read-only transactions in `Goblin.transaction/2`
+* Buf fixes
+    * Fix registry name in `Goblin.is_flushing/1` and `Goblin.is_compacting/1`
+    * Fix sequence counting bug when write-transaction commits
+
 ## v0.2.1 (2025-11-13)
 * Enhancements
     * Add checksum verification to SST files
