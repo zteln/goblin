@@ -7,16 +7,19 @@ defmodule Goblin.Compactor do
   alias Goblin.SSTs
   alias Goblin.Store
   alias Goblin.Manifest
+  alias Goblin.Reader
 
   defstruct [
     :bf_fpp,
     :manifest,
     :store,
+    :reader,
     :task_sup,
     :task_mod,
     :key_limit,
     :level_limit,
-    levels: %{}
+    levels: %{},
+    clean_ups: []
   ]
 
   @typep compactor :: module() | {:via, Registry, {module(), module()}}
@@ -28,6 +31,7 @@ defmodule Goblin.Compactor do
         :bf_fpp,
         :store,
         :manifest,
+        :reader,
         :key_limit,
         :level_limit,
         :task_sup,
@@ -61,6 +65,7 @@ defmodule Goblin.Compactor do
        bf_fpp: args[:bf_fpp],
        store: args[:store],
        manifest: args[:manifest],
+       reader: args[:reader],
        key_limit: args[:key_limit],
        level_limit: args[:level_limit],
        task_sup: args[:task_sup],
@@ -110,10 +115,57 @@ defmodule Goblin.Compactor do
       |> maybe_compact(source_level_key)
       |> maybe_compact(target_level_key)
 
+    {:noreply, state, {:continue, {:clean_files, compacted_away_files}}}
+  end
+
+  def handle_info({ref, {:ok, :cleaned}}, state) do
+    clean_ups =
+      Enum.reject(state.clean_ups, fn
+        {_files, ^ref, _retry} -> true
+        _ -> false
+      end)
+
+    state = %{state | clean_ups: clean_ups}
     {:noreply, state}
   end
 
-  def handle_info({ref, {:error, reason}}, state) do
+  def handle_info({ref, error}, state) do
+    case handle_error(ref, error, state) do
+      {:ok, state} -> {:noreply, state}
+      {:error, _reason} = error -> {:stop, error, state}
+    end
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  defp handle_error(ref, error, state) do
+    cond do
+      is_compacting_ref(ref, state) -> retry_compaction(ref, error, state)
+      is_clean_up_ref(ref, state) -> retry_clean_up(ref, error, state)
+    end
+  end
+
+  @impl GenServer
+  def handle_continue({:clean_files, files}, state) do
+    state = start_clean_up(state, files)
+    {:noreply, state}
+  end
+
+  defp is_compacting_ref(ref, state) do
+    Enum.any?(state.levels, fn
+      {_level_key, %{compacting_ref: {^ref, _retry}}} -> true
+      _ -> false
+    end)
+  end
+
+  defp is_clean_up_ref(ref, state) do
+    Enum.any?(state.clean_ups, fn
+      {_files, ^ref, _retry} -> true
+      _ -> false
+    end)
+  end
+
+  defp retry_compaction(ref, {:error, reason}, state) do
     [{_, %{compacting_ref: {_, retry}} = source_level}, {_, target_level}] =
       state.levels
       |> Enum.filter(fn
@@ -128,7 +180,7 @@ defmodule Goblin.Compactor do
           "Failed to compact after 5 attempts with reason: #{inspect(reason)}. Exiting."
         end)
 
-        {:stop, {:error, :failed_to_compact}, state}
+        {:error, :failed_to_compact}
 
       retry ->
         Logger.warning(fn ->
@@ -136,11 +188,37 @@ defmodule Goblin.Compactor do
         end)
 
         state = compact(state, source_level, target_level, retry - 1)
-        {:noreply, state}
+        {:ok, state}
     end
   end
 
-  def handle_info(_msg, state), do: {:noreply, state}
+  defp retry_clean_up(ref, {:error, reason}, state) do
+    {clean_up, clean_ups} =
+      Enum.split_with(state.clean_ups, fn
+        {_files, ^ref, _retry} -> true
+        _ -> false
+      end)
+
+    case clean_up do
+      {_files, _ref, 0} ->
+        Logger.error(fn ->
+          "Failed to clean up after 5 attempts with reason: #{inspect(reason)}. Exiting."
+        end)
+
+        {:error, :failed_to_clean_up}
+
+      {files, _ref, retry} ->
+        Logger.warning(fn ->
+          "Failed to clean up with reason: #{inspect(reason)}. Retrying..."
+        end)
+
+        state =
+          %{state | clean_ups: clean_ups}
+          |> start_clean_up(files, retry - 1)
+
+        {:ok, state}
+    end
+  end
 
   defp process_level_after_compaction(levels, level_key, old_file)
        when is_map_key(levels, level_key) do
@@ -209,7 +287,7 @@ defmodule Goblin.Compactor do
 
         levels = Map.put(levels, level_key, target_level)
         clean_tombstones? = clean_tombstones?(target_level, levels)
-        old = Map.keys(entries)
+        old = entries |> Map.keys() |> Enum.filter(& &1)
 
         data =
           Enum.map(entries, fn {id, %{buffer: buffer}} ->
@@ -234,8 +312,7 @@ defmodule Goblin.Compactor do
 
         with {:ok, new} <- SSTs.new(data, level_key, opts),
              :ok <- Manifest.log_compaction(manifest, sources ++ old, Enum.map(new, & &1.file)),
-             :ok <- update_store(sources ++ old, new, store),
-             :ok <- clean_old(sources ++ old) do
+             :ok <- Store.put(store, new) do
           {:ok, sources ++ old, source_level_key, target_level.level_key}
         end
       end)
@@ -318,17 +395,31 @@ defmodule Goblin.Compactor do
     end
   end
 
-  defp update_store(old, new, store) do
-    with :ok <- Store.remove(store, old) do
-      Store.put(store, new)
-    end
+  defp start_clean_up(state, files, retry \\ 5) do
+    %{
+      reader: reader,
+      store: store,
+      task_mod: task_mod,
+      task_sup: task_sup
+    } = state
+
+    %{ref: ref} =
+      task_mod.async(task_sup, fn ->
+        with :ok <- Reader.empty?(reader) do
+          Store.remove(store, files)
+          remove_files(files)
+        end
+      end)
+
+    clean_ups = [{files, ref, retry} | state.clean_ups]
+    %{state | clean_ups: clean_ups}
   end
 
-  defp clean_old([]), do: :ok
+  defp remove_files([]), do: {:ok, :cleaned}
 
-  defp clean_old([file | files]) do
+  defp remove_files([file | files]) do
     with :ok <- SSTs.delete(file) do
-      clean_old(files)
+      remove_files(files)
     end
   end
 

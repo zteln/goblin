@@ -7,49 +7,53 @@ defmodule Goblin.Writer.Transaction do
     writes: []
   ]
 
-  @type t :: %__MODULE__{}
+  @spec new(
+          Goblin.seq_no(),
+          Goblin.Writer.writer(),
+          Goblin.Store.store(),
+          (Goblin.db_key() -> term()) | nil
+        ) :: Goblin.Tx.t()
+  def new(seq, writer, store, fallback_read \\ nil) do
+    fallback_read = fallback_read || (&Goblin.Reader.get(&1, writer, store))
 
-  @spec new(Goblin.seq_no(), (Goblin.db_key() -> term())) :: t()
-  def new(seq, fallback_read \\ fn _ -> :not_found end) do
     %__MODULE__{
       fallback_read: fallback_read,
       seq: seq
     }
   end
 
-  @spec put(t(), Goblin.db_key(), Goblin.db_value()) :: t()
-  def put(tx, key, value) do
-    write = {:put, tx.seq, key, value}
-    %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
-  end
+  defimpl Goblin.Tx do
+    def put(tx, key, value) do
+      write = {:put, tx.seq, key, value}
+      %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
+    end
 
-  @spec remove(t(), Goblin.db_key()) :: t()
-  def remove(tx, key) do
-    write = {:remove, tx.seq, key}
-    %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
-  end
+    def remove(tx, key) do
+      write = {:remove, tx.seq, key}
+      %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
+    end
 
-  @spec get(t(), Goblin.db_key(), term()) :: Goblin.db_value()
-  def get(tx, key, default \\ nil) do
-    %{
-      writes: writes,
-      fallback_read: fallback_read
-    } = tx
+    def get(tx, key, default) do
+      %{
+        writes: writes,
+        fallback_read: fallback_read
+      } = tx
 
-    tx_read =
-      Enum.find(writes, fn
-        {:put, _seq, ^key, _value} -> true
-        {:remove, _seq, ^key} -> true
-        _ -> false
-      end)
+      tx_read =
+        Enum.find(writes, fn
+          {:put, _seq, ^key, _value} -> true
+          {:remove, _seq, ^key} -> true
+          _ -> false
+        end)
 
-    read = tx_read || fallback_read.(key)
+      read = tx_read || fallback_read.(key)
 
-    case read do
-      :not_found -> default
-      {_seq, value} -> value
-      {:put, _seq, _key, value} -> value
-      {:remove, _seq, _key} -> default
+      case read do
+        :not_found -> default
+        {_seq, value} -> value
+        {:put, _seq, _key, value} -> value
+        {:remove, _seq, _key} -> default
+      end
     end
   end
 end

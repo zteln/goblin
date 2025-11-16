@@ -4,7 +4,6 @@ defmodule Goblin.Writer do
   require Logger
   alias Goblin.Writer.MemTable
   alias Goblin.Writer.Transaction
-  alias Goblin.Reader
   alias Goblin.Store
   alias Goblin.WAL
   alias Goblin.Manifest
@@ -19,7 +18,6 @@ defmodule Goblin.Writer do
     :bf_fpp,
     :manifest,
     :store,
-    :store_name,
     :wal,
     :pub_sub,
     :task_sup,
@@ -42,7 +40,6 @@ defmodule Goblin.Writer do
       |> Keyword.take([
         :bf_fpp,
         :store,
-        :store_name,
         :wal,
         :manifest,
         :pub_sub,
@@ -55,10 +52,10 @@ defmodule Goblin.Writer do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec get(writer(), Goblin.db_key()) ::
+  @spec get(writer(), Goblin.db_key(), Goblin.seq_no() | nil) ::
           {:value, non_neg_integer(), Goblin.db_value()} | :not_found
-  def get(writer_name, key) do
-    case MemTable.read(writer_name, key) do
+  def get(writer_name, key, seq \\ nil) do
+    case MemTable.read(writer_name, key, seq) do
       :not_found -> :not_found
       {_key, seq, value} -> {:value, seq, value}
     end
@@ -68,7 +65,7 @@ defmodule Goblin.Writer do
           {[Goblin.triple()], [Goblin.db_key()]}
   def get_multi(writer_name, keys) do
     Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
-      case MemTable.read(writer_name, key) do
+      case MemTable.read(writer_name, key, nil) do
         :not_found -> {found, [key | not_found]}
         result -> {[result | found], not_found}
       end
@@ -86,6 +83,11 @@ defmodule Goblin.Writer do
     end
 
     {range, iter_f}
+  end
+
+  @spec latest_commit_sequence(writer()) :: Goblin.seq_no() | -1
+  def latest_commit_sequence(writer_name) do
+    MemTable.commit_seq(writer_name)
   end
 
   @spec is_flushing(writer()) :: boolean()
@@ -135,7 +137,6 @@ defmodule Goblin.Writer do
        bf_fpp: args[:bf_fpp],
        manifest: args[:manifest],
        store: args[:store],
-       store_name: args[:store_name] || args[:store],
        wal: args[:wal],
        pub_sub: args[:pub_sub],
        task_sup: args[:task_sup],
@@ -177,7 +178,7 @@ defmodule Goblin.Writer do
         |> Enum.each(&apply_write(mem_table, &1))
 
         seq = tx.seq
-        MemTable.put_commit_seq(mem_table, seq)
+        MemTable.put_commit_seq(mem_table, seq - 1)
 
         {:reply, :ok, %{state | seq: seq, writer: nil}, {:continue, :next_tx}}
 
@@ -239,7 +240,18 @@ defmodule Goblin.Writer do
     } = state
 
     MemTable.clean_seq_range(mem_table, flushed_seq)
-    {:noreply, %{state | flushing: nil}, {:continue, :maybe_flush}}
+    state = %{state | flushing: nil}
+    {:noreply, state, {:continue, :maybe_flush}}
+  end
+
+  def handle_info(:empty, state) do
+    %{
+      clean_seq: clean_seq,
+      mem_table: mem_table
+    } = state
+
+    MemTable.clean_seq_range(mem_table, clean_seq)
+    {:noreply, state}
   end
 
   def handle_info(
@@ -318,7 +330,7 @@ defmodule Goblin.Writer do
     %{
       mem_table: mem_table,
       bf_fpp: bf_fpp,
-      store: store,
+      store: {_local_store_name, store},
       manifest: manifest,
       wal: wal,
       task_sup: task_sup,
@@ -363,13 +375,12 @@ defmodule Goblin.Writer do
 
   defp new_tx(state) do
     %{
-      store_name: store,
+      store: {local_store_name, _},
       mem_table: mem_table,
       seq: seq
     } = state
 
-    fallback_read = &Reader.get(&1, mem_table, store)
-    Transaction.new(seq, fallback_read)
+    Transaction.new(seq, mem_table, local_store_name)
   end
 
   defp recover_writes(state) do

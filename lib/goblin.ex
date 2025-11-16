@@ -39,13 +39,16 @@ defmodule Goblin do
       alias Goblin.Tx
 
       Goblin.transaction(db, fn tx ->
-        count = Tx.get(tx, :counter) || 0
+        count = Tx.get(tx, :counter, 0) 
         tx = Tx.put(tx, :counter, count + 1)
         {:commit, tx, count + 1}
       end)
 
-  Transactions provide snapshot isolation. If a conflict is detected,
-  the transaction returns `{:error, :in_conflict}`.
+      Goblin.transaction(db, fn tx ->
+        key1 = Tx.get(tx, :start, 0)
+        key2 = Tx.get(tx, key1)
+        {key1, key2}
+      end, read_only: true)
 
   ## Configuration
 
@@ -59,6 +62,7 @@ defmodule Goblin do
   Goblin consists of several supervised components:
 
   - **Writer** - Manages in-memory MemTable and coordinates writes
+  - **Reader** - Keeps track of active readers
   - **Store** - Tracks SST files and provides read access
   - **Compactor** - Merges SST files across levels
   - **WAL** - Write-ahead log for durability
@@ -85,7 +89,16 @@ defmodule Goblin do
   @doc """
   Executes a function within a database transaction.
 
-  Transactions provide snapshot isolation and atomic commits. The function
+  There are two different kinds of transactions; read and write. 
+  Read transactions cannot write to the database and are executed concurrently.
+  Write transactions can write to the database and are executed serially.
+
+  Read transactions read a snapshot of the database from when it starts. 
+  A read transaction returns the last evaluation in the transaction function.
+  A read transaction that tries to write raises.
+  While there are active readers then no files will be cleaned up after compaction.
+
+  Write transactions are executed serially and have atomic commits. The function
   receives a transaction struct and must return either `{:commit, tx, result}`
   to commit changes or `:cancel` to abort.
 
@@ -94,8 +107,7 @@ defmodule Goblin do
   - `db` - The database server (PID or registered name)
   - `f` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
   - `opts` - A keyword list with options to the transaction. Available options:
-    - `retries` - How many times the transactions should be retried for if a conflict is detected. Defaults to 0.
-    - `timeout` - How many milliseconds the transaction must complete within before being timed out. Defaults to `:infinity`.
+    - `read_only` - A boolean indicating whether the transaction is read only or not
 
   ## Returns
 
@@ -108,6 +120,7 @@ defmodule Goblin do
 
   ## Examples
 
+      # Write transactions:
       Goblin.transaction(db, fn tx ->
         count = Goblin.Tx.get(tx, :counter, 0)
         tx = Goblin.Tx.put(tx, :counter, count + 1)
@@ -119,15 +132,38 @@ defmodule Goblin do
         :cancel
       end)
       # => :ok
+
+      # Read transactions:
+      Goblin.put(db, key, value1)
+
+      Goblin.transaction(db, fn tx -> 
+        ^value1 = Goblin.Tx.get(tx, key)
+
+        # Concurrently, in another process
+        # Goblin.put(db, key, value2)
+
+        ^value1 = Goblin.Tx.get(tx, key)
+      end, read_only: true)
+      # => value1
+
+      ^value2 = Goblin.Tx.get(tx, key)
   """
-  @spec transaction(db_server(), (Goblin.Tx.t() -> tx_return())) ::
+  @spec transaction(db_server(), (Goblin.Tx.t() -> tx_return()), keyword()) ::
           term()
           | :ok
           | {:error, :not_tx_holder | :tx_not_found | :already_in_tx | term()}
-  def transaction(db, f) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
-    Goblin.Writer.transaction(via(registry, writer), f)
+  def transaction(db, f, opts \\ []) do
+    if Keyword.get(opts, :read_only, false) do
+      registry = name(db, ProcessRegistry)
+      writer = name(db, Writer)
+      store = name(db, Store)
+      reader = name(db, Reader)
+      Goblin.Reader.transaction(writer, store, reader, via(registry, reader), f)
+    else
+      registry = name(db, ProcessRegistry)
+      writer = name(db, Writer)
+      Goblin.Writer.transaction(via(registry, writer), f)
+    end
   end
 
   @doc """
@@ -156,11 +192,11 @@ defmodule Goblin do
   """
   @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
+    # registry = name(db, ProcessRegistry)
+    # writer = name(db, Writer)
 
-    Goblin.Writer.transaction(via(registry, writer), fn tx ->
-      tx = Goblin.Writer.Transaction.put(tx, key, value)
+    Goblin.transaction(db, fn tx ->
+      tx = Goblin.Tx.put(tx, key, value)
       {:commit, tx, :ok}
     end)
   end
@@ -191,13 +227,13 @@ defmodule Goblin do
   """
   @spec put_multi(db_server(), [{db_key(), db_value()}]) :: :ok
   def put_multi(db, pairs) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
+    # registry = name(db, ProcessRegistry)
+    # writer = name(db, Writer)
 
-    Goblin.Writer.transaction(via(registry, writer), fn tx ->
+    Goblin.transaction(db, fn tx ->
       tx =
         Enum.reduce(pairs, tx, fn {k, v}, acc ->
-          Goblin.Writer.Transaction.put(acc, k, v)
+          Goblin.Tx.put(acc, k, v)
         end)
 
       {:commit, tx, :ok}
@@ -229,11 +265,11 @@ defmodule Goblin do
   """
   @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
+    # registry = name(db, ProcessRegistry)
+    # writer = name(db, Writer)
 
-    Goblin.Writer.transaction(via(registry, writer), fn tx ->
-      tx = Goblin.Writer.Transaction.remove(tx, key)
+    Goblin.transaction(db, fn tx ->
+      tx = Goblin.Tx.remove(tx, key)
       {:commit, tx, :ok}
     end)
   end
@@ -260,13 +296,13 @@ defmodule Goblin do
   """
   @spec remove_multi(db_server(), [db_key()]) :: :ok
   def remove_multi(db, keys) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
+    # registry = name(db, ProcessRegistry)
+    # writer = name(db, Writer)
 
-    Goblin.Writer.transaction(via(registry, writer), fn tx ->
+    Goblin.transaction(db, fn tx ->
       tx =
         Enum.reduce(keys, tx, fn key, acc ->
-          Goblin.Writer.Transaction.remove(acc, key)
+          Goblin.Tx.remove(acc, key)
         end)
 
       {:commit, tx, :ok}
@@ -554,6 +590,7 @@ defmodule Goblin do
     writer = name(name, Writer)
     store = name(name, Store)
     compactor = name(name, Compactor)
+    reader = name(name, Reader)
     manifest = name(name, Manifest)
     wal = name(name, WAL)
     task_sup = name(name, TaskSupervisor)
@@ -562,6 +599,7 @@ defmodule Goblin do
       writer: {writer, via(registry, writer)},
       store: {store, via(registry, store)},
       compactor: {compactor, via(registry, compactor)},
+      reader: {reader, via(registry, reader)},
       manifest: {manifest, via(registry, manifest)},
       wal: {wal, via(registry, wal)},
       task_sup: {task_sup, via(registry, task_sup)}

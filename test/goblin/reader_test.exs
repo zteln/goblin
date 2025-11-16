@@ -1,11 +1,200 @@
 defmodule Goblin.ReaderTest do
   use ExUnit.Case, async: true
   use TestHelper
+  import ExUnit.CaptureLog
   alias Goblin.Reader
 
   @moduletag :tmp_dir
 
   setup_db(key_limit: 10, level_limit: 512)
+
+  describe "transaction/4" do
+    test "reads snapshot of database MemTable", c do
+      Process.flag(:trap_exit, true)
+      parent = self()
+      Goblin.put(c.db, :k1, :v1)
+      Goblin.put(c.db, :k2, :v2)
+
+      pid =
+        spawn_link(fn ->
+          assert :ok ==
+                   Reader.transaction(
+                     __MODULE__.Writer,
+                     __MODULE__.Store,
+                     __MODULE__.Reader,
+                     c.reader,
+                     fn tx ->
+                       send(parent, :ready)
+                       assert :v1 == Goblin.Tx.get(tx, :k1)
+                       assert :v2 == Goblin.Tx.get(tx, :k2)
+
+                       receive do
+                         :cont -> :ok
+                       end
+
+                       assert :v1 == Goblin.Tx.get(tx, :k1)
+                       assert :v2 == Goblin.Tx.get(tx, :k2)
+
+                       send(parent, :done)
+                       :ok
+                     end
+                   )
+        end)
+
+      receive do
+        :ready -> :ok
+      end
+
+      Goblin.put(c.db, :k1, :w1)
+      Goblin.put(c.db, :k2, :w2)
+
+      send(pid, :cont)
+      assert_receive :done
+
+      assert :w1 == Goblin.get(c.db, :k1)
+      assert :w2 == Goblin.get(c.db, :k2)
+    end
+
+    test "reads snapshot of database SSTs", c do
+      Process.flag(:trap_exit, true)
+      parent = self()
+
+      data =
+        for n <- 1..10 do
+          {n, :"v#{n}"}
+        end
+
+      Goblin.put_multi(c.db, data)
+
+      assert_eventually do
+        assert false == Goblin.is_flushing(c.db) 
+        assert false == Goblin.is_compacting(c.db)
+      end
+
+      pid =
+        spawn_link(fn ->
+          assert :ok ==
+                   Reader.transaction(
+                     __MODULE__.Writer,
+                     __MODULE__.Store,
+                     __MODULE__.Reader,
+                     c.reader,
+                     fn tx ->
+                       send(parent, :ready)
+
+                       for n <- 1..10 do
+                         assert :"v#{n}" == Goblin.Tx.get(tx, n)
+                       end
+
+                       receive do
+                         :cont -> :ok
+                       end
+
+                       for n <- 1..10 do
+                         assert :"v#{n}" == Goblin.Tx.get(tx, n)
+                       end
+
+                       send(parent, :done)
+
+                       :ok
+                     end
+                   )
+        end)
+
+      receive do
+        :ready -> :ok
+      end
+
+      data =
+        for n <- 1..10 do
+          {n, :"w#{n}"}
+        end
+
+      Goblin.put_multi(c.db, data)
+
+      assert_eventually do
+        assert false == Goblin.is_flushing(c.db) 
+        assert false == Goblin.is_compacting(c.db) 
+      end
+
+      send(pid, :cont)
+
+      assert_receive :done
+
+      for n <- 1..10 do
+        assert :"w#{n}" == Goblin.get(c.db, n)
+      end
+    end
+
+    test "raises on write", c do
+      assert_raise RuntimeError, fn ->
+        Reader.transaction(
+          __MODULE__.Writer,
+          __MODULE__.Store,
+          __MODULE__.Reader,
+          c.reader,
+          fn tx ->
+            Goblin.Tx.put(tx, :k, :v)
+          end
+        )
+      end
+
+      assert_raise RuntimeError, fn ->
+        Reader.transaction(
+          __MODULE__.Writer,
+          __MODULE__.Store,
+          __MODULE__.Reader,
+          c.reader,
+          fn tx ->
+            Goblin.Tx.remove(tx, :k)
+          end
+        )
+      end
+    end
+
+    test "deincs readers if reader raises", c do
+      capture_log(fn ->
+        Process.flag(:trap_exit, true)
+        parent = self()
+
+        reader =
+          spawn_link(fn ->
+            Reader.transaction(
+              __MODULE__.Writer,
+              __MODULE__.Store,
+              __MODULE__.Reader,
+              c.reader,
+              fn _tx ->
+                send(parent, :ready)
+
+                receive do
+                  :cont -> :ok
+                end
+
+                raise "reader failure"
+              end
+            )
+          end)
+
+        assert_receive :ready
+
+        spawn_link(fn ->
+          send(parent, :ready)
+          assert :ok == Reader.empty?(c.reader)
+          send(parent, :done)
+        end)
+
+        assert_receive :ready
+        refute_receive :done
+
+        send(reader, :cont)
+
+        assert_receive :done
+
+        assert_receive {:EXIT, ^reader, _reason}
+      end)
+    end
+  end
 
   describe "get/4" do
     test "returns :not_found for non-existing key" do

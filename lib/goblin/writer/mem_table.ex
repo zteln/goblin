@@ -13,6 +13,10 @@ defmodule Goblin.Writer.MemTable do
   end
 
   @spec put_commit_seq(t(), Goblin.seq_no()) :: true
+  def put_commit_seq(_table, seq) when seq < 0 do
+    true
+  end
+
   def put_commit_seq(table, seq) do
     :ets.insert(table, {:commit_seq, seq})
   end
@@ -24,29 +28,33 @@ defmodule Goblin.Writer.MemTable do
 
   @spec upsert(t(), Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()) :: true
   def upsert(table, key, seq, value) do
-    :ets.insert(table, {key, seq, value})
+    :ets.insert(table, {{key, seq}, value})
   end
 
   @spec delete(t(), Goblin.seq_no(), Goblin.db_key()) :: true
   def delete(table, key, seq) do
-    :ets.insert(table, {key, seq, :tombstone})
+    :ets.insert(table, {{key, seq}, :tombstone})
   end
 
-  @spec read(t(), Goblin.db_key()) ::
+  @spec read(t(), Goblin.db_key(), Goblin.seq_no() | nil) ::
           {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()} | :not_found
-  def read(table, key) do
+  def read(table, key, nil) do
     wait_until_memtable_ready(table)
-
     commit_seq = commit_seq(table)
 
-    :ets.select(table, [
-      {
-        {:"$1", :"$2", :_},
-        [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", commit_seq}}],
-        [:"$_"]
-      }
-    ])
-    |> Enum.max_by(&elem(&1, 1), fn -> :not_found end)
+    case do_read(table, key, commit_seq) do
+      :not_found -> :not_found
+      {{key, seq}, value} -> {key, seq, value}
+    end
+  end
+
+  def read(table, key, seq) do
+    wait_until_memtable_ready(table)
+
+    case do_read(table, key, seq) do
+      :not_found -> :not_found
+      {{key, seq}, value} -> {key, seq, value}
+    end
   end
 
   @spec get_range(t(), Goblin.db_key(), Goblin.db_key()) :: [Goblin.triple()]
@@ -63,18 +71,34 @@ defmodule Goblin.Writer.MemTable do
         true -> [{:and, {:"=<", :"$1", max}, {:"=<", min, :"$1"}, {:"=<", :"$2", commit_seq}}]
       end
 
-    ms = [{{:"$1", :"$2", :_}, guard, [:"$_"]}]
+    ms = [{{{:"$1", :"$2"}, :_}, guard, [:"$_"]}]
+
     :ets.select(table, ms)
+    |> Enum.map(fn
+      {{key, seq}, value} -> {key, seq, value}
+    end)
   end
 
   @spec clean_seq_range(t(), Goblin.seq_no()) :: non_neg_integer()
   def clean_seq_range(table, seq) do
-    :ets.select_delete(table, seq_range_ms(seq, true))
+    ms = [{{{:_, :"$1"}, :_}, [{:"=<", :"$1", seq}], [true]}]
+    :ets.select_delete(table, ms)
   end
 
   @spec get_seq_range(t(), Goblin.seq_no()) :: [Goblin.triple()]
   def get_seq_range(table, seq) do
-    :ets.select(table, seq_range_ms(seq))
+    ms = [{{{:_, :"$1"}, :_}, [{:"=<", :"$1", seq}], [:"$_"]}]
+
+    :ets.select(table, ms)
+    |> Enum.map(fn {{key, seq}, value} -> {key, seq, value} end)
+  end
+
+  @spec commit_seq(t()) :: Goblin.seq_no() | -1
+  def commit_seq(table) do
+    case :ets.lookup(table, :commit_seq) do
+      [] -> -1
+      [{_, commit_seq}] -> commit_seq
+    end
   end
 
   defp wait_until_memtable_ready(table, timeout \\ 5000)
@@ -89,20 +113,16 @@ defmodule Goblin.Writer.MemTable do
     end
   end
 
-  defp commit_seq(table) do
-    case :ets.lookup(table, :commit_seq) do
-      [] -> -1
-      [{_, commit_seq}] -> commit_seq
-    end
-  end
-
-  defp seq_range_ms(seq, match \\ :"$_") do
-    [
+  defp do_read(table, key, seq) do
+    ms = [
       {
-        {:_, :"$1", :_},
-        [{:"=<", :"$1", seq}],
-        [match]
+        {{:"$1", :"$2"}, :_},
+        [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", seq}}],
+        [:"$_"]
       }
     ]
+
+    :ets.select(table, ms)
+    |> Enum.max_by(fn {{_key, seq}, _value} -> seq end, fn -> :not_found end)
   end
 end

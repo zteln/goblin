@@ -114,7 +114,7 @@ defmodule Goblin.WriterTest do
     test "commits writes to MemTable", c do
       assert :ok ==
                Writer.transaction(c.writer, fn tx ->
-                 tx = Writer.Transaction.put(tx, :k, :v)
+                 tx = Goblin.Tx.put(tx, :k, :v)
                  {:commit, tx, :ok}
                end)
 
@@ -124,7 +124,7 @@ defmodule Goblin.WriterTest do
     test "if cancelled does not commit to MemTable", c do
       assert :ok ==
                Writer.transaction(c.writer, fn tx ->
-                 Writer.Transaction.put(tx, :k, :v)
+                 Goblin.Tx.put(tx, :k, :v)
                  :cancel
                end)
 
@@ -248,14 +248,14 @@ defmodule Goblin.WriterTest do
 
   defp remove(writer, k) do
     Writer.transaction(writer, fn tx ->
-      tx = Writer.Transaction.remove(tx, k)
+      tx = Goblin.Tx.remove(tx, k)
       {:commit, tx, :ok}
     end)
   end
 
   defp put(writer, k, v) do
     Writer.transaction(writer, fn tx ->
-      tx = Writer.Transaction.put(tx, k, v)
+      tx = Goblin.Tx.put(tx, k, v)
       {:commit, tx, :ok}
     end)
   end
@@ -264,7 +264,7 @@ defmodule Goblin.WriterTest do
     Goblin.Writer.transaction(writer, fn tx ->
       tx =
         Enum.reduce(pairs, tx, fn {k, v}, acc ->
-          Goblin.Writer.Transaction.put(acc, k, v)
+          Goblin.Tx.put(acc, k, v)
         end)
 
       {:commit, tx, :ok}
@@ -288,6 +288,7 @@ defmodule Goblin.WriterTest do
          name: __MODULE__.Compactor,
          store: __MODULE__.Store,
          manifest: __MODULE__.Manifest,
+         reader: __MODULE__.Reader,
          task_sup: __MODULE__.TaskSupervisor,
          level_limit: 512,
          key_limit: 10},
@@ -305,6 +306,11 @@ defmodule Goblin.WriterTest do
       )
 
     start_link_supervised!(
+      {Goblin.Reader, name: __MODULE__.Reader},
+      id: __MODULE__.Reader
+    )
+
+    start_link_supervised!(
       {Goblin.PubSub, name: __MODULE__.PubSub},
       id: __MODULE__.PubSub
     )
@@ -318,9 +324,10 @@ defmodule Goblin.WriterTest do
         name: __MODULE__,
         local_name: __MODULE__,
         db_dir: dir,
-        store: __MODULE__.Store,
+        store: {__MODULE__.Store, __MODULE__.Store},
         manifest: __MODULE__.Manifest,
         wal: __MODULE__.WAL,
+        reader: __MODULE__.Reader,
         task_sup: __MODULE__.TaskSupervisor,
         pub_sub: __MODULE__.PubSub,
         key_limit: 10

@@ -1,4 +1,4 @@
-defmodule Goblin.Tx do
+defprotocol Goblin.Tx do
   @moduledoc """
   Transaction helpers for working with Goblin database transactions.
 
@@ -20,15 +20,18 @@ defmodule Goblin.Tx do
 
   ## Return values
 
-  Transaction functions must return either:
+  Write transaction functions must return either:
 
   - `{:commit, tx, result}` - Commits the transaction and returns `result`
   - `:cancel` - Cancels the transaction and returns `:ok`
 
-  Returning anything else causes the transaction to raise.
+  Returning anything else causes the write transaction to raise.
+
+  Read transactions return the last evaluation.
+
   """
 
-  @opaque t :: Goblin.Writer.Transaction.t()
+  @type t :: t()
 
   @doc """
   Writes a key-value pair within a transaction.
@@ -53,7 +56,8 @@ defmodule Goblin.Tx do
         {:commit, tx, :ok}
       end)
   """
-  defdelegate put(tx, key, value), to: Goblin.Writer.Transaction
+  @spec put(t(), Goblin.db_key(), Goblin.db_value()) :: t()
+  def put(tx, key, value)
 
   @doc """
   Removes a key within a transaction.
@@ -77,7 +81,8 @@ defmodule Goblin.Tx do
         {:commit, tx, :ok}
       end)
   """
-  defdelegate remove(tx, key), to: Goblin.Writer.Transaction
+  @spec remove(t(), Goblin.db_key()) :: t()
+  def remove(tx, key)
 
   @doc """
   Retrieves a value within a transaction.
@@ -103,5 +108,6 @@ defmodule Goblin.Tx do
         {:commit, tx, value + 1}
       end)
   """
-  defdelegate get(tx, key, default \\ nil), to: Goblin.Writer.Transaction
+  @spec get(t(), Goblin.db_key(), term()) :: Goblin.db_value()
+  def get(tx, key, default \\ nil)
 end

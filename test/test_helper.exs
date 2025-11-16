@@ -39,6 +39,7 @@ defmodule TestHelper do
 
     [
       {Goblin.Writer, writer, _, _},
+      {Goblin.Reader, reader, _, _},
       {Goblin.Store, store, _, _},
       {Goblin.Compactor, compactor, _, _},
       {Goblin.WAL, wal, _, _},
@@ -53,7 +54,8 @@ defmodule TestHelper do
       store: store,
       compactor: compactor,
       wal: wal,
-      manifest: manifest
+      manifest: manifest,
+      reader: reader
     }
   end
 

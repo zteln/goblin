@@ -18,57 +18,64 @@ defmodule Goblin.ProcessSupervisor do
     pub_sub = args[:pub_sub]
 
     %{
-      writer: {writer, registered_writer},
-      store: {store, registered_store},
-      manifest: {manifest, registered_manifest},
-      wal: {wal, registered_wal},
-      compactor: {_compactor, registered_compactor},
-      task_sup: {_, registered_task_sup}
+      writer: {local_writer_name, writer_name},
+      store: {local_store_name, store_name},
+      manifest: {local_manifest_name, manifest_name},
+      wal: {local_wal_name, wal_name},
+      compactor: {_compactor, compactor_name},
+      reader: {local_reader_name, reader_name},
+      task_sup: {_, task_sup_name}
     } = args[:names]
 
     children = [
-      {Task.Supervisor, name: registered_task_sup},
+      {Task.Supervisor, name: task_sup_name},
       {Goblin.Manifest,
        Keyword.merge(
          args,
-         name: registered_manifest,
-         local_name: manifest,
+         name: manifest_name,
+         local_name: local_manifest_name,
          db_dir: db_dir
        )},
       {Goblin.WAL,
        Keyword.merge(
          args,
-         name: registered_wal,
-         local_name: wal,
+         name: wal_name,
+         local_name: local_wal_name,
          db_dir: db_dir
        )},
       {Goblin.Compactor,
        Keyword.merge(args,
-         name: registered_compactor,
-         store: registered_store,
-         manifest: registered_manifest,
-         task_sup: registered_task_sup,
+         name: compactor_name,
+         store: store_name,
+         reader: reader_name,
+         manifest: manifest_name,
+         task_sup: task_sup_name,
          key_limit: key_limit,
          level_limit: level_limit
        )},
       {Goblin.Store,
        Keyword.merge(args,
-         name: registered_store,
-         local_name: store,
-         compactor: registered_compactor,
-         manifest: registered_manifest,
+         name: store_name,
+         local_name: local_store_name,
+         compactor: compactor_name,
+         manifest: manifest_name,
          dir: db_dir
+       )},
+      {Goblin.Reader,
+       Keyword.merge(args,
+         name: reader_name,
+         local_name: local_reader_name
        )},
       {Goblin.Writer,
        Keyword.merge(args,
-         name: registered_writer,
-         local_name: writer,
-         store: registered_store,
-         store_name: store,
-         manifest: registered_manifest,
-         wal: registered_wal,
+         name: writer_name,
+         local_name: local_writer_name,
+         reader: reader_name,
+         store: {local_store_name, store_name},
+         manifest: manifest_name,
+         wal: wal_name,
          pub_sub: pub_sub,
-         task_sup: registered_task_sup,
+         task_sup: task_sup_name,
          key_limit: key_limit
        )}
     ]

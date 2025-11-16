@@ -36,26 +36,17 @@ defmodule Goblin.Store do
   def get(store, key) do
     wait_until_store_ready(store)
 
-    ssts =
-      :ets.select(store, [
-        {
-          {:_, {:"$1", :"$2"}, :_},
-          [{:andalso, {:"=<", :"$1", key}, {:"=<", key, :"$2"}}],
-          [:"$_"]
-        }
-      ])
-      |> Enum.filter(fn {_file, _key_range, sst} ->
-        BloomFilter.is_member(sst.bloom_filter, key)
-      end)
-      |> Enum.map(fn {_file, _key_range, sst} -> sst end)
-
+    ssts = find_ssts(store, key)
     {key, ssts}
   end
 
   @spec get_multi(store(), [Goblin.db_key()]) :: [{Goblin.db_key(), [Goblin.SSTs.SST.t()]}]
   def get_multi(store, keys) do
     wait_until_store_ready(store)
-    Enum.map(keys, &get(store, &1))
+
+    Enum.map(keys, fn key ->
+      {key, find_ssts(store, key)}
+    end)
   end
 
   @spec iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
@@ -183,6 +174,20 @@ defmodule Goblin.Store do
       Process.sleep(50)
       wait_until_store_ready(store, timeout - 50)
     end
+  end
+
+  defp find_ssts(store, key) do
+    :ets.select(store, [
+      {
+        {:_, {:"$1", :"$2"}, :_},
+        [{:andalso, {:"=<", :"$1", key}, {:"=<", key, :"$2"}}],
+        [:"$_"]
+      }
+    ])
+    |> Enum.filter(fn {_file, _key_range, sst} ->
+      BloomFilter.is_member(sst.bloom_filter, key)
+    end)
+    |> Enum.map(fn {_file, _key_range, sst} -> sst end)
   end
 
   defp file_path(dir, count), do: Path.join(dir, to_string(count) <> @file_suffix)

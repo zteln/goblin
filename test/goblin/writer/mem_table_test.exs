@@ -12,16 +12,16 @@ defmodule Goblin.Writer.MemTableTest do
     test "inserts new key-value pair", c do
       assert true == MemTable.upsert(c.table, :k, 0, :v)
       MemTable.put_commit_seq(c.table, 0)
-      assert {:k, 0, :v} == MemTable.read(c.table, :k)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
     end
 
     test "updates key-value pair", c do
       assert true == MemTable.upsert(c.table, :k, 0, :v)
       MemTable.put_commit_seq(c.table, 0)
-      assert {:k, 0, :v} == MemTable.read(c.table, :k)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
       assert true == MemTable.upsert(c.table, :k, 1, :w)
       MemTable.put_commit_seq(c.table, 1)
-      assert {:k, 1, :w} == MemTable.read(c.table, :k)
+      assert {:k, 1, :w} == MemTable.read(c.table, :k, nil)
     end
   end
 
@@ -29,16 +29,16 @@ defmodule Goblin.Writer.MemTableTest do
     test "updates existing value with :tombstone", c do
       assert true == MemTable.upsert(c.table, :k, 0, :v)
       MemTable.put_commit_seq(c.table, 0)
-      assert {:k, 0, :v} == MemTable.read(c.table, :k)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
       assert true == MemTable.delete(c.table, :k, 1)
       MemTable.put_commit_seq(c.table, 1)
-      assert {:k, 1, :tombstone} == MemTable.read(c.table, :k)
+      assert {:k, 1, :tombstone} == MemTable.read(c.table, :k, nil)
     end
 
     test "inserts :tombstone value if no key-value exists", c do
       assert true == MemTable.delete(c.table, :k, 0)
       MemTable.put_commit_seq(c.table, 0)
-      assert {:k, 0, :tombstone} == MemTable.read(c.table, :k)
+      assert {:k, 0, :tombstone} == MemTable.read(c.table, :k, nil)
     end
   end
 
@@ -48,15 +48,34 @@ defmodule Goblin.Writer.MemTableTest do
       MemTable.upsert(c.table, :k2, 1, :v2)
       MemTable.upsert(c.table, :k3, 2, :v3)
 
-      assert :not_found == MemTable.read(c.table, :k1)
-      assert :not_found == MemTable.read(c.table, :k2)
-      assert :not_found == MemTable.read(c.table, :k3)
+      assert :not_found == MemTable.read(c.table, :k1, nil)
+      assert :not_found == MemTable.read(c.table, :k2, nil)
+      assert :not_found == MemTable.read(c.table, :k3, nil)
     end
 
     test "reads from latest committed seq no if seq not provided", c do
       MemTable.upsert(c.table, :k, 0, :v)
       MemTable.put_commit_seq(c.table, 0)
-      assert {:k, 0, :v} == MemTable.read(c.table, :k)
+      assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
+    end
+
+    test "reads from latest provided seq", c do
+      MemTable.upsert(c.table, :k1, 0, :v1)
+      MemTable.upsert(c.table, :k2, 1, :v2)
+      MemTable.upsert(c.table, :k3, 2, :v3)
+      MemTable.put_commit_seq(c.table, 2)
+
+      assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, 0)
+      assert :not_found == MemTable.read(c.table, :k2, 0)
+      assert :not_found == MemTable.read(c.table, :k3, 0)
+
+      assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, 1)
+      assert {:k2, 1, :v2} == MemTable.read(c.table, :k2, 1)
+      assert :not_found == MemTable.read(c.table, :k3, 1)
+
+      assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, 2)
+      assert {:k2, 1, :v2} == MemTable.read(c.table, :k2, 2)
+      assert {:k3, 2, :v3} == MemTable.read(c.table, :k3, 2)
     end
   end
 
@@ -67,7 +86,8 @@ defmodule Goblin.Writer.MemTableTest do
       MemTable.upsert(c.table, :k3, 2, :v3)
       MemTable.put_commit_seq(c.table, 2)
 
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, nil, nil)
+      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] ==
+               MemTable.get_range(c.table, nil, nil)
 
       assert 1 == MemTable.clean_seq_range(c.table, 0)
       assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, nil, nil)

@@ -82,6 +82,37 @@ defmodule Goblin.CompactorTest do
       assert log =~ "Failed to compact with reason: :failed. Retrying..."
       assert log =~ "Failed to compact after 5 attempts with reason: :failed. Exiting."
     end
+
+    test "files are only cleaned if there are no active readers", c do
+      fake_write_table = :ets.new(:fake_write_table, [:named_table])
+
+      reader =
+        spawn_link(fn ->
+          Goblin.Reader.transaction(fake_write_table, nil, __MODULE__.Reader, __MODULE__.Reader, fn _tx ->
+            receive do
+              :cont -> :ok
+            end
+          end)
+        end)
+
+      file = Path.join(c.tmp_dir, "foo")
+      fake_sst(file, [{1, 0, "v-1"}])
+      %{size: size} = File.stat!(file)
+
+      assert :ok == Compactor.put(c.compactor, 0, file, 0, size, {1, 1})
+
+      assert_eventually do
+        assert %{clean_ups: [{[^file], _, _}]} = :sys.get_state(c.compactor)
+        assert File.exists?(file)
+      end
+
+      send(reader, :cont)
+
+      assert_eventually do
+        assert %{clean_ups: []} = :sys.get_state(c.compactor)
+        refute File.exists?(file)
+      end
+    end
   end
 
   defp start_compactor(dir, opts) do
@@ -97,6 +128,11 @@ defmodule Goblin.CompactorTest do
         id: __MODULE__.Store
       )
 
+    start_link_supervised!(
+      {Goblin.Reader, name: __MODULE__.Reader},
+      id: __MODULE__.Reader
+    )
+
     start_link_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor},
       id: __MODULE__.TaskSupervisor
     )
@@ -106,6 +142,7 @@ defmodule Goblin.CompactorTest do
         name: __MODULE__,
         store: __MODULE__.Store,
         manifest: __MODULE__.Manifest,
+        reader: __MODULE__.Reader,
         task_sup: __MODULE__.TaskSupervisor,
         key_limit: 10,
         level_limit: 512
