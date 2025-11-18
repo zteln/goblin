@@ -136,12 +136,20 @@ defmodule Goblin.Compactor do
     end
   end
 
+  def handle_info({:DOWN, ref, _, _, reason}, state) do
+    case handle_error(ref, {:error, reason}, state) do
+      {:ok, state} -> {:noreply, state}
+      {:error, _reason} = error -> {:stop, error, state}
+    end
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp handle_error(ref, error, state) do
     cond do
       is_compacting_ref(ref, state) -> retry_compaction(ref, error, state)
       is_clean_up_ref(ref, state) -> retry_clean_up(ref, error, state)
+      true -> {:ok, state}
     end
   end
 
