@@ -131,9 +131,9 @@ defmodule Goblin.Store do
   end
 
   def handle_continue(:recover_state, state) do
-    %{files: files, count: file_count} = Manifest.get_version(state.manifest, [:files, :count])
+    %{ssts: ssts, count: file_count} = Manifest.get_version(state.manifest, [:ssts, :count])
 
-    case recover_ssts(files, state.local_name, state.compactor) do
+    case recover_ssts(ssts, state.local_name, state.compactor) do
       :ok -> {:noreply, %{state | max_file_count: file_count}}
       {:error, reason} -> {:stop, reason, state}
     end
