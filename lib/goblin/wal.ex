@@ -36,12 +36,12 @@ defmodule Goblin.WAL do
     GenServer.start_link(__MODULE__, args, name: name)
   end
 
-  @spec append(wal(), [term()]) :: :ok
+  @spec append(wal(), [term()]) :: :ok | {:error, term()}
   def append(wal, buffer) do
     GenServer.call(wal, {:append, buffer})
   end
 
-  @spec rotate(wal()) :: Goblin.db_file()
+  @spec rotate(wal()) :: {:ok, Goblin.db_file(), Goblin.db_file()}
   def rotate(wal) do
     GenServer.call(wal, :rotate)
   end

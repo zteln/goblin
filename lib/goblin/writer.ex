@@ -96,7 +96,7 @@ defmodule Goblin.Writer do
     GenServer.call(writer, :is_flushing)
   end
 
-  @spec transaction(writer(), (Transaction.t() -> Goblin.tx_return())) ::
+  @spec transaction(writer(), (Goblin.Tx.t() -> Goblin.tx_return())) ::
           term() | :ok | {:error, term()}
   def transaction(writer, f) do
     with {:ok, tx} <- start_transaction(writer),
@@ -257,12 +257,12 @@ defmodule Goblin.Writer do
   end
 
   def handle_info({ref, {:error, reason}}, %{flushing: {ref, _, _, _}} = state) do
-    state = retry_flush(reason, state)
+    state = retry_flush(state, reason)
     {:noreply, state}
   end
 
   def handle_info({:DOWN, ref, _, _, reason}, %{flushing: {ref, _, _, _}} = state) do
-    state = retry_flush(reason, state)
+    state = retry_flush(state, reason)
     {:noreply, state}
   end
 
@@ -272,19 +272,6 @@ defmodule Goblin.Writer do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
-
-  defp retry_flush(error, state) do
-    %{
-      flushing: {_ref, seq, retry, rotated_wal}
-    } = state
-
-    Logger.error(fn ->
-      "Failed to flush with error: #{inspect(error)}. Retrying..."
-    end)
-
-    ref = flush(state, seq, rotated_wal)
-    %{state | flushing: {ref, seq, retry - 1, rotated_wal}}
-  end
 
   defp maybe_flush(state, rotated_wal \\ nil)
 
@@ -317,14 +304,27 @@ defmodule Goblin.Writer do
       seq: seq
     } = state
 
-    with {:ok, rotated_wal} <- WAL.rotate(wal),
-         :ok <- Manifest.log_rotation(manifest, rotated_wal),
+    with {:ok, rotation_wal, current_wal} <- WAL.rotate(wal),
+         :ok <- Manifest.log_rotation(manifest, rotation_wal, current_wal),
          :ok <- Manifest.log_sequence(manifest, seq) do
-      {:ok, rotated_wal}
+      {:ok, rotation_wal}
     end
   end
 
   defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
+
+  defp retry_flush(state, error) do
+    %{
+      flushing: {_ref, seq, retry, rotated_wal}
+    } = state
+
+    Logger.error(fn ->
+      "Failed to flush with error: #{inspect(error)}. Retrying..."
+    end)
+
+    ref = flush(state, seq, rotated_wal)
+    %{state | flushing: {ref, seq, retry - 1, rotated_wal}}
+  end
 
   defp flush(state, seq, rotated_wal) do
     %{

@@ -4,6 +4,8 @@ defmodule Goblin.WriterTest do
   import ExUnit.CaptureLog
   alias Goblin.Writer
 
+  @table __MODULE__.Writer
+
   defmodule FakeTask do
     def async(_sup, _f) do
       %{ref: make_ref()}
@@ -19,15 +21,15 @@ defmodule Goblin.WriterTest do
   @moduletag :tmp_dir
 
   describe "get/3, get_multi/3" do
-    setup c, do: start_writer(c.tmp_dir, Map.get(c, :extra_opts, []))
+    setup_db()
 
     test "returns :not_found for non-existing key" do
-      assert :not_found == Writer.get(__MODULE__, :k)
+      assert :not_found == Writer.get(@table, :k)
     end
 
     test "returns corresponding value", c do
       put(c.writer, :k, :v)
-      assert {:value, 0, :v} == Writer.get(__MODULE__, :k)
+      assert {:value, 0, :v} == Writer.get(@table, :k)
     end
 
     test "returns tuple of keys found and keys not found", c do
@@ -35,18 +37,18 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k2, :v2)
 
       assert {[{:k2, 1, :v2}, {:k1, 0, :v1}], []} ==
-               Writer.get_multi(__MODULE__, [:k1, :k2])
+               Writer.get_multi(@table, [:k1, :k2])
 
-      assert {[], [:k4, :k3]} == Writer.get_multi(__MODULE__, [:k3, :k4])
-      assert {[{:k1, 0, :v1}], [:k4, :k3]} == Writer.get_multi(__MODULE__, [:k1, :k3, :k4])
+      assert {[], [:k4, :k3]} == Writer.get_multi(@table, [:k3, :k4])
+      assert {[{:k1, 0, :v1}], [:k4, :k3]} == Writer.get_multi(@table, [:k1, :k3, :k4])
     end
 
     test "returns :tombstone as value if key is removed", c do
       remove(c.writer, :k)
-      assert {:value, 0, :tombstone} == Writer.get(__MODULE__, :k)
+      assert {:value, 0, :tombstone} == Writer.get(@table, :k)
     end
 
-    @tag extra_opts: [task_mod: FakeTask]
+    @tag db_opts: [task_mod: FakeTask, key_limit: 10]
     test "can read during flush", c do
       data =
         for n <- 1..10 do
@@ -58,21 +60,21 @@ defmodule Goblin.WriterTest do
       assert %{flushing: {_, _, _, _}} = :sys.get_state(c.writer)
 
       for n <- 1..10 do
-        assert {:value, n - 1, :"v#{n}"} == Writer.get(__MODULE__, :"k#{n}")
+        assert {:value, n - 1, :"v#{n}"} == Writer.get(@table, :"k#{n}")
       end
 
       keys = for(n <- 1..10, do: :"k#{n}")
 
       assert {for(n <- 10..1//-1, do: {:"k#{n}", n - 1, :"v#{n}"}), []} ==
-               Writer.get_multi(__MODULE__, keys)
+               Writer.get_multi(@table, keys)
     end
   end
 
   describe "iterators/3" do
-    setup c, do: start_writer(c.tmp_dir)
+    setup_db()
 
     test "returns empty range if MemTable is empty" do
-      assert {[], _} = Writer.iterators(__MODULE__, nil, nil)
+      assert {[], _} = Writer.iterators(@table, nil, nil)
     end
 
     test "returns iterator over MemTable data", c do
@@ -80,7 +82,7 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k2, :v2)
 
       assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} =
-               Writer.iterators(__MODULE__, nil, nil)
+               Writer.iterators(@table, nil, nil)
     end
 
     test "returns iterator over MemTable subset of data", c do
@@ -88,9 +90,9 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k2, :v2)
       put(c.writer, :k3, :v3)
 
-      assert {[{:k2, 1, :v2}], _} = Writer.iterators(__MODULE__, :k2, :k2)
-      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} = Writer.iterators(__MODULE__, nil, :k2)
-      assert {[{:k2, 1, :v2}, {:k3, 2, :v3}], _} = Writer.iterators(__MODULE__, :k2, nil)
+      assert {[{:k2, 1, :v2}], _} = Writer.iterators(@table, :k2, :k2)
+      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} = Writer.iterators(@table, nil, :k2)
+      assert {[{:k2, 1, :v2}, {:k3, 2, :v3}], _} = Writer.iterators(@table, :k2, nil)
     end
 
     test "iterates over provided range", c do
@@ -99,7 +101,7 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k3, :v3)
 
       assert {[{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] = range, iter_f} =
-               Writer.iterators(__MODULE__, nil, nil)
+               Writer.iterators(@table, nil, nil)
 
       assert {{:k1, 0, :v1}, range} = iter_f.(range)
       assert {{:k2, 1, :v2}, range} = iter_f.(range)
@@ -109,7 +111,7 @@ defmodule Goblin.WriterTest do
   end
 
   describe "transaction/2" do
-    setup c, do: start_writer(c.tmp_dir, Map.get(c, :extra_opts, []))
+    setup_db()
 
     test "commits writes to MemTable", c do
       assert :ok ==
@@ -118,7 +120,7 @@ defmodule Goblin.WriterTest do
                  {:commit, tx, :ok}
                end)
 
-      assert {:value, 0, :v} == Writer.get(__MODULE__, :k)
+      assert {:value, 0, :v} == Writer.get(@table, :k)
     end
 
     test "if cancelled does not commit to MemTable", c do
@@ -128,7 +130,7 @@ defmodule Goblin.WriterTest do
                  :cancel
                end)
 
-      assert :not_found == Writer.get(__MODULE__, :k)
+      assert :not_found == Writer.get(@table, :k)
     end
 
     test "writer state cleans writer if writer pid exits mid-transaction", c do
@@ -200,34 +202,31 @@ defmodule Goblin.WriterTest do
       end
     end
 
+    @tag db_opts: [key_limit: 10]
     test "flushes to SST if MemTable exceeds key limit", c do
       data =
         for n <- 1..10 do
           {:"k#{n}", :"v#{n}"}
         end
 
-      files = File.ls!(c.tmp_dir)
-      no_of_files = length(files)
-
       assert :ok == put_multi(c.writer, data)
 
       assert_eventually do
-        new_files = File.ls!(c.tmp_dir)
-        assert no_of_files + 1 == length(new_files)
-        [sst_file] = new_files -- files
+        files = File.ls!(c.tmp_dir)
+        assert [sst_file] = Enum.filter(files, &String.match?(&1, ~r/^\d+\.goblin$/))
 
         assert {:ok, %{seq_range: {0, 9}, key_range: {:k1, :k9}}} =
                  Goblin.SSTs.fetch_sst(Path.join(c.tmp_dir, sst_file))
       end
 
       for n <- 1..10 do
-        assert :not_found == Writer.get(__MODULE__, :"k#{n}")
+        assert :not_found == Writer.get(@table, :"k#{n}")
       end
     end
 
-    @tag extra_opts: [task_mod: FailingTask]
+    @tag db_opts: [task_mod: FailingTask, key_limit: 10]
     test "retries flush on failure", c do
-      writer = c.writer
+      db = c.db
       Process.flag(:trap_exit, true)
 
       data =
@@ -238,10 +237,10 @@ defmodule Goblin.WriterTest do
       log =
         capture_log(fn ->
           assert :ok == put_multi(c.writer, data)
-          assert_receive {:EXIT, ^writer, {:error, :failed_to_flush}}
+          assert_receive {:EXIT, ^db, :shutdown}
         end)
 
-      assert log =~ "Failed to flush with reason: :failed. Retrying..."
+      assert log =~ "Failed to flush with error: :failed. Retrying..."
       assert log =~ "Failed to flush after 5 attempts with reason: :failed. Exiting."
     end
   end
@@ -269,74 +268,5 @@ defmodule Goblin.WriterTest do
 
       {:commit, tx, :ok}
     end)
-  end
-
-  defp start_writer(dir, opts \\ []) do
-    wal =
-      start_link_supervised!({Goblin.WAL, name: __MODULE__.WAL, db_dir: dir},
-        id: __MODULE__.WAL
-      )
-
-    manifest =
-      start_link_supervised!({Goblin.Manifest, name: __MODULE__.Manifest, db_dir: dir},
-        id: __MODULE__.Manifest
-      )
-
-    compactor =
-      start_link_supervised!(
-        {Goblin.Compactor,
-         name: __MODULE__.Compactor,
-         store: __MODULE__.Store,
-         manifest: __MODULE__.Manifest,
-         reader: __MODULE__.Reader,
-         task_sup: __MODULE__.TaskSupervisor,
-         level_limit: 512,
-         key_limit: 10},
-        id: __MODULE__.Compactor
-      )
-
-    store =
-      start_link_supervised!(
-        {Goblin.Store,
-         name: __MODULE__.Store,
-         db_dir: dir,
-         manifest: __MODULE__.Manifest,
-         compactor: __MODULE__.Compactor},
-        id: __MODULE__.Store
-      )
-
-    start_link_supervised!(
-      {Goblin.Reader, name: __MODULE__.Reader},
-      id: __MODULE__.Reader
-    )
-
-    start_link_supervised!(
-      {Goblin.PubSub, name: __MODULE__.PubSub},
-      id: __MODULE__.PubSub
-    )
-
-    start_link_supervised!({Task.Supervisor, name: __MODULE__.TaskSupervisor},
-      id: __MODULE__.TaskSupervisor
-    )
-
-    opts =
-      [
-        name: __MODULE__,
-        local_name: __MODULE__,
-        db_dir: dir,
-        store: {__MODULE__.Store, __MODULE__.Store},
-        manifest: __MODULE__.Manifest,
-        wal: __MODULE__.WAL,
-        reader: __MODULE__.Reader,
-        task_sup: __MODULE__.TaskSupervisor,
-        pub_sub: __MODULE__.PubSub,
-        key_limit: 10
-      ]
-      |> Keyword.merge(opts)
-
-    writer =
-      start_link_supervised!({Goblin.Writer, opts}, id: __MODULE__)
-
-    %{writer: writer, manifest: manifest, wal: wal, compactor: compactor, store: store}
   end
 end
