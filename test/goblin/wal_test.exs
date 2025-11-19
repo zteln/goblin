@@ -5,35 +5,31 @@ defmodule Goblin.WALTest do
 
   @moduletag :tmp_dir
 
-  describe "start_link/1" do
-    test "opens a log", c do
-      assert 0 == length(File.ls!(c.tmp_dir))
-      assert {:ok, _wal} = WAL.start_link(db_dir: c.tmp_dir, name: __MODULE__)
-      assert 1 == length(File.ls!(c.tmp_dir))
+  describe "on start" do
+    test "creates a new WAL and logs to manifest", c do
+      %{wal: wal, manifest: manifest} = start_db(c.tmp_dir)
+      assert %{wal: {0, file}} = :sys.get_state(wal)
+      assert String.ends_with?(file, ".0")
+      assert %{wal: ^file} = Goblin.Manifest.get_version(manifest, [:wal])
     end
 
-    test "fails to open log in no existing directory", c do
-      Process.flag(:trap_exit, true)
-      non_existing_dir = Path.join(c.tmp_dir, "foo")
+    test "recovers rotations and current WAL from manifest", c do
+      %{wal: wal, manifest: manifest} = start_db(c.tmp_dir, name: __MODULE__)
+      assert {:ok, rotation, current} = WAL.rotate(wal)
+      Goblin.Manifest.log_rotation(manifest, rotation, current)
 
-      assert {:error, {:file_error, _, :enoent}} =
-               WAL.start_link(db_dir: non_existing_dir, name: __MODULE__)
-    end
+      stop_db(__MODULE__)
+      %{wal: wal} = start_db(c.tmp_dir)
 
-    test "fails to open log with same name", c do
-      Process.flag(:trap_exit, true)
-      assert {:ok, _wal} = WAL.start_link(db_dir: c.tmp_dir, name: __MODULE__)
-
-      assert {:error, {:already_started, _pid}} =
-               WAL.start_link(db_dir: c.tmp_dir, name: __MODULE__)
+      assert %{wal: {1, ^current}, rotations: [{0, ^rotation}]} = :sys.get_state(wal)
     end
   end
 
   describe "append/2" do
-    setup c, do: start_wal(c.tmp_dir)
+    setup_db()
 
     test "appends to log and syncs file", c do
-      %{file: file} = :sys.get_state(c.wal)
+      %{wal: {_, file}} = :sys.get_state(c.wal)
       %{size: size1} = File.stat!(file)
 
       assert :ok == WAL.append(c.wal, [:foo, :bar])
@@ -42,81 +38,103 @@ defmodule Goblin.WALTest do
 
       assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(c.wal)
 
-      stop_wal()
-      %{wal: wal} = start_wal(c.tmp_dir)
+      stop_db(__MODULE__)
+      %{wal: wal} = start_db(c.tmp_dir)
 
       assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(wal)
     end
   end
 
   describe "rotate/2" do
-    setup c, do: start_wal(c.tmp_dir)
+    setup_db()
 
     test "rotates log and opens new", c do
-      assert 1 == length(File.ls!(c.tmp_dir))
+      no_of_files = length(File.ls!(c.tmp_dir))
       WAL.append(c.wal, [:foo, :bar])
 
-      assert {:ok, rotated_wal} = WAL.rotate(c.wal)
+      assert {:ok, rotation, _current} = WAL.rotate(c.wal)
 
       WAL.append(c.wal, [:baz])
 
-      assert 2 == length(File.ls!(c.tmp_dir))
-      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, [:baz]}]} = WAL.recover(c.wal)
+      assert no_of_files + 1 == length(File.ls!(c.tmp_dir))
+      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, [:baz]}]} = WAL.recover(c.wal)
     end
   end
 
   describe "clean/2" do
-    setup c, do: start_wal(c.tmp_dir)
+    setup_db()
 
     test "removes rotated wal from disk and state", c do
-      {:ok, rotated_wal} = WAL.rotate(c.wal)
-      assert 2 == length(File.ls!(c.tmp_dir))
+      {:ok, rotation, _current} = WAL.rotate(c.wal)
+      no_of_files = length(File.ls!(c.tmp_dir))
 
-      assert %{rotated_files: [_]} = :sys.get_state(c.wal)
+      assert %{rotations: [_]} = :sys.get_state(c.wal)
 
-      assert :ok == WAL.clean(c.wal, rotated_wal)
+      assert :ok == WAL.clean(c.wal, rotation)
 
-      assert %{rotated_files: []} = :sys.get_state(c.wal)
+      assert_eventually do
+        assert %{rotations: []} = :sys.get_state(c.wal)
+      end
 
-      assert 1 == length(File.ls!(c.tmp_dir))
+      assert no_of_files - 1 == length(File.ls!(c.tmp_dir))
     end
 
-    test "fails if rotated wal does not exist", c do
-      assert {:error, :enoent} == WAL.clean(c.wal, Path.join(c.tmp_dir, "foo"))
+    test "waits until there are no active readers", c do
+      parent = self()
+      {:ok, rotation, _current} = WAL.rotate(c.wal)
+
+      reader =
+        spawn(fn ->
+          Goblin.transaction(
+            c.db,
+            fn _tx ->
+              send(parent, :ready)
+
+              receive do
+                :cont -> :ok
+              end
+            end,
+            read_only: true
+          )
+
+          send(parent, :done)
+        end)
+
+      assert_receive :ready
+
+      assert :ok == WAL.clean(c.wal, rotation)
+
+      assert %{rotations: [{_, ^rotation}]} = :sys.get_state(c.wal)
+
+      send(reader, :cont)
+
+      assert_receive :done
+
+      assert_eventually do
+        assert %{rotations: []} = :sys.get_state(c.wal)
+      end
     end
   end
 
   describe "recover/2" do
-    setup c, do: start_wal(c.tmp_dir)
+    setup_db()
 
     test "get past logs from disk", c do
       assert {:ok, [{nil, []}]} == WAL.recover(c.wal)
       WAL.append(c.wal, [:foo, :bar])
       assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(c.wal)
 
-      {:ok, rotated_wal} = WAL.rotate(c.wal)
+      {:ok, rotation, current} = WAL.rotate(c.wal)
+      Goblin.Manifest.log_rotation(c.manifest, rotation, current)
 
-      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, []}]} = WAL.recover(c.wal)
+      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, []}]} = WAL.recover(c.wal)
       WAL.append(c.wal, [:foo, :bar])
-      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(c.wal)
+      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(c.wal)
 
-      stop_wal()
-      %{wal: wal} = start_wal(c.tmp_dir)
+      stop_db(__MODULE__)
+      %{wal: wal} = start_db(c.tmp_dir)
 
-      assert {:ok, [{^rotated_wal, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(wal)
+      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(wal)
     end
-  end
-
-  defp start_wal(dir) do
-    wal =
-      start_link_supervised!({WAL, db_dir: dir, name: __MODULE__},
-        id: __MODULE__
-      )
-
-    %{wal: wal}
-  end
-
-  defp stop_wal do
-    stop_supervised(__MODULE__)
   end
 end
