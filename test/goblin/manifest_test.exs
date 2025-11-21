@@ -40,7 +40,7 @@ defmodule Goblin.ManifestTest do
 
       assert MapSet.new() == ssts
       assert MapSet.new() == wal_rotations
-      assert String.starts_with?(wal, c.tmp_dir)
+      assert String.starts_with?(wal, "wal.goblin")
     end
 
     test "cleans orphaned/corrupted files", c do
@@ -53,7 +53,7 @@ defmodule Goblin.ManifestTest do
       assert File.exists?(fake_sst)
 
       stop_db(__MODULE__)
-      start_db(c.tmp_dir)
+      start_db(c.tmp_dir, name: __MODULE__)
 
       refute File.exists?(rotation)
       refute File.exists?(fake_sst)
@@ -77,10 +77,10 @@ defmodule Goblin.ManifestTest do
 
       assert MapSet.new(["sst1"]) == ssts
       assert MapSet.new([]) == wal_rotations
-      assert new_wal == wal
+      assert String.ends_with?(new_wal, wal)
 
       stop_db(__MODULE__)
-      %{manifest: manifest} = start_db(c.tmp_dir)
+      %{manifest: manifest} = start_db(c.tmp_dir, name: __MODULE__)
 
       assert %{
                version: %{
@@ -94,7 +94,7 @@ defmodule Goblin.ManifestTest do
 
       assert MapSet.new(["sst1"]) == ssts
       assert MapSet.new([]) == wal_rotations
-      assert new_wal == wal
+      assert String.ends_with?(new_wal, wal)
     end
   end
 
@@ -102,17 +102,17 @@ defmodule Goblin.ManifestTest do
     test "puts current wal", c do
       wal = "wal.goblin.0"
       assert :ok == Manifest.log_wal(c.manifest, wal)
-      assert %{wal: wal} == Manifest.get_version(c.manifest, [:wal])
+      assert %{wal: Path.join(c.tmp_dir, wal)} == Manifest.get_version(c.manifest, [:wal])
     end
 
     test "overrides current wal", c do
       wal = "wal.goblin.0"
       assert :ok == Manifest.log_wal(c.manifest, wal)
-      assert %{wal: wal} == Manifest.get_version(c.manifest, [:wal])
+      assert %{wal: Path.join(c.tmp_dir, wal)} == Manifest.get_version(c.manifest, [:wal])
 
       wal = "wal.goblin.1"
       assert :ok == Manifest.log_wal(c.manifest, wal)
-      assert %{wal: wal} == Manifest.get_version(c.manifest, [:wal])
+      assert %{wal: Path.join(c.tmp_dir, wal)} == Manifest.get_version(c.manifest, [:wal])
     end
   end
 
@@ -122,7 +122,10 @@ defmodule Goblin.ManifestTest do
       current_wal = "wal.goblin.1"
       assert :ok == Manifest.log_rotation(c.manifest, rotation_wal, current_wal)
 
-      assert %{wal_rotations: [rotation_wal], wal: current_wal} ==
+      assert %{
+               wal_rotations: [Path.join(c.tmp_dir, rotation_wal)],
+               wal: Path.join(c.tmp_dir, current_wal)
+             } ==
                Manifest.get_version(c.manifest, [:wal_rotations, :wal])
     end
   end
@@ -131,12 +134,12 @@ defmodule Goblin.ManifestTest do
     test "removes rotated wal and adds sst", c do
       Manifest.log_rotation(c.manifest, "wal0", "wal1")
 
-      assert %{wal_rotations: ["wal0"], ssts: []} ==
+      assert %{wal_rotations: [Path.join(c.tmp_dir, "wal0")], ssts: []} ==
                Manifest.get_version(c.manifest, [:wal_rotations, :ssts])
 
       assert :ok == Manifest.log_flush(c.manifest, ["sst1", "sst2"], "wal0")
 
-      assert %{wal_rotations: [], ssts: ["sst1", "sst2"]} ==
+      assert %{wal_rotations: [], ssts: ["sst1", "sst2"] |> Enum.map(&Path.join(c.tmp_dir, &1))} ==
                Manifest.get_version(c.manifest, [:wal_rotations, :ssts])
     end
   end
@@ -153,9 +156,9 @@ defmodule Goblin.ManifestTest do
     test "updates SSTs", c do
       assert %{ssts: []} == Manifest.get_version(c.manifest, [:ssts])
       assert :ok == Manifest.log_compaction(c.manifest, ["sst0"], ["sst1"])
-      assert %{ssts: ["sst1"]} == Manifest.get_version(c.manifest, [:ssts])
+      assert %{ssts: [Path.join(c.tmp_dir, "sst1")]} == Manifest.get_version(c.manifest, [:ssts])
       assert :ok == Manifest.log_compaction(c.manifest, ["sst1"], ["sst2"])
-      assert %{ssts: ["sst2"]} == Manifest.get_version(c.manifest, [:ssts])
+      assert %{ssts: [Path.join(c.tmp_dir, "sst2")]} == Manifest.get_version(c.manifest, [:ssts])
     end
   end
 

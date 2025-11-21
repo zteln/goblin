@@ -19,6 +19,7 @@ defmodule Goblin.Manifest do
   defstruct [
     :name,
     :file,
+    :dir,
     :max_size,
     :version,
     :waiting,
@@ -44,20 +45,20 @@ defmodule Goblin.Manifest do
 
   @spec log_wal(manifest(), Goblin.db_file()) :: :ok | {:error, term()}
   def log_wal(manifest, wal) do
-    GenServer.call(manifest, {:log_edit, {:current_wal, wal}})
+    GenServer.call(manifest, {:log_edit, {:current_wal, trim_dir(wal)}})
   end
 
   @spec log_rotation(manifest(), Goblin.db_file(), Goblin.db_file()) :: :ok | {:error, term()}
   def log_rotation(manifest, wal_rotation, wal_current) do
-    edits = [{:wal_added, wal_rotation}, {:current_wal, wal_current}]
+    edits = [{:wal_added, trim_dir(wal_rotation)}, {:current_wal, trim_dir(wal_current)}]
     GenServer.call(manifest, {:log_edit, edits})
   end
 
   @spec log_flush(manifest(), [Goblin.db_file()], Goblin.db_file()) ::
           :ok | {:error, term()}
   def log_flush(manifest, ssts, wal) do
-    added_edits = Enum.map(ssts, &{:sst_added, &1})
-    removed_edit = {:wal_removed, wal}
+    added_edits = Enum.map(ssts, &{:sst_added, trim_dir(&1)})
+    removed_edit = {:wal_removed, trim_dir(wal)}
     GenServer.call(manifest, {:log_edit, [removed_edit | added_edits]})
   end
 
@@ -69,8 +70,8 @@ defmodule Goblin.Manifest do
   @spec log_compaction(manifest(), [Goblin.db_file()], [Goblin.db_file()]) ::
           :ok | {:error, term()}
   def log_compaction(manifest, removed_ssts, added_ssts) do
-    added_edits = Enum.map(added_ssts, &{:sst_added, &1})
-    removed_edits = Enum.map(removed_ssts, &{:sst_removed, &1})
+    added_edits = Enum.map(added_ssts, &{:sst_added, trim_dir(&1)})
+    removed_edits = Enum.map(removed_ssts, &{:sst_removed, trim_dir(&1)})
     GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
@@ -80,8 +81,8 @@ defmodule Goblin.Manifest do
   end
 
   @spec export(manifest(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
-  def export(manifest, dir) do
-    GenServer.call(manifest, {:export, dir}, :infinity)
+  def export(manifest, export_dir) do
+    GenServer.call(manifest, {:export, export_dir}, :infinity)
   end
 
   @impl GenServer
@@ -102,6 +103,7 @@ defmodule Goblin.Manifest do
        %__MODULE__{
          name: name,
          file: file,
+         dir: db_dir,
          max_size: max_size,
          version: version,
          task_mod: args[:task_mod] || Task.Supervisor,
@@ -125,11 +127,22 @@ defmodule Goblin.Manifest do
   end
 
   def handle_call({:get_version, keys}, _from, state) do
+    %{dir: dir} = state
+
     version =
       state.version
       |> Map.take(keys)
-      |> Map.replace_lazy(:ssts, &MapSet.to_list/1)
-      |> Map.replace_lazy(:wal_rotations, &MapSet.to_list/1)
+      |> Map.replace_lazy(:wal, &(&1 && Path.join(dir, &1)))
+      |> Map.replace_lazy(:ssts, fn ssts ->
+        ssts
+        |> MapSet.to_list()
+        |> Enum.map(&Path.join(dir, &1))
+      end)
+      |> Map.replace_lazy(:wal_rotations, fn wal_rotations ->
+        wal_rotations
+        |> MapSet.to_list()
+        |> Enum.map(&Path.join(dir, &1))
+      end)
 
     {:reply, version, state}
   end
@@ -218,8 +231,8 @@ defmodule Goblin.Manifest do
     dir
     |> File.ls!()
     |> Enum.reject(&(&1 == @manifest_file))
-    |> Enum.map(&Path.join(dir, &1))
     |> Enum.reject(&(&1 in tracked_files))
+    |> Enum.map(&Path.join(dir, &1))
     |> Enum.each(&File.rm!/1)
   end
 
@@ -350,21 +363,22 @@ defmodule Goblin.Manifest do
     end
   end
 
-  defp export_snapshot(state, dir) do
+  defp export_snapshot(state, export_dir) do
     %{
       task_mod: task_mod,
       task_sup: task_sup,
       version: version,
-      file: file
+      file: file,
+      dir: db_dir
     } = state
 
-    copied_manifest = Path.join(Path.dirname(file), "#{Path.basename(file)}.copy")
+    manifest_copy = "#{file}.copy"
 
-    with :ok <- File.cp(file, copied_manifest) do
+    with :ok <- File.cp(file, manifest_copy) do
       %{ref: ref} =
         task_mod.async(task_sup, fn ->
-          filelist = tar_filelist(copied_manifest, version)
-          export_tar(dir, copied_manifest, filelist)
+          filelist = tar_filelist(db_dir, manifest_copy, version)
+          export_tar(export_dir, manifest_copy, filelist)
         end)
 
       {:ok, ref}
@@ -389,9 +403,11 @@ defmodule Goblin.Manifest do
     :erl_tar.create(name, filelist, [:compressed])
   end
 
-  defp tar_filelist(manifest, version) do
+  defp tar_filelist(dir, manifest, version) do
     manifest_archive_name =
-      manifest |> Path.basename() |> String.trim_trailing(".copy")
+      manifest
+      |> Path.basename()
+      |> String.trim_trailing(".copy")
 
     manifest =
       {~c"#{manifest_archive_name}", ~c"#{manifest}"}
@@ -400,8 +416,7 @@ defmodule Goblin.Manifest do
       ([version.wal] ++
          MapSet.to_list(version.ssts) ++ MapSet.to_list(version.wal_rotations))
       |> Enum.map(fn file ->
-        archive_name = Path.basename(file)
-        {~c"#{archive_name}", ~c"#{file}"}
+        {~c"#{file}", ~c"#{Path.join(dir, file)}"}
       end)
 
     [manifest | rest]
@@ -416,4 +431,6 @@ defmodule Goblin.Manifest do
     filename = "goblin_#{now}.tar.gz"
     Path.join(dir, filename)
   end
+
+  defp trim_dir(name), do: Path.basename(name)
 end
