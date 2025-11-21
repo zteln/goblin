@@ -73,12 +73,12 @@ defmodule Goblin.Store do
     end)
   end
 
-  @spec put(store(), SSTs.SST.t()) :: :ok
+  @spec put(store(), [SSTs.SST.t()]) :: :ok
   def put(store, ssts) do
     GenServer.call(store, {:put, ssts})
   end
 
-  @spec remove(store(), Goblin.db_file()) :: :ok
+  @spec remove(store(), [Goblin.db_file()]) :: :ok
   def remove(store, files) do
     GenServer.call(store, {:remove, files})
   end
