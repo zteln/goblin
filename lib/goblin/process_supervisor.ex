@@ -34,14 +34,23 @@ defmodule Goblin.ProcessSupervisor do
          args,
          name: manifest_name,
          local_name: local_manifest_name,
-         db_dir: db_dir
+         db_dir: db_dir,
+         task_sup: task_sup_name
+       )},
+      {Goblin.Reader,
+       Keyword.merge(args,
+         name: reader_name,
+         local_name: local_reader_name
        )},
       {Goblin.WAL,
        Keyword.merge(
          args,
          name: wal_name,
          local_name: local_wal_name,
-         db_dir: db_dir
+         db_dir: db_dir,
+         manifest: manifest_name,
+         reader: reader_name,
+         task_sup: task_sup_name
        )},
       {Goblin.Compactor,
        Keyword.merge(args,
@@ -60,11 +69,6 @@ defmodule Goblin.ProcessSupervisor do
          compactor: compactor_name,
          manifest: manifest_name,
          dir: db_dir
-       )},
-      {Goblin.Reader,
-       Keyword.merge(args,
-         name: reader_name,
-         local_name: local_reader_name
        )},
       {Goblin.Writer,
        Keyword.merge(args,

@@ -44,7 +44,7 @@ defmodule TestHelper do
       {Goblin.WAL, wal, _, _},
       {Goblin.Reader, reader, _, _},
       {Goblin.Manifest, manifest, _, _},
-      {_, _, _, _}
+      {_, task_sup, _, _}
     ] = Supervisor.which_children(proc_sup)
 
     %{
@@ -55,7 +55,8 @@ defmodule TestHelper do
       compactor: compactor,
       wal: wal,
       manifest: manifest,
-      reader: reader
+      reader: reader,
+      task_sup: task_sup
     }
   end
 

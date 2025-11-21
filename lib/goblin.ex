@@ -76,7 +76,7 @@ defmodule Goblin do
   @typedoc false
   @type seq_no :: non_neg_integer()
   @typedoc false
-  @type db_file :: String.t()
+  @type db_file :: Path.t()
   @type db_key_limit :: non_neg_integer()
   @type db_level_limit :: non_neg_integer()
   @type db_key :: term()
@@ -192,9 +192,6 @@ defmodule Goblin do
   """
   @spec put(db_server(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
-    # registry = name(db, ProcessRegistry)
-    # writer = name(db, Writer)
-
     Goblin.transaction(db, fn tx ->
       tx = Goblin.Tx.put(tx, key, value)
       {:commit, tx, :ok}
@@ -227,9 +224,6 @@ defmodule Goblin do
   """
   @spec put_multi(db_server(), [{db_key(), db_value()}]) :: :ok
   def put_multi(db, pairs) do
-    # registry = name(db, ProcessRegistry)
-    # writer = name(db, Writer)
-
     Goblin.transaction(db, fn tx ->
       tx =
         Enum.reduce(pairs, tx, fn {k, v}, acc ->
@@ -265,9 +259,6 @@ defmodule Goblin do
   """
   @spec remove(db_server(), db_key()) :: :ok
   def remove(db, key) do
-    # registry = name(db, ProcessRegistry)
-    # writer = name(db, Writer)
-
     Goblin.transaction(db, fn tx ->
       tx = Goblin.Tx.remove(tx, key)
       {:commit, tx, :ok}
@@ -296,9 +287,6 @@ defmodule Goblin do
   """
   @spec remove_multi(db_server(), [db_key()]) :: :ok
   def remove_multi(db, keys) do
-    # registry = name(db, ProcessRegistry)
-    # writer = name(db, Writer)
-
     Goblin.transaction(db, fn tx ->
       tx =
         Enum.reduce(keys, tx, fn key, acc ->
@@ -524,6 +512,47 @@ defmodule Goblin do
   def unsubscribe(db) do
     pub_sub = name(db, PubSub)
     Goblin.PubSub.unsubscribe(pub_sub)
+  end
+
+  @doc """
+  Exports a `.tar.gz` snapshot of the database to the provided `dir`.
+  The export will have the following filename format: `goblin_<datetime>.tar.gz`.
+  The resulting `.tar.gz` can be unpacked at a later time acting as a backup of the database.
+
+  > #### Note {: .warning}
+  > 
+  > The export runs in a read-only transaction, thus preventing deletion of files.
+
+  ## Parameters
+
+  - `db` - The database server (pid or registered name)
+  - `dir` - The directory to export into
+
+  ## Returns
+
+  - `:ok` - If the export was successful
+  - `{:error, term}` - If the export was unsuccessful
+
+
+  ## Examples
+
+      Goblin.export(db, "/path/to/backups")
+      # => {:ok, "/path/to/backups/goblin_20251120T203250Z.tar.gz"}
+  """
+  @spec export(db_server(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
+  def export(db, dir) do
+    File.exists?(dir) || raise "#{dir} does not exist. Cannot export into non-existing directory."
+
+    registry = name(db, ProcessRegistry)
+    manifest = name(db, Manifest)
+
+    transaction(
+      db,
+      fn _tx ->
+        Goblin.Manifest.export(via(registry, manifest), dir)
+      end,
+      read_only: true
+    )
   end
 
   @doc """
