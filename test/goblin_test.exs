@@ -169,4 +169,35 @@ defmodule GoblinTest do
       assert :w == Goblin.get(db, :l)
     end
   end
+
+  describe "export/2" do
+    setup_db(key_limit: 10, level_limit: 512)
+
+    setup c do
+      export_dir = Path.join(c.tmp_dir, "exports")
+      unpack_dir = Path.join(c.tmp_dir, "unpack")
+      File.mkdir!(export_dir)
+      File.mkdir!(unpack_dir)
+      %{export_dir: export_dir, unpack_dir: unpack_dir}
+    end
+
+    test "exports snapshot of database", c do
+      Goblin.put(c.db, :k1, :v1)
+      Goblin.put(c.db, :k2, :v2)
+
+      assert {:ok, tar_name} = Goblin.export(c.db, c.export_dir)
+
+      :ok = :erl_tar.extract(~c"#{tar_name}", [:compressed, cwd: ~c"#{c.unpack_dir}"])
+
+      Goblin.remove(c.db, :k2)
+
+      assert {:ok, backup_db} = Goblin.start_link(name: Goblin.Backup, db_dir: c.unpack_dir)
+
+      assert :v1 == Goblin.get(backup_db, :k1)
+      assert :v2 == Goblin.get(backup_db, :k2)
+
+      assert :v1 == Goblin.get(c.db, :k1)
+      assert nil == Goblin.get(c.db, :k2)
+    end
+  end
 end
