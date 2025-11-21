@@ -284,8 +284,8 @@ defmodule Goblin.Writer do
 
     if MemTable.size(mem_table) >= key_limit do
       with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
-        ref = flush(state, seq, rotated_wal)
-        state = %{state | flushing: {ref, seq, @retry_attempts, rotated_wal}}
+        ref = flush(state, seq - 1, rotated_wal)
+        state = %{state | flushing: {ref, seq - 1, @retry_attempts, rotated_wal}}
         {:ok, state}
       end
     else
