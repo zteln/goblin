@@ -84,7 +84,6 @@ defmodule Goblin do
   @type pair :: {Goblin.db_key(), Goblin.db_value()}
   @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
   @type db_server :: Supervisor.supervisor()
-  @type tx_return :: {:commit, Goblin.Tx.t(), term()} | :cancel
 
   @doc """
   Executes a function within a database transaction.
@@ -148,7 +147,7 @@ defmodule Goblin do
 
       ^value2 = Goblin.Tx.get(tx, key)
   """
-  @spec transaction(db_server(), (Goblin.Tx.t() -> tx_return()), keyword()) ::
+  @spec transaction(db_server(), (Goblin.Tx.t() -> Goblin.Tx.return()), keyword()) ::
           term()
           | :ok
           | {:error, :not_tx_holder | :tx_not_found | :already_in_tx | term()}

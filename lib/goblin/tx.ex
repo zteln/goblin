@@ -28,10 +28,10 @@ defprotocol Goblin.Tx do
   Returning anything else causes the write transaction to raise.
 
   Read transactions return the last evaluation.
-
   """
 
   @type t :: t()
+  @type return :: {:commit, Goblin.Tx.t(), term()} | :cancel | any()
 
   @doc """
   Writes a key-value pair within a transaction.
