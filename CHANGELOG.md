@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.0 (2025-11-21)
+* Breaking changes
+    * Changed the format in the manifest file
+* Improvements
+    * Make WAL follow the manifest as the source of truth
+* Enhancements
+    * Added `Goblin.export/2` which exports a `.tar.gz` of a snapshot of the database to a specified directory
+
 ## v0.2.2 (2025-11-16)
 * Enhancements
     * Added `Goblin.stop/3` function, allows one to stop the database supervisor

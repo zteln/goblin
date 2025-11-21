@@ -150,6 +150,9 @@ Writers are blocked until the current writer completes its transaction.
 
 ### PubSub
 
+Processes can subscribe to database writes.
+When writes are committed to the database MemTable then subscribers receive either `{:put, key, value}` or `{:remove, key}`.
+
 ```elixir
 Goblin.subscribe(db)
 # => :ok
@@ -158,8 +161,14 @@ Goblin.unsubscribe(db)
 # => :ok
 ```
 
-Processes can subscribe to database writes.
-When writes are committed to the database MemTable then subscribers receive either `{:put, key, value}` or `{:remove, key}`.
+### Back ups
+A snapshot of the database can be exported in a `.tar.gz` file.
+This file can be unpacked if the database needs to restored at a later time, acting as a backup.
+
+```elixir
+Goblin.export(db, "path/to/back_up_dir/")
+# => {:ok, back_up}
+```
 
 ### Using with a supervision tree
 
@@ -219,7 +228,7 @@ Compaction merges SST files to reduce read amplification and reclaim space:
 5. **Tombstone cleanup**: Deleted entries (tombstones) are removed at the deepest level
 6. **New SST creation**: Merged data is written to new SST files in the target level
 7. **Manifest update**: Old files are marked for deletion and new files are logged
-8. **File cleanup**: Old SST files are deleted after acquiring write locks
+8. **File cleanup**: Old SST files are deleted
 
 Compaction runs asynchronously and retries up to 5 times on failure.
 Data is compressed for levels larger than 1.
@@ -248,14 +257,14 @@ The footer contains metadata for efficient lookups:
 - **Bloom filter** (variable): Encoded bloom filter for membership testing
 - **Key range** (variable): Min and max keys in the SST
 - **Priority** (variable): Sequence number for ordering
-- **Metadata** (56 bytes): Positions and sizes of footer components
+- **Metadata** (80 bytes): Positions and sizes of footer components
 - **Magic** (16 bytes): `"GOBLINFILE000000"`
 
 The metadata section stores:
 - Level key (4 bytes)
 - Bloom filter position and size (16 bytes)
 - Key range position and size (16 bytes)
-- Priority position and size (16 bytes)
+- Sequence range position and size (16 bytes)
 - Number of blocks (8 bytes)
 - Total file size (8 bytes)
 - Data section size (8 bytes)
