@@ -276,7 +276,9 @@ defmodule Goblin.WAL do
 
   defp new_wal(dir, rotations) do
     new_count =
-      Enum.reduce_while(rotations, 0, fn
+      rotations
+      |> List.keysort(0)
+      |> Enum.reduce_while(0, fn
         {count, _file}, acc when acc < count -> {:halt, acc}
         _, acc -> {:cont, acc + 1}
       end)
