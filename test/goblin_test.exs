@@ -200,4 +200,42 @@ defmodule GoblinTest do
       assert nil == Goblin.get(c.db, :k2)
     end
   end
+
+  describe "subscribe/1, unsubscribe/1" do
+    setup_db()
+
+    setup c do
+      db_dir1 = Path.join(c.tmp_dir, "other")
+      File.mkdir!(db_dir1)
+      %{db_dir1: db_dir1}
+    end
+
+    test "subscribes only to specific database instance", c do
+      assert {:ok, db1} = Goblin.start_link(name: Goblin1, db_dir: c.db_dir1)
+
+      assert :ok == Goblin.subscribe(c.db)
+
+      Goblin.put(c.db, :k, :v)
+
+      assert_receive {:put, :k, :v}
+
+      Goblin.put(db1, :l, :w)
+
+      refute_receive {:put, :l, :w}
+    end
+
+    test "unsubscribes to topic", c do
+      assert :ok == Goblin.subscribe(c.db)
+
+      Goblin.put(c.db, :k, :v)
+
+      assert_receive {:put, :k, :v}
+
+      assert :ok == Goblin.unsubscribe(c.db)
+
+      Goblin.put(c.db, :k, :w)
+
+      refute_receive {:put, :k, :w}
+    end
+  end
 end

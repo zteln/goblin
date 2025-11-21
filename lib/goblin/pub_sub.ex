@@ -1,9 +1,7 @@
 defmodule Goblin.PubSub do
   @moduledoc false
 
-  @topic :db_writes
-
-  @typep pub_sub :: module()
+  @typep pub_sub :: module() | {:via, Registry, {module(), module()}}
 
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
   def start_link(args) do
@@ -25,19 +23,19 @@ defmodule Goblin.PubSub do
 
   @spec subscribe(pub_sub()) :: {:ok, pid()} | {:error, term()}
   def subscribe(pub_sub) do
-    Registry.register(pub_sub, @topic, [])
+    Registry.register(pub_sub, pub_sub, [])
   end
 
   @spec unsubscribe(pub_sub()) :: :ok
   def unsubscribe(pub_sub) do
-    Registry.unregister(pub_sub, @topic)
+    Registry.unregister(pub_sub, pub_sub)
   end
 
   @spec publish(pub_sub(), term()) :: :ok
   def publish(pub_sub, writes) do
-    Registry.dispatch(pub_sub, @topic, fn entries ->
+    Registry.dispatch(pub_sub, pub_sub, fn entries ->
       for {pid, _} <- entries do
-        for write <- writes, do: send(pid, write)
+        for write <- writes, do: send(pid, Tuple.delete_at(write, 1))
       end
     end)
   end
