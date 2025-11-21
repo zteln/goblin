@@ -1,7 +1,6 @@
 defmodule Goblin.Writer do
   @moduledoc false
   use GenServer
-  require Logger
   alias Goblin.Writer.MemTable
   alias Goblin.Writer.Transaction
   alias Goblin.Store
@@ -246,19 +245,19 @@ defmodule Goblin.Writer do
   end
 
   def handle_info(
-        {ref, {:error, reason}},
+        {ref, {:error, _reason}},
         %{flushing: {ref, _seq, 0, _rotated_wal}} = state
       ) do
-    Logger.error(fn ->
-      "Failed to flush after #{to_string(@retry_attempts)} attempts with reason: #{inspect(reason)}. Exiting."
-    end)
-
     {:stop, {:error, :failed_to_flush}, state}
   end
 
   def handle_info({ref, {:error, reason}}, %{flushing: {ref, _, _, _}} = state) do
     state = retry_flush(state, reason)
     {:noreply, state}
+  end
+
+  def handle_info({:DOWN, ref, _, _, _reason}, %{flushing: {ref, _, 0, _}} = state) do
+    {:stop, {:error, :failed_to_flush}, state}
   end
 
   def handle_info({:DOWN, ref, _, _, reason}, %{flushing: {ref, _, _, _}} = state) do
@@ -313,14 +312,10 @@ defmodule Goblin.Writer do
 
   defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
 
-  defp retry_flush(state, error) do
+  defp retry_flush(state, _error) do
     %{
       flushing: {_ref, seq, retry, rotated_wal}
     } = state
-
-    Logger.error(fn ->
-      "Failed to flush with error: #{inspect(error)}. Retrying..."
-    end)
 
     ref = flush(state, seq, rotated_wal)
     %{state | flushing: {ref, seq, retry - 1, rotated_wal}}

@@ -18,7 +18,7 @@ defmodule Goblin.WALTest do
       Goblin.Manifest.log_rotation(c.manifest, rotation, current)
 
       stop_db(__MODULE__)
-      %{wal: wal} = start_db(c.tmp_dir)
+      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
 
       assert %{wal: {1, ^current}, rotations: [{0, ^rotation}]} = :sys.get_state(wal)
     end
@@ -29,30 +29,32 @@ defmodule Goblin.WALTest do
       %{wal: {_, file}} = :sys.get_state(c.wal)
       %{size: size1} = File.stat!(file)
 
-      assert :ok == WAL.append(c.wal, [:foo, :bar])
+      assert :ok == WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
       %{size: size2} = File.stat!(file)
       assert size2 > size1
 
-      assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(c.wal)
+      assert {:ok, [{nil, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}]} == WAL.recover(c.wal)
 
       stop_db(__MODULE__)
-      %{wal: wal} = start_db(c.tmp_dir)
+      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
 
-      assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(wal)
+      assert {:ok, [{nil, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}]} == WAL.recover(wal)
     end
   end
 
   describe "rotate/2" do
     test "rotates log and opens new", c do
       no_of_files = length(File.ls!(c.tmp_dir))
-      WAL.append(c.wal, [:foo, :bar])
+      WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
 
       assert {:ok, rotation, _current} = WAL.rotate(c.wal)
 
-      WAL.append(c.wal, [:baz])
+      WAL.append(c.wal, [{:put, 2, 2, 2}])
 
       assert no_of_files + 1 == length(File.ls!(c.tmp_dir))
-      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, [:baz]}]} = WAL.recover(c.wal)
+
+      assert {:ok, [{^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}, {nil, [{:put, 2, 2, 2}]}]} =
+               WAL.recover(c.wal)
     end
   end
 
@@ -112,20 +114,31 @@ defmodule Goblin.WALTest do
   describe "recover/2" do
     test "get past logs from disk", c do
       assert {:ok, [{nil, []}]} == WAL.recover(c.wal)
-      WAL.append(c.wal, [:foo, :bar])
-      assert {:ok, [{nil, [:bar, :foo]}]} == WAL.recover(c.wal)
+      WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
+      assert {:ok, [{nil, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}]} == WAL.recover(c.wal)
 
       {:ok, rotation, current} = WAL.rotate(c.wal)
       Goblin.Manifest.log_rotation(c.manifest, rotation, current)
 
-      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, []}]} = WAL.recover(c.wal)
-      WAL.append(c.wal, [:foo, :bar])
-      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(c.wal)
+      assert {:ok, [{^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}, {nil, []}]} =
+               WAL.recover(c.wal)
+
+      WAL.append(c.wal, [{:put, 2, 2, 2}, {:put, 3, 3, 3}])
+
+      assert {:ok,
+              [
+                {^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]},
+                {nil, [{:put, 3, 3, 3}, {:put, 2, 2, 2}]}
+              ]} = WAL.recover(c.wal)
 
       stop_db(__MODULE__)
-      %{wal: wal} = start_db(c.tmp_dir)
+      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
 
-      assert {:ok, [{^rotation, [:bar, :foo]}, {nil, [:bar, :foo]}]} = WAL.recover(wal)
+      assert {:ok,
+              [
+                {^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]},
+                {nil, [{:put, 3, 3, 3}, {:put, 2, 2, 2}]}
+              ]} = WAL.recover(wal)
     end
   end
 end

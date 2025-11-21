@@ -1,7 +1,6 @@
 defmodule Goblin.Compactor do
   @moduledoc false
   use GenServer
-  require Logger
   alias Goblin.Compactor.Entry
   alias Goblin.Compactor.Level
   alias Goblin.SSTs
@@ -173,7 +172,7 @@ defmodule Goblin.Compactor do
     end)
   end
 
-  defp retry_compaction(ref, {:error, reason}, state) do
+  defp retry_compaction(ref, {:error, _reason}, state) do
     [{_, %{compacting_ref: {_, retry}} = source_level}, {_, target_level}] =
       state.levels
       |> Enum.filter(fn
@@ -184,24 +183,16 @@ defmodule Goblin.Compactor do
 
     case retry do
       0 ->
-        Logger.error(fn ->
-          "Failed to compact after 5 attempts with reason: #{inspect(reason)}. Exiting."
-        end)
-
         {:error, :failed_to_compact}
 
       retry ->
-        Logger.warning(fn ->
-          "Failed to compact with reason: #{inspect(reason)}. Retrying..."
-        end)
-
         state = compact(state, source_level, target_level, retry - 1)
         {:ok, state}
     end
   end
 
-  defp retry_clean_up(ref, {:error, reason}, state) do
-    {clean_up, clean_ups} =
+  defp retry_clean_up(ref, {:error, _reason}, state) do
+    {[clean_up], clean_ups} =
       Enum.split_with(state.clean_ups, fn
         {_files, ^ref, _retry} -> true
         _ -> false
@@ -209,17 +200,9 @@ defmodule Goblin.Compactor do
 
     case clean_up do
       {_files, _ref, 0} ->
-        Logger.error(fn ->
-          "Failed to clean up after 5 attempts with reason: #{inspect(reason)}. Exiting."
-        end)
-
         {:error, :failed_to_clean_up}
 
       {files, _ref, retry} ->
-        Logger.warning(fn ->
-          "Failed to clean up with reason: #{inspect(reason)}. Retrying..."
-        end)
-
         state =
           %{state | clean_ups: clean_ups}
           |> start_clean_up(files, retry - 1)

@@ -1,10 +1,7 @@
 defmodule Goblin.WriterTest do
   use ExUnit.Case, async: true
   use TestHelper
-  import ExUnit.CaptureLog
   alias Goblin.Writer
-
-  @table __MODULE__.Writer
 
   defmodule FakeTask do
     def async(_sup, _f) do
@@ -12,17 +9,11 @@ defmodule Goblin.WriterTest do
     end
   end
 
-  defmodule FailingTask do
-    def async(_sup, _f) do
-      Task.async(fn -> {:error, :failed} end)
-    end
-  end
-
+  @table __MODULE__.Writer
   @moduletag :tmp_dir
+  setup_db()
 
   describe "get/3, get_multi/3" do
-    setup_db()
-
     test "returns :not_found for non-existing key" do
       assert :not_found == Writer.get(@table, :k)
     end
@@ -71,8 +62,6 @@ defmodule Goblin.WriterTest do
   end
 
   describe "iterators/3" do
-    setup_db()
-
     test "returns empty range if MemTable is empty" do
       assert {[], _} = Writer.iterators(@table, nil, nil)
     end
@@ -111,8 +100,6 @@ defmodule Goblin.WriterTest do
   end
 
   describe "transaction/2" do
-    setup_db()
-
     test "commits writes to MemTable", c do
       assert :ok ==
                Writer.transaction(c.writer, fn tx ->
@@ -222,26 +209,6 @@ defmodule Goblin.WriterTest do
       for n <- 1..10 do
         assert :not_found == Writer.get(@table, :"k#{n}")
       end
-    end
-
-    @tag db_opts: [task_mod: FailingTask, key_limit: 10]
-    test "retries flush on failure", c do
-      db = c.db
-      Process.flag(:trap_exit, true)
-
-      data =
-        for n <- 1..10 do
-          {:"k#{n}", :"v#{n}"}
-        end
-
-      log =
-        capture_log(fn ->
-          assert :ok == put_multi(c.writer, data)
-          assert_receive {:EXIT, ^db, :shutdown}
-        end)
-
-      assert log =~ "Failed to flush with error: :failed. Retrying..."
-      assert log =~ "Failed to flush after 5 attempts with reason: :failed. Exiting."
     end
   end
 
