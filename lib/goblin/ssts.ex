@@ -12,7 +12,7 @@ defmodule Goblin.SSTs do
           bf_fpp: number()
         ]
 
-  @spec new([Enumerable.t(Goblin.triple())], Goblin.level_key(), new_sst_opts()) ::
+  @spec new([Enumerable.t(Goblin.triple())], Goblin.db_level_key(), new_sst_opts()) ::
           {:ok, [SST.t()]} | {:error, term()}
   def new(streams, level_key, opts) do
     with {:ok, new} <- write_streams(streams, level_key, opts) do
@@ -24,7 +24,7 @@ defmodule Goblin.SSTs do
   def delete(file), do: Disk.rm(file)
 
   @spec find(Goblin.db_file(), Goblin.db_key()) ::
-          {:ok, {:value, Goblin.db_sequence(), Goblin.db_value()}} | :not_found | {:error, term()}
+          {:ok, {:value, Goblin.seq_no(), Goblin.db_value()}} | :not_found | {:error, term()}
   def find(file, key) do
     with {:ok, disk} <- Disk.open(file) do
       search_result = search_sst(disk, key)
@@ -33,8 +33,7 @@ defmodule Goblin.SSTs do
     end
   end
 
-  @spec fetch_sst(Goblin.db_file()) ::
-          {:ok, {Goblin.BloomFilter.t(), non_neg_integer()}} | {:error, term()}
+  @spec fetch_sst(Goblin.db_file()) :: {:ok, SST.t()} | {:error, term()}
   def fetch_sst(file) do
     disk = Disk.open!(file)
 

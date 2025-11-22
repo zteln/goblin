@@ -120,7 +120,7 @@ defmodule Goblin.SSTsTest do
       stream =
         [
           {"key1", 1, "value1"},
-          {"key2", 2, :tombstone},
+          {"key2", 2, :"$goblin_tombstone"},
           {"key3", 3, "value3"}
         ]
         |> stream_flush_data(10)
@@ -128,7 +128,7 @@ defmodule Goblin.SSTsTest do
       assert {:ok, [_sst]} = SSTs.new([stream], level_key, file_getter: fn -> file end)
 
       assert {:ok, {:value, 1, "value1"}} = SSTs.find(file, "key1")
-      assert {:ok, {:value, 2, :tombstone}} = SSTs.find(file, "key2")
+      assert {:ok, {:value, 2, :"$goblin_tombstone"}} = SSTs.find(file, "key2")
       assert {:ok, {:value, 3, "value3"}} = SSTs.find(file, "key3")
     end
 

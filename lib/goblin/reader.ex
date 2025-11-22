@@ -44,7 +44,7 @@ defmodule Goblin.Reader do
           {Goblin.seq_no(), Goblin.db_value()} | :not_found
   def get(key, writer, store, seq \\ nil) do
     case try_writer(writer, key, seq) do
-      {:value, _seq, :tombstone} ->
+      {:value, _seq, :"$goblin_tombstone"} ->
         :not_found
 
       {:value, seq, value} ->
@@ -63,7 +63,7 @@ defmodule Goblin.Reader do
     result = found ++ try_store(store, not_found)
 
     Enum.filter(result, fn
-      {_seq, _key, :tombstone} -> false
+      {_seq, _key, :"$goblin_tombstone"} -> false
       :not_found -> false
       _ -> true
     end)
@@ -96,7 +96,7 @@ defmodule Goblin.Reader do
         {_iterators, {prev_min, _, _}} when not is_nil(max) and prev_min > max ->
           {:halt, :ok}
 
-        {iterators, {_, _, :tombstone}} ->
+        {iterators, {_, _, :"$goblin_tombstone"}} ->
           next = take_smallest(iterators)
           iterators = advance(iterators, next)
           {[], {iterators, next}}
@@ -230,7 +230,7 @@ defmodule Goblin.Reader do
     |> Task.async_stream(fn {key, ssts} ->
       case read_ssts(key, ssts, seq) do
         [] -> :not_found
-        [{:value, _seq, :tombstone}] -> :not_found
+        [{:value, _seq, :"$goblin_tombstone"}] -> :not_found
         [{:value, seq, value}] -> {key, seq, value}
       end
     end)
@@ -244,7 +244,7 @@ defmodule Goblin.Reader do
 
     case read_ssts(key, ssts, seq) do
       [] -> :not_found
-      [{:value, _seq, :tombstone}] -> :not_found
+      [{:value, _seq, :"$goblin_tombstone"}] -> :not_found
       [{:value, seq, value}] -> {seq, value}
     end
   end

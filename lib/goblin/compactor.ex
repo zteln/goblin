@@ -175,6 +175,8 @@ defmodule Goblin.Compactor do
         {[source], targets}
       end
 
+    clean_tombstones? = target_level_key >= Enum.max(Map.keys(levels))
+
     source_ids = Enum.map(sources, & &1.id)
     target_ids = Enum.map(targets, & &1.id)
 
@@ -182,13 +184,13 @@ defmodule Goblin.Compactor do
       task_mod.async(task_sup, fn ->
         data =
           (sources ++ targets)
-          |> merge_stream()
+          |> merge_stream(clean_tombstones?)
           |> Stream.chunk_every(key_limit)
 
         opts = [
           file_getter: fn -> Store.new_file(store) end,
           bf_fpp: bf_fpp,
-          compress?: false
+          compress?: target_level_key > 1
         ]
 
         with {:ok, ssts} <- SSTs.new([data], target_level_key, opts),
@@ -222,7 +224,7 @@ defmodule Goblin.Compactor do
     end
   end
 
-  defp merge_stream(ssts) do
+  defp merge_stream(ssts, clean_tombstones?) do
     Stream.resource(
       fn ->
         Enum.map(ssts, &{SSTs.iterate(&1.id), nil})
@@ -236,6 +238,9 @@ defmodule Goblin.Compactor do
         case cursors do
           [] ->
             {:halt, :ok}
+
+          [{_, {smallest_key, _, :"$goblin_tombstone"}} | _] when clean_tombstones? ->
+            {[], Enum.flat_map(cursors, &skip(&1, smallest_key))}
 
           [{_, {smallest_key, _, _} = next} | _] ->
             {[next], Enum.flat_map(cursors, &skip(&1, smallest_key))}

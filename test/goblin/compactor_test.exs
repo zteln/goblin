@@ -186,5 +186,31 @@ defmodule Goblin.CompactorTest do
         refute Map.has_key?(levels, 1)
       end
     end
+
+    test "tombstones in SST are cleaned if compacting to new level", c do
+      file = Path.join(c.tmp_dir, "foo")
+
+      fake_sst(file, [
+        {"k1", 0, "v0"},
+        {"k1", 1, "v1"},
+        {"k1", 2, :"$goblin_tombstone"},
+        {"k2", 3, "w0"},
+        {"k2", 4, "w1"},
+        {"k3", 5, "u0"}
+      ])
+
+      %{size: size} = File.stat!(file)
+
+      assert :ok == Compactor.put(c.compactor, 0, file, 0, size, {"k1", "k3"})
+
+      assert_eventually do
+        assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
+
+        assert [{"k2", 4, "w1"}, {"k3", 5, "u0"}] ==
+                 Goblin.SSTs.stream!(entry.id) |> Enum.to_list()
+
+        refute Map.has_key?(levels, 0)
+      end
+    end
   end
 end

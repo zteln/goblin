@@ -34,9 +34,9 @@ defmodule Goblin.WriterTest do
       assert {[{:k1, 0, :v1}], [:k4, :k3]} == Writer.get_multi(@table, [:k1, :k3, :k4])
     end
 
-    test "returns :tombstone as value if key is removed", c do
+    test "returns :$goblin_tombstone as value if key is removed", c do
       remove(c.writer, :k)
-      assert {:value, 0, :tombstone} == Writer.get(@table, :k)
+      assert {:value, 0, :"$goblin_tombstone"} == Writer.get(@table, :k)
     end
 
     @tag db_opts: [task_mod: FakeTask, key_limit: 10]

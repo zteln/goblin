@@ -26,19 +26,19 @@ defmodule Goblin.Writer.MemTableTest do
   end
 
   describe "delete/3" do
-    test "updates existing value with :tombstone", c do
+    test "updates existing value with :$goblin_tombstone", c do
       assert true == MemTable.upsert(c.table, :k, 0, :v)
       MemTable.put_commit_seq(c.table, 0)
       assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
       assert true == MemTable.delete(c.table, :k, 1)
       MemTable.put_commit_seq(c.table, 1)
-      assert {:k, 1, :tombstone} == MemTable.read(c.table, :k, nil)
+      assert {:k, 1, :"$goblin_tombstone"} == MemTable.read(c.table, :k, nil)
     end
 
-    test "inserts :tombstone value if no key-value exists", c do
+    test "inserts :$goblin_tombstone value if no key-value exists", c do
       assert true == MemTable.delete(c.table, :k, 0)
       MemTable.put_commit_seq(c.table, 0)
-      assert {:k, 0, :tombstone} == MemTable.read(c.table, :k, nil)
+      assert {:k, 0, :"$goblin_tombstone"} == MemTable.read(c.table, :k, nil)
     end
   end
 

@@ -69,7 +69,7 @@ defmodule Goblin do
   - **Manifest** - Tracks database state and file metadata
   """
   use Supervisor
-  import Goblin.ProcessRegistry
+  import Goblin.ProcessRegistry, only: [via: 2]
 
   @typedoc false
   @type db_level_key :: non_neg_integer()
@@ -77,12 +77,17 @@ defmodule Goblin do
   @type seq_no :: non_neg_integer()
   @typedoc false
   @type db_file :: Path.t()
+  @typedoc false
   @type db_key_limit :: non_neg_integer()
+  @typedoc false
   @type db_level_limit :: non_neg_integer()
+  @typedoc false
+  @type pair :: {Goblin.db_key(), Goblin.db_value()}
+  @typedoc false
+  @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
+
   @type db_key :: term()
   @type db_value :: term()
-  @type pair :: {Goblin.db_key(), Goblin.db_value()}
-  @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
   @type db_server :: Supervisor.supervisor()
 
   @doc """

@@ -33,7 +33,7 @@ defmodule Goblin.Writer.MemTable do
 
   @spec delete(t(), Goblin.seq_no(), Goblin.db_key()) :: true
   def delete(table, key, seq) do
-    :ets.insert(table, {{key, seq}, :tombstone})
+    :ets.insert(table, {{key, seq}, :"$goblin_tombstone"})
   end
 
   @spec read(t(), Goblin.db_key(), Goblin.seq_no() | nil) ::
