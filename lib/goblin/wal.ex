@@ -3,7 +3,6 @@ defmodule Goblin.WAL do
   use GenServer
 
   @log_file "wal.goblin"
-  @retry_attempts 5
 
   @typep wal :: module() | {:via, Registry, {module(), module()}}
 
@@ -120,7 +119,7 @@ defmodule Goblin.WAL do
 
   def handle_call({:clean, rotation}, _from, state) do
     ref = clean_up(state, rotation)
-    cleaning = Map.put(state.cleaning, ref, {rotation, @retry_attempts})
+    cleaning = Map.put(state.cleaning, ref, rotation)
     state = %{state | cleaning: cleaning}
     {:reply, :ok, state}
   end
@@ -135,29 +134,34 @@ defmodule Goblin.WAL do
 
     case cleaned do
       nil ->
-        state = %{state | cleaning: cleaning}
         {:noreply, state}
 
-      {rotation, _retries} ->
+      rotation ->
         rotations = Enum.reject(state.rotations, fn {_, file} -> file == rotation end)
         state = %{state | rotations: rotations, cleaning: cleaning}
         {:noreply, state}
     end
   end
 
-  def handle_info({ref, {:error, _reason}}, state) do
-    case retry_clean_up(state, ref) do
-      {:ok, state} -> {:noreply, state}
-      {:error, _reason} = error -> {:stop, error, state}
+  def handle_info({ref, {:error, _reason} = error}, state) do
+    {clean, _cleaning} = Map.pop(state.cleaning, ref)
+
+    case clean do
+      nil -> {:noreply, state}
+      _ -> {:stop, error, state}
     end
   end
 
-  def handle_info({:DOWN, ref, _, _, _}, state) do
-    case retry_clean_up(state, ref) do
-      {:ok, state} -> {:noreply, state}
-      {:error, _reason} = error -> {:stop, error, state}
+  def handle_info({:DOWN, ref, _, _, reason}, state) do
+    {clean, _cleaning} = Map.pop(state.cleaning, ref)
+
+    case clean do
+      nil -> {:noreply, state}
+      _ -> {:stop, {:error, reason}, state}
     end
   end
+
+  def handle_info(_msg, state), do: {:noreply, state}
 
   defp rotate_log(name, file) do
     with :ok <- close_log(name) do
@@ -193,25 +197,6 @@ defmodule Goblin.WAL do
       end)
 
     ref
-  end
-
-  defp retry_clean_up(state, ref) do
-    {to_clean, cleaning} = Map.pop(state.cleaning, ref)
-
-    case to_clean do
-      nil ->
-        state = %{state | cleaning: cleaning}
-        {:ok, state}
-
-      {_file, 0} ->
-        {:error, :failed_to_clean_wal}
-
-      {file, retries} ->
-        ref = clean_up(state, file)
-        cleaning = Map.put(cleaning, ref, {file, retries - 1})
-        state = %{state | cleaning: cleaning}
-        {:ok, state}
-    end
   end
 
   defp append_and_sync_log(name, buffer) do

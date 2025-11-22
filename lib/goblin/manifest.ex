@@ -5,7 +5,6 @@ defmodule Goblin.Manifest do
   @manifest_file "manifest.goblin"
   @tmp_suffix ".goblin.tmp"
   @manifest_max_size 1024 * 1024
-  @retry_attempts 5
 
   @type version :: %{
           ssts: [Goblin.db_file()],
@@ -175,37 +174,22 @@ defmodule Goblin.Manifest do
   def handle_continue(:rotate, state), do: {:noreply, state}
 
   @impl GenServer
-  def handle_info({ref, {:ok, tar_name}}, %{waiting: {ref, _, _, _}} = state) do
-    %{waiting: {_ref, from, _dir, _retry}} = state
+  def handle_info({ref, {:ok, tar_name}}, %{waiting: {ref, from}} = state) do
     GenServer.reply(from, {:ok, tar_name})
     state = %{state | waiting: nil}
     {:noreply, state}
   end
 
-  def handle_info({ref, {:error, _reason} = error}, %{waiting: {ref, _, _, _}} = state) do
-    case retry_export(state) do
-      {:ok, state} ->
-        {:noreply, state}
-
-      _error ->
-        %{waiting: {_, from, _, _}} = state
-        GenServer.reply(from, error)
-        state = %{state | waiting: nil}
-        {:noreply, state}
-    end
+  def handle_info({ref, {:error, _reason} = error}, %{waiting: {ref, from}} = state) do
+    GenServer.reply(from, error)
+    state = %{state | waiting: nil}
+    {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, _, _, _}, %{waiting: {ref, _, _, _}} = state) do
-    case retry_export(state) do
-      {:ok, state} ->
-        {:noreply, state}
-
-      error ->
-        %{waiting: {_, from, _, _}} = state
-        GenServer.reply(from, error)
-        state = %{state | waiting: nil}
-        {:noreply, state}
-    end
+  def handle_info({:DOWN, ref, _, _, reason}, %{waiting: {ref, from}} = state) do
+    GenServer.reply(from, {:error, reason})
+    state = %{state | waiting: nil}
+    {:noreply, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -348,16 +332,9 @@ defmodule Goblin.Manifest do
 
   defp rotated_file(file), do: "#{file}.0"
 
-  defp retry_export(%{waiting: {_, _, _, 0}}), do: {:error, :failed_to_export}
-
-  defp retry_export(state) do
-    %{waiting: {_, from, dir, retry}} = state
-    start_export(state, dir, from, retry - 1)
-  end
-
-  defp start_export(state, dir, from, retry \\ @retry_attempts) do
+  defp start_export(state, dir, from) do
     with {:ok, ref} <- export_snapshot(state, dir) do
-      waiting = {ref, from, dir, retry}
+      waiting = {ref, from}
       state = %{state | waiting: waiting}
       {:ok, state}
     end
