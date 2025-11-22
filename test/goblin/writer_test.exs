@@ -48,7 +48,7 @@ defmodule Goblin.WriterTest do
 
       put_multi(c.writer, data)
 
-      assert %{flushing: {_, _, _, _}} = :sys.get_state(c.writer)
+      assert %{flushing: {_, _, _}} = :sys.get_state(c.writer)
 
       for n <- 1..10 do
         assert {:value, n - 1, :"v#{n}"} == Writer.get(@table, :"k#{n}")

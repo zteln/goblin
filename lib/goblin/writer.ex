@@ -10,7 +10,6 @@ defmodule Goblin.Writer do
   alias Goblin.PubSub
 
   @flush_level 0
-  @retry_attempts 5
 
   @type writer :: module() | {:via, Registry, {module(), module()}}
 
@@ -95,7 +94,7 @@ defmodule Goblin.Writer do
     GenServer.call(writer, :is_flushing)
   end
 
-  @spec transaction(writer(), (Goblin.Tx.t() -> Goblin.tx_return())) ::
+  @spec transaction(writer(), (Goblin.Tx.t() -> Goblin.Tx.return())) ::
           term() | :ok | {:error, term()}
   def transaction(writer, f) do
     with {:ok, tx} <- start_transaction(writer),
@@ -233,9 +232,9 @@ defmodule Goblin.Writer do
   end
 
   @impl GenServer
-  def handle_info({_ref, {:ok, :flushed}}, state) do
+  def handle_info({ref, {:ok, :flushed}}, %{flushing: {ref, _, _}} = state) do
     %{
-      flushing: {_ref, flushed_seq, _retry, _rotated_wal},
+      flushing: {_ref, flushed_seq, _rotated_wal},
       mem_table: mem_table
     } = state
 
@@ -244,25 +243,12 @@ defmodule Goblin.Writer do
     {:noreply, state, {:continue, :maybe_flush}}
   end
 
-  def handle_info(
-        {ref, {:error, _reason}},
-        %{flushing: {ref, _seq, 0, _rotated_wal}} = state
-      ) do
-    {:stop, {:error, :failed_to_flush}, state}
+  def handle_info({ref, {:error, _reason} = error}, %{flushing: {ref, _, _}} = state) do
+    {:stop, error, state}
   end
 
-  def handle_info({ref, {:error, reason}}, %{flushing: {ref, _, _, _}} = state) do
-    state = retry_flush(state, reason)
-    {:noreply, state}
-  end
-
-  def handle_info({:DOWN, ref, _, _, _reason}, %{flushing: {ref, _, 0, _}} = state) do
-    {:stop, {:error, :failed_to_flush}, state}
-  end
-
-  def handle_info({:DOWN, ref, _, _, reason}, %{flushing: {ref, _, _, _}} = state) do
-    state = retry_flush(state, reason)
-    {:noreply, state}
+  def handle_info({:DOWN, ref, _, _, reason}, %{flushing: {ref, _, _}} = state) do
+    {:stop, {:error, reason}, state}
   end
 
   def handle_info({:DOWN, monitor_ref, _, pid, _}, %{writer: {pid, monitor_ref}} = state) do
@@ -284,7 +270,7 @@ defmodule Goblin.Writer do
     if MemTable.size(mem_table) >= key_limit do
       with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
         ref = flush(state, seq - 1, rotated_wal)
-        state = %{state | flushing: {ref, seq - 1, @retry_attempts, rotated_wal}}
+        state = %{state | flushing: {ref, seq - 1, rotated_wal}}
         {:ok, state}
       end
     else
@@ -311,15 +297,6 @@ defmodule Goblin.Writer do
   end
 
   defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
-
-  defp retry_flush(state, _error) do
-    %{
-      flushing: {_ref, seq, retry, rotated_wal}
-    } = state
-
-    ref = flush(state, seq, rotated_wal)
-    %{state | flushing: {ref, seq, retry - 1, rotated_wal}}
-  end
 
   defp flush(state, seq, rotated_wal) do
     %{
