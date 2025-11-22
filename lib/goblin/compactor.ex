@@ -175,7 +175,7 @@ defmodule Goblin.Compactor do
         {[source], targets}
       end
 
-    clean_tombstones? = target_level_key >= Enum.max(Map.keys(levels))
+    clean_tombstones? = target_level_key >= Enum.max(Map.keys(levels), fn -> 0 end)
 
     source_ids = Enum.map(sources, & &1.id)
     target_ids = Enum.map(targets, & &1.id)
