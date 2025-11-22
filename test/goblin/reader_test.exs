@@ -236,9 +236,14 @@ defmodule Goblin.ReaderTest do
           {:"k#{n}", :"v#{n}"}
         end
 
+      output =
+        for n <- 1..15 do
+          {:"k#{n}", n - 1, :"v#{n}"}
+        end
+
       Goblin.put_multi(c.db, data)
 
-      assert List.keysort(data, 0) ==
+      assert List.keysort(output, 0) ==
                Reader.select(nil, nil, __MODULE__.Writer, __MODULE__.Store) |> Enum.to_list()
     end
 
@@ -248,15 +253,20 @@ defmodule Goblin.ReaderTest do
           {n, :"v#{n}"}
         end
 
+      output =
+        for n <- 1..15 do
+          {n, n - 1, :"v#{n}"}
+        end
+
       Goblin.put_multi(c.db, data)
 
-      assert List.keysort(Enum.take(data, 7), 0) ==
+      assert List.keysort(Enum.take(output, 7), 0) ==
                Reader.select(nil, 7, __MODULE__.Writer, __MODULE__.Store) |> Enum.to_list()
 
-      assert List.keysort(Enum.take(data, -7), 0) ==
+      assert List.keysort(Enum.take(output, -7), 0) ==
                Reader.select(9, nil, __MODULE__.Writer, __MODULE__.Store) |> Enum.to_list()
 
-      assert List.keysort(Enum.slice(data, 2, 9), 0) ==
+      assert List.keysort(Enum.slice(output, 2, 9), 0) ==
                Reader.select(3, 11, __MODULE__.Writer, __MODULE__.Store) |> Enum.to_list()
     end
   end

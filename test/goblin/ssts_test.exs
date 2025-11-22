@@ -273,7 +273,7 @@ defmodule Goblin.SSTsTest do
 
       SSTs.new([stream], level_key, file_getter: fn -> file end)
 
-      iter = SSTs.iterate(file)
+      iter = SSTs.iterator(file)
       assert {{"key1", 1, "value1"}, iter} = SSTs.iterate(iter)
       assert {{"key2", 2, "value2"}, iter} = SSTs.iterate(iter)
       assert {{"key3", 3, "value3"}, iter} = SSTs.iterate(iter)

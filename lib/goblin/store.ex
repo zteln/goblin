@@ -69,7 +69,7 @@ defmodule Goblin.Store do
     :ets.select(store, ms)
     |> Enum.map(fn file ->
       iter_f = fn iter -> SSTs.iterate(iter) end
-      {SSTs.iterate(file), iter_f}
+      {SSTs.iterator(file), iter_f}
     end)
   end
 

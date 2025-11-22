@@ -81,37 +81,11 @@ defmodule Goblin.Reader do
         mem_iterators = Writer.iterators(writer, min, max)
         sst_iterators = Store.iterators(store, min, max)
 
-        iterators =
-          Enum.flat_map([mem_iterators | sst_iterators], &init_iterator/1)
-          |> advance_until(min)
-
-        first = take_smallest(iterators)
-        iterators = advance(iterators, first)
-        {iterators, first}
+        Enum.map([mem_iterators | sst_iterators], fn {data, next} ->
+          Goblin.Iterator.init(data, next)
+        end)
       end,
-      fn
-        {_, nil} ->
-          {:halt, :ok}
-
-        {_iterators, {prev_min, _, _}} when not is_nil(max) and prev_min > max ->
-          {:halt, :ok}
-
-        {iterators, {_, _, :"$goblin_tombstone"}} ->
-          next = take_smallest(iterators)
-          iterators = advance(iterators, next)
-          {[], {iterators, next}}
-
-        {[], {last_min, _, last_val}} ->
-          {[{last_min, last_val}], {[], nil}}
-
-        {_iterators, {prev_min, _, prev_val}} when not is_nil(max) and prev_min == max ->
-          {[{prev_min, prev_val}], {[], nil}}
-
-        {iterators, {prev_min, _, prev_val}} ->
-          next = take_smallest(iterators)
-          iterators = advance(iterators, next)
-          {[{prev_min, prev_val}], {iterators, next}}
-      end,
+      &Goblin.Iterator.k_merge(&1, min: min, max: max),
       fn _ -> :ok end
     )
   end
@@ -162,60 +136,6 @@ defmodule Goblin.Reader do
 
       [{_, n}] ->
         :ets.insert(table, {:readers, n - 1})
-    end
-  end
-
-  defp init_iterator({iter, iter_f}) do
-    case iter_f.(iter) do
-      :ok -> []
-      {next, iter} -> [{next, iter, iter_f}]
-    end
-  end
-
-  defp take_smallest(iterators) do
-    iterators
-    |> Enum.map(&elem(&1, 0))
-    |> Enum.reduce(nil, &choose_smallest/2)
-  end
-
-  defp choose_smallest(next, nil), do: next
-
-  defp choose_smallest({k1, s1, _} = next, {k2, s2, _} = prev) do
-    cond do
-      k1 == k2 and s1 > s2 -> next
-      k1 < k2 -> next
-      true -> prev
-    end
-  end
-
-  defp advance_until(iterators, target, acc \\ [])
-  defp advance_until([], _target, acc), do: Enum.reverse(acc)
-  defp advance_until(iterators, nil, _acc), do: iterators
-
-  defp advance_until([{{k, _, _}, iter, iter_f} = iterator | iterators], target, acc) do
-    if k >= target do
-      advance_until(iterators, target, [iterator | acc])
-    else
-      case iter_f.(iter) do
-        :ok -> advance_until(iterators, target, acc)
-        {next, iter} -> advance_until([{next, iter, iter_f} | iterators], target, acc)
-      end
-    end
-  end
-
-  defp advance(iterators, min, acc \\ [])
-  defp advance([], _, acc), do: Enum.reverse(acc)
-  defp advance(iterators, nil, _), do: iterators
-  defp advance(iterators, {min, _, _}, acc), do: advance(iterators, min, acc)
-
-  defp advance([{{k, _, _}, iter, iter_f} = iterator | iterators], min, acc) do
-    if k <= min do
-      case iter_f.(iter) do
-        :ok -> advance(iterators, min, acc)
-        {next, iter} -> advance([{next, iter, iter_f} | iterators], min, acc)
-      end
-    else
-      advance(iterators, min, [iterator | acc])
     end
   end
 

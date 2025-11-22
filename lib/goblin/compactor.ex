@@ -175,7 +175,7 @@ defmodule Goblin.Compactor do
         {[source], targets}
       end
 
-    clean_tombstones? = target_level_key >= Enum.max(Map.keys(levels), fn -> 0 end)
+    filter_tombstones = target_level_key >= Enum.max(Map.keys(levels), fn -> 0 end)
 
     source_ids = Enum.map(sources, & &1.id)
     target_ids = Enum.map(targets, & &1.id)
@@ -184,7 +184,7 @@ defmodule Goblin.Compactor do
       task_mod.async(task_sup, fn ->
         data =
           (sources ++ targets)
-          |> merge_stream(clean_tombstones?)
+          |> merge_stream(filter_tombstones)
           |> Stream.chunk_every(key_limit)
 
         opts = [
@@ -224,62 +224,16 @@ defmodule Goblin.Compactor do
     end
   end
 
-  defp merge_stream(ssts, clean_tombstones?) do
+  defp merge_stream(ssts, filter_tombstones) do
     Stream.resource(
       fn ->
-        Enum.map(ssts, &{SSTs.iterate(&1.id), nil})
+        next = &SSTs.iterate/1
+        Enum.map(ssts, &Goblin.Iterator.init(SSTs.iterator(&1.id), next))
       end,
-      fn cursors ->
-        cursors =
-          cursors
-          |> Enum.flat_map(&jump/1)
-          |> Enum.sort_by(fn {_, {key, seq, _}} -> {key, -seq} end)
-
-        case cursors do
-          [] ->
-            {:halt, :ok}
-
-          [{_, {smallest_key, _, :"$goblin_tombstone"}} | _] when clean_tombstones? ->
-            {[], Enum.flat_map(cursors, &skip(&1, smallest_key))}
-
-          [{_, {smallest_key, _, _} = next} | _] ->
-            {[next], Enum.flat_map(cursors, &skip(&1, smallest_key))}
-        end
-      end,
+      &Goblin.Iterator.k_merge(&1, filter_tombstones: filter_tombstones),
       fn _ -> :ok end
     )
   end
-
-  defp jump({nil, data}), do: [{nil, data}]
-
-  defp jump({iterator, nil}) do
-    case SSTs.iterate(iterator) do
-      :ok -> []
-      {data, iterator} -> jump({iterator, data})
-    end
-  end
-
-  defp jump({iterator, data}) do
-    {key, _, _} = data
-
-    case SSTs.iterate(iterator) do
-      :ok -> [{nil, data}]
-      {{^key, _, _} = data, iterator} -> jump({iterator, data})
-      _ -> [{iterator, data}]
-    end
-  end
-
-  defp skip({nil, {key, _, _}}, key), do: []
-  defp skip({nil, data}, _), do: [{nil, data}]
-
-  defp skip({iterator, {key, _, _}}, key) do
-    case SSTs.iterate(iterator) do
-      :ok -> []
-      {next, iterator} -> [{iterator, next}]
-    end
-  end
-
-  defp skip(cursor, _key), do: [cursor]
 
   defp remove_merged([]), do: :ok
 

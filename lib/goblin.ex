@@ -419,13 +419,15 @@ defmodule Goblin do
       Goblin.select(db) |> Enum.to_list()
       # => [{1, "one"}, {2, "two"}, {3, "three"}, {4, "four"}, {5, "five"}]
   """
-  @spec select(db_server(), keyword()) :: Enumerable.t()
+  @spec select(db_server(), keyword()) :: Enumerable.t(Goblin.pair())
   def select(db, opts \\ []) do
     min = opts[:min]
     max = opts[:max]
     writer = name(db, Writer)
     store = name(db, Store)
+
     Goblin.Reader.select(min, max, writer, store)
+    |> Stream.map(fn {key, _seq, value} -> {key, value} end)
   end
 
   @doc """
