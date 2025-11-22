@@ -96,7 +96,7 @@ defmodule Goblin.SSTs do
     )
   end
 
-  @spec iterate(Goblin.db_file() | iterator()) :: iterator()
+  @spec iterate(Goblin.db_file() | iterator()) :: iterator() | {Goblin.triple(), iterator()} | :ok
   def iterate({:next, disk}) do
     case read_next_key(disk) do
       {:ok, data, disk} ->
