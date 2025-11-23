@@ -187,7 +187,22 @@ defmodule Goblin.Compactor do
     {sources, targets} =
       if source_level_key == @flush_level do
         sources = Map.get(levels, source_level_key, [])
-        targets = Map.get(levels, target_level_key, [])
+
+        min_source_key =
+          sources
+          |> Enum.map(&elem(&1.key_range, 0))
+          |> Enum.min()
+
+        max_source_key =
+          sources
+          |> Enum.map(&elem(&1.key_range, 0))
+          |> Enum.max()
+
+        targets =
+          levels
+          |> Map.get(target_level_key, [])
+          |> find_overlapping({min_source_key, max_source_key})
+
         {sources, targets}
       else
         source =
