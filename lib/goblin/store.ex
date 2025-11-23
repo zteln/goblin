@@ -106,9 +106,10 @@ defmodule Goblin.Store do
   def handle_call({:put, ssts}, _from, state) do
     Enum.each(ssts, fn sst ->
       :ets.insert(state.local_name, {sst.file, sst.key_range, sst})
+      put_in_compactor(sst, state.compactor)
     end)
 
-    {:reply, :ok, state, {:continue, {:put_in_compactor, ssts}}}
+    {:reply, :ok, state}
   end
 
   def handle_call({:remove, files}, _from, state) do
@@ -125,11 +126,6 @@ defmodule Goblin.Store do
   end
 
   @impl GenServer
-  def handle_continue({:put_in_compactor, ssts}, state) do
-    Enum.each(ssts, &put_in_compactor(&1, state.compactor))
-    {:noreply, state}
-  end
-
   def handle_continue(:recover_state, state) do
     %{ssts: ssts, count: file_count} = Manifest.get_version(state.manifest, [:ssts, :count])
 
