@@ -72,7 +72,7 @@ defmodule Goblin.Writer do
   end
 
   @spec iterators(writer(), Goblin.db_key() | nil, Goblin.db_key() | nil) ::
-          {[Goblin.triple()], ([Goblin.triple()] -> {Goblin.triple(), [Goblin.triple()]} | :ok)}
+          Goblin.Iterator.iterator()
   def iterators(writer_name, min, max) do
     range = MemTable.get_range(writer_name, min, max)
 

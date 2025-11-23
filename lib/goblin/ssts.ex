@@ -111,6 +111,7 @@ defmodule Goblin.SSTs do
     end
   end
 
+  @spec iterator(Goblin.db_file()) :: iterator()
   def iterator(file) do
     disk = Disk.open!(file, start?: true)
     {:next, disk}
