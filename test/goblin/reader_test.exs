@@ -112,6 +112,11 @@ defmodule Goblin.ReaderTest do
 
       Goblin.put_multi(c.db, data)
 
+      assert_eventually do
+        assert false == Goblin.is_flushing(c.db)
+        assert false == Goblin.is_compacting(c.db)
+      end
+
       send(pid, :cont)
 
       assert_receive :done

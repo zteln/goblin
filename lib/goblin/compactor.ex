@@ -18,7 +18,8 @@ defmodule Goblin.Compactor do
     :key_limit,
     :level_limit,
     :compacting,
-    levels: %{}
+    levels: %{},
+    cleaning: []
   ]
 
   @typep compactor :: module() | {:via, Registry, {module(), module()}}
@@ -110,21 +111,49 @@ defmodule Goblin.Compactor do
   def handle_info({ref, {:ok, :compacted}}, %{compacting: {ref, _, _}} = state) do
     %{compacting: {_, source_clean_ups, target_clean_ups}} = state
 
+    {_, source_ids} = source_clean_ups
+    {_, target_ids} = target_clean_ups
+
     levels =
       state.levels
       |> clean_up(source_clean_ups)
       |> clean_up(target_clean_ups)
 
-    state = %{state | compacting: nil, levels: levels}
+    cleaning_ref = start_clean_up(state, source_ids ++ target_ids)
+    cleaning = [cleaning_ref | state.cleaning]
+
+    state = %{state | compacting: nil, levels: levels, cleaning: cleaning}
     {:noreply, state, {:continue, :maybe_compact}}
+  end
+
+  def handle_info({ref, {:ok, :cleaned}}, state) do
+    cleaning = Enum.reject(state.cleaning, &(&1 == ref))
+    state = %{state | cleaning: cleaning}
+    {:noreply, state}
   end
 
   def handle_info({ref, {:error, _reason} = error}, %{compacting: {ref, _, _}} = state) do
     {:stop, error, state}
   end
 
+  def handle_info({ref, {:error, _reason} = error}, state) do
+    if ref in state.cleaning do
+      {:stop, error, state}
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info({:DOWN, ref, _, _, reason}, %{compacting: {ref, _, _}} = state) do
     {:stop, {:error, reason}, state}
+  end
+
+  def handle_info({:DOWN, ref, _, _, reason}, state) do
+    if ref in state.cleaning do
+      {:stop, {:error, reason}, state}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -148,7 +177,6 @@ defmodule Goblin.Compactor do
       task_sup: task_sup,
       store: store,
       manifest: manifest,
-      reader: reader,
       key_limit: key_limit,
       bf_fpp: bf_fpp,
       levels: levels
@@ -200,15 +228,32 @@ defmodule Goblin.Compactor do
                  source_ids ++ target_ids,
                  Enum.map(ssts, & &1.file)
                ),
-             :ok <- Store.put(store, ssts),
-             :ok <- Reader.empty?(reader),
-             :ok <- Store.remove(store, source_ids ++ target_ids),
-             :ok <- remove_merged(source_ids ++ target_ids) do
+             :ok <- Store.put(store, ssts) do
           {:ok, :compacted}
         end
       end)
 
     {ref, {source_level_key, source_ids}, {target_level_key, target_ids}}
+  end
+
+  defp start_clean_up(state, files) do
+    %{
+      store: store,
+      reader: reader,
+      task_mod: task_mod,
+      task_sup: task_sup
+    } = state
+
+    %{ref: ref} =
+      task_mod.async(task_sup, fn ->
+        with :ok <- Reader.empty?(reader),
+             :ok <- Store.remove(store, files),
+             :ok <- remove_merged(files) do
+          {:ok, :cleaned}
+        end
+      end)
+
+    ref
   end
 
   defp find_overlapping(targets, key_range, acc \\ [])
