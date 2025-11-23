@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.1 (2025-11-23)
+* Bug fixes
+    * Writes are published on a database specific topic instead of a global topic
+    * Compaction algorithm rewritten, fixes overlapping key ranges in higher SST levels
+
 ## v0.3.0 (2025-11-21)
 * Breaking changes
     * Changed the format in the manifest file
@@ -12,7 +17,7 @@
 * Enhancements
     * Added `Goblin.stop/3` function, allows one to stop the database supervisor
     * Added read-only transactions in `Goblin.transaction/2`
-* Buf fixes
+* Bug fixes
     * Fix registry name in `Goblin.is_flushing/1` and `Goblin.is_compacting/1`
     * Fix sequence counting bug when write-transaction commits
 
