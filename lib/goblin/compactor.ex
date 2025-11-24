@@ -195,7 +195,7 @@ defmodule Goblin.Compactor do
 
         max_source_key =
           sources
-          |> Enum.map(&elem(&1.key_range, 0))
+          |> Enum.map(&elem(&1.key_range, 1))
           |> Enum.max()
 
         targets =
