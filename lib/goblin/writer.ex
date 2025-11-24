@@ -76,14 +76,14 @@ defmodule Goblin.Writer do
   def iterators(writer_name, min, max) do
     state = MemTable.get_range(writer_name, min, max)
 
-    iterator = fn
+    next = fn
       [] -> :ok
       [next | range] -> {next, range}
     end
 
-    closer = fn _ -> :ok end
+    close = fn _ -> :ok end
 
-    {state, iterator, closer}
+    {state, next, close}
   end
 
   @spec latest_commit_sequence(writer()) :: Goblin.seq_no() | -1

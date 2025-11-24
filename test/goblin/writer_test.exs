@@ -89,14 +89,14 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k2, :v2)
       put(c.writer, :k3, :v3)
 
-      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] = range, iterator, closer} =
+      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] = state, next, close} =
                Writer.iterators(@table, nil, nil)
 
-      assert {{:k1, 0, :v1}, range} = iterator.(range)
-      assert {{:k2, 1, :v2}, range} = iterator.(range)
-      assert {{:k3, 2, :v3}, range} = iterator.(range)
-      assert :ok == iterator.(range)
-      assert :ok == closer.(range)
+      assert {{:k1, 0, :v1}, state} = next.(state)
+      assert {{:k2, 1, :v2}, state} = next.(state)
+      assert {{:k3, 2, :v3}, state} = next.(state)
+      assert :ok == next.(state)
+      assert :ok == close.(state)
     end
   end
 
