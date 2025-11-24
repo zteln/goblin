@@ -1,23 +1,20 @@
 defmodule Goblin.Iterator do
   @moduledoc false
-  @type iterator :: {term(), (term() -> {Goblin.triple(), term()} | :ok)}
-  @typep cursor :: {iterator(), Goblin.triple() | nil}
+  @type iterator :: {term(), (term() -> {Goblin.triple(), term()} | :ok), (term() -> :ok)}
 
-  @spec init(term(), (term() -> {Goblin.triple(), term()})) :: cursor()
-  def init(state, next) do
-    {{state, next}, nil}
+  @spec stream_k_merge((-> [iterator()]), keyword()) :: Enumerable.t(Goblin.triple())
+  def stream_k_merge(init, opts \\ []) do
+    Stream.resource(
+      fn -> Enum.map(init.(), &{&1, nil}) end,
+      &k_merge(&1, opts),
+      &Enum.each(&1, fn
+        {{state, _, close}, _} -> close.(state)
+        _ -> :ok
+      end)
+    )
   end
 
-  @spec iterate(iterator) :: {term(), iterator()} | :ok
-  def iterate({state, next}) do
-    case next.(state) do
-      :ok -> :ok
-      {out, state} -> {out, {state, next}}
-    end
-  end
-
-  @spec k_merge([cursor()], keyword()) :: {[Goblin.triple()], [cursor()]} | {:halt, :ok}
-  def k_merge(cursors, opts) do
+  defp k_merge(cursors, opts) do
     filter_tombstones = Keyword.get(opts, :filter_tombstones, true)
     min = opts[:min]
     max = opts[:max]
@@ -29,10 +26,10 @@ defmodule Goblin.Iterator do
 
     case cursors do
       [] ->
-        {:halt, :ok}
+        {:halt, []}
 
       [{_, {smallest_key, _, _}} | _] when not is_nil(max) and smallest_key > max ->
-        {:halt, :ok}
+        {:halt, cursors}
 
       [{_, {smallest_key, _, _}} | _] when not is_nil(min) and smallest_key < min ->
         {[], Enum.flat_map(cursors, &jump(&1, smallest_key))}
@@ -42,6 +39,13 @@ defmodule Goblin.Iterator do
 
       [{_, {smallest_key, _, _} = next} | _] ->
         {[next], Enum.flat_map(cursors, &jump(&1, smallest_key))}
+    end
+  end
+
+  defp iterate({state, next, close}) do
+    case next.(state) do
+      :ok -> close.(state)
+      {out, state} -> {out, {state, next, close}}
     end
   end
 

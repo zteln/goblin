@@ -285,13 +285,9 @@ defmodule Goblin.Compactor do
   end
 
   defp merge_stream(ssts, filter_tombstones) do
-    Stream.resource(
-      fn ->
-        next = &SSTs.iterate/1
-        Enum.map(ssts, &Goblin.Iterator.init(SSTs.iterator(&1.id), next))
-      end,
-      &Goblin.Iterator.k_merge(&1, filter_tombstones: filter_tombstones),
-      fn _ -> :ok end
+    Goblin.Iterator.stream_k_merge(
+      fn -> Enum.map(ssts, &SSTs.iterator(&1.id)) end,
+      filter_tombstones: filter_tombstones
     )
   end
 

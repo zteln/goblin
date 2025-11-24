@@ -76,17 +76,14 @@ defmodule Goblin.Reader do
           Goblin.Store.store()
         ) :: Enumerable.t(Goblin.pair())
   def select(min, max, writer, store) do
-    Stream.resource(
+    Goblin.Iterator.stream_k_merge(
       fn ->
         mem_iterators = Writer.iterators(writer, min, max)
         sst_iterators = Store.iterators(store, min, max)
-
-        Enum.map([mem_iterators | sst_iterators], fn {data, next} ->
-          Goblin.Iterator.init(data, next)
-        end)
+        [mem_iterators | sst_iterators]
       end,
-      &Goblin.Iterator.k_merge(&1, min: min, max: max),
-      fn _ -> :ok end
+      min: min,
+      max: max
     )
   end
 

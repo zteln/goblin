@@ -95,14 +95,14 @@ defmodule Goblin.SSTs do
     )
   end
 
-  @spec iterate(iterator()) :: iterator() | {Goblin.triple(), iterator()} | :ok
-  def iterate({:next, disk}) do
+  @spec iterate(Disk.t()) :: {Goblin.triple(), Disk.t()} | :ok
+  def iterate(disk) do
     case read_next_key(disk) do
       {:ok, data, disk} ->
-        {data, {:next, disk}}
+        {data, disk}
 
       {:error, :eod} ->
-        Disk.close(disk)
+        # Disk.close(disk)
         :ok
 
       _e ->
@@ -111,10 +111,10 @@ defmodule Goblin.SSTs do
     end
   end
 
-  @spec iterator(Goblin.db_file()) :: iterator()
+  @spec iterator(Goblin.db_file()) :: Goblin.Iterator.iterator()
   def iterator(file) do
     disk = Disk.open!(file, start?: true)
-    {:next, disk}
+    {disk, &iterate/1, &Disk.close/1}
   end
 
   defp write_streams(streams, level_key, opts, acc \\ [])

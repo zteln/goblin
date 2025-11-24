@@ -63,14 +63,14 @@ defmodule Goblin.WriterTest do
 
   describe "iterators/3" do
     test "returns empty range if MemTable is empty" do
-      assert {[], _} = Writer.iterators(@table, nil, nil)
+      assert {[], _, _} = Writer.iterators(@table, nil, nil)
     end
 
     test "returns iterator over MemTable data", c do
       put(c.writer, :k1, :v1)
       put(c.writer, :k2, :v2)
 
-      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} =
+      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _, _} =
                Writer.iterators(@table, nil, nil)
     end
 
@@ -79,9 +79,9 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k2, :v2)
       put(c.writer, :k3, :v3)
 
-      assert {[{:k2, 1, :v2}], _} = Writer.iterators(@table, :k2, :k2)
-      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _} = Writer.iterators(@table, nil, :k2)
-      assert {[{:k2, 1, :v2}, {:k3, 2, :v3}], _} = Writer.iterators(@table, :k2, nil)
+      assert {[{:k2, 1, :v2}], _, _} = Writer.iterators(@table, :k2, :k2)
+      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}], _, _} = Writer.iterators(@table, nil, :k2)
+      assert {[{:k2, 1, :v2}, {:k3, 2, :v3}], _, _} = Writer.iterators(@table, :k2, nil)
     end
 
     test "iterates over provided range", c do
@@ -89,13 +89,14 @@ defmodule Goblin.WriterTest do
       put(c.writer, :k2, :v2)
       put(c.writer, :k3, :v3)
 
-      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] = range, iter_f} =
+      assert {[{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] = range, iterator, closer} =
                Writer.iterators(@table, nil, nil)
 
-      assert {{:k1, 0, :v1}, range} = iter_f.(range)
-      assert {{:k2, 1, :v2}, range} = iter_f.(range)
-      assert {{:k3, 2, :v3}, range} = iter_f.(range)
-      assert :ok == iter_f.(range)
+      assert {{:k1, 0, :v1}, range} = iterator.(range)
+      assert {{:k2, 1, :v2}, range} = iterator.(range)
+      assert {{:k3, 2, :v3}, range} = iterator.(range)
+      assert :ok == iterator.(range)
+      assert :ok == closer.(range)
     end
   end
 

@@ -67,10 +67,7 @@ defmodule Goblin.Store do
     ms = [{{:"$1", {:"$2", :"$3"}, :_}, guard, [:"$1"]}]
 
     :ets.select(store, ms)
-    |> Enum.map(fn file ->
-      iter_f = fn iter -> SSTs.iterate(iter) end
-      {SSTs.iterator(file), iter_f}
-    end)
+    |> Enum.map(&SSTs.iterator/1)
   end
 
   @spec put(store(), [SSTs.SST.t()]) :: :ok
