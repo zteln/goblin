@@ -9,7 +9,7 @@ defmodule Goblin.Writer.MemTable do
 
   @spec size(t()) :: non_neg_integer()
   def size(table) do
-    :ets.info(table, :size) - 2
+    :ets.info(table, :memory) * :erlang.system_info(:wordsize)
   end
 
   @spec put_commit_seq(t(), Goblin.seq_no()) :: true

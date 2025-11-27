@@ -1,6 +1,5 @@
 defmodule Goblin.BloomFilter do
   @moduledoc false
-  @default_fpp 0.05
 
   @derive {Inspect, except: [:array]}
   defstruct [
@@ -18,9 +17,8 @@ defmodule Goblin.BloomFilter do
   def put(bf, key), do: %{bf | set: MapSet.put(bf.set, key)}
 
   @spec generate(t(), number()) :: t()
-  def generate(bf, fpp \\ nil) do
+  def generate(bf, fpp) do
     size = MapSet.size(bf.set)
-    fpp = fpp || @default_fpp
 
     for key <- MapSet.to_list(bf.set), reduce: init(size, fpp) do
       acc ->

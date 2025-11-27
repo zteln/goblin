@@ -15,8 +15,10 @@ defmodule Goblin.Compactor do
     :reader,
     :task_sup,
     :task_mod,
-    :key_limit,
-    :level_limit,
+    :flush_level_file_limit,
+    :max_sst_size,
+    :level_base_size,
+    :level_size_multiplier,
     :compacting,
     levels: %{},
     cleaning: []
@@ -32,8 +34,10 @@ defmodule Goblin.Compactor do
         :store,
         :manifest,
         :reader,
-        :key_limit,
-        :level_limit,
+        :flush_level_file_limit,
+        :max_sst_size,
+        :level_base_size,
+        :level_size_multiplier,
         :task_sup,
         :task_mod
       ])
@@ -66,8 +70,10 @@ defmodule Goblin.Compactor do
        store: args[:store],
        manifest: args[:manifest],
        reader: args[:reader],
-       key_limit: args[:key_limit],
-       level_limit: args[:level_limit],
+       flush_level_file_limit: args[:flush_level_file_limit],
+       max_sst_size: args[:max_sst_size],
+       level_base_size: args[:level_base_size],
+       level_size_multiplier: args[:level_size_multiplier],
        task_sup: args[:task_sup],
        task_mod: args[:task_mod] || Task.Supervisor
      }}
@@ -163,7 +169,13 @@ defmodule Goblin.Compactor do
   defp maybe_compact(state, [level_key | level_keys]) do
     level = Map.get(state.levels, level_key, [])
 
-    if exceeding_level_limit?(level, level_key, state.level_limit) do
+    if exceeding_level_limit?(
+         level,
+         level_key,
+         state.flush_level_file_limit,
+         state.level_base_size,
+         state.level_size_multiplier
+       ) do
       compacting_ref = compact(state, level_key)
       %{state | compacting: compacting_ref}
     else
@@ -177,7 +189,7 @@ defmodule Goblin.Compactor do
       task_sup: task_sup,
       store: store,
       manifest: manifest,
-      key_limit: key_limit,
+      max_sst_size: max_sst_size,
       bf_fpp: bf_fpp,
       levels: levels
     } = state
@@ -225,18 +237,17 @@ defmodule Goblin.Compactor do
 
     %{ref: ref} =
       task_mod.async(task_sup, fn ->
-        data =
-          (sources ++ targets)
-          |> merge_stream(filter_tombstones)
-          |> Stream.chunk_every(key_limit)
-
         opts = [
+          level_key: target_level_key,
           file_getter: fn -> Store.new_file(store) end,
           bf_fpp: bf_fpp,
-          compress?: target_level_key > 1
+          compress?: target_level_key > 1,
+          max_sst_size: max_sst_size
         ]
 
-        with {:ok, ssts} <- SSTs.new([data], target_level_key, opts),
+        data = merge_stream(sources ++ targets, filter_tombstones)
+
+        with {:ok, ssts} <- SSTs.new(data, opts),
              :ok <-
                Manifest.log_compaction(
                  manifest,
@@ -311,7 +322,23 @@ defmodule Goblin.Compactor do
     end
   end
 
-  defp exceeding_level_limit?(level, level_key, level_limit) do
-    Enum.sum_by(level, & &1.size) >= level_limit * 10 ** level_key
+  defp exceeding_level_limit?(
+         level,
+         @flush_level,
+         flush_level_file_limit,
+         _level_base_size,
+         _level_size_multiplier
+       ) do
+    Enum.count(level) >= flush_level_file_limit
+  end
+
+  defp exceeding_level_limit?(
+         level,
+         level_key,
+         _flush_level_file_limit,
+         level_base_size,
+         level_size_multiplier
+       ) do
+    Enum.sum_by(level, & &1.size) >= level_base_size * level_size_multiplier ** level_key
   end
 end

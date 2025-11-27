@@ -2,8 +2,11 @@ defmodule Goblin.ProcessSupervisor do
   @moduledoc false
   use Supervisor
 
-  @default_key_limit 50_000
-  @default_level_limit 128 * 1024 * 1024
+  @default_flush_level_file_limit 4
+  @default_mem_limit 64 * 1024 * 1024
+  @default_level_base_size 256 * 1024 * 1024
+  @default_level_size_multiplier 10
+  @default_bf_fpp 0.01
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
@@ -13,8 +16,12 @@ defmodule Goblin.ProcessSupervisor do
   @impl true
   def init(args) do
     db_dir = args[:db_dir]
-    key_limit = args[:key_limit] || @default_key_limit
-    level_limit = args[:level_limit] || @default_level_limit
+    flush_level_file_limit = args[:flush_level_file_limit] || @default_flush_level_file_limit
+    mem_limit = args[:mem_limit] || @default_mem_limit
+    level_base_size = args[:level_base_size] || @default_level_base_size
+    level_size_multiplier = args[:level_size_multiplier] || @default_level_size_multiplier
+    bf_fpp = args[:bf_fpp] || @default_bf_fpp
+    max_sst_size = div(level_base_size, 10)
     pub_sub = args[:pub_sub]
 
     %{
@@ -59,8 +66,11 @@ defmodule Goblin.ProcessSupervisor do
          reader: reader_name,
          manifest: manifest_name,
          task_sup: task_sup_name,
-         key_limit: key_limit,
-         level_limit: level_limit
+         bf_fpp: bf_fpp,
+         max_sst_size: max_sst_size,
+         flush_level_file_limit: flush_level_file_limit,
+         level_base_size: level_base_size,
+         level_size_multiplier: level_size_multiplier
        )},
       {Goblin.Store,
        Keyword.merge(args,
@@ -80,7 +90,9 @@ defmodule Goblin.ProcessSupervisor do
          wal: wal_name,
          pub_sub: pub_sub,
          task_sup: task_sup_name,
-         key_limit: key_limit
+         bf_fpp: bf_fpp,
+         max_sst_size: max_sst_size,
+         mem_limit: mem_limit
        )}
     ]
 

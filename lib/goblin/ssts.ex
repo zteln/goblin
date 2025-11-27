@@ -6,17 +6,23 @@ defmodule Goblin.SSTs do
 
   @tmp_suffix ".tmp"
 
-  @type iterator :: {:next, Disk.t()}
-  @type new_sst_opts :: [
-          file_getter: (-> Goblin.db_file()),
-          bf_fpp: number()
-        ]
+  @spec new(Enumerable.t(Goblin.triple()), keyword()) :: {:ok, [SST.t()]} | {:error, term()}
+  def new(data, opts) do
+    file = opts[:file_getter].()
+    tmp_file = tmp_file(file)
+    acc = new_write_acc(tmp_file, file)
+    moves = [{tmp_file, file}]
+    ssts = []
 
-  @spec new([Enumerable.t(Goblin.triple())], Goblin.db_level_key(), new_sst_opts()) ::
-          {:ok, [SST.t()]} | {:error, term()}
-  def new(streams, level_key, opts) do
-    with {:ok, new} <- write_streams(streams, level_key, opts) do
-      switch(new)
+    with {:ok, acc, moves, ssts} <-
+           Enum.reduce_while(
+             data,
+             {:ok, acc, moves, ssts},
+             &sst_write_reducer(&1, &2, opts[:max_sst_size], opts)
+           ),
+         {:ok, sst} <- append_metadata(acc, opts),
+         :ok <- switch(moves) do
+      {:ok, Enum.reverse([sst | ssts])}
     end
   end
 
@@ -117,51 +123,98 @@ defmodule Goblin.SSTs do
     {disk, &iterate/1, &Disk.close/1}
   end
 
-  defp write_streams(streams, level_key, opts, acc \\ [])
-  defp write_streams([], _level_key, _opts, acc), do: {:ok, acc}
+  defp new_write_acc(tmp_file, file) do
+    %{
+      file: file,
+      disk: Disk.open!(tmp_file, write?: true),
+      size: 0,
+      no_of_blocks: 0,
+      key_range: {nil, nil},
+      seq_range: {nil, 0},
+      bloom_filter: BloomFilter.new(),
+      crc: :erlang.crc32(<<>>)
+    }
+  end
 
-  defp write_streams([stream | rest], level_key, opts, acc) do
-    with {:ok, new} <- write_stream(stream, level_key, opts) do
-      write_streams(rest, level_key, opts, new ++ acc)
+  defp sst_write_reducer(triple, {:ok, %{size: size} = acc, moves, ssts}, max_sst_size, opts)
+       when size >= max_sst_size do
+    file = opts[:file_getter].()
+    tmp_file = tmp_file(file)
+    new_acc = new_write_acc(tmp_file, file)
+
+    with {:ok, sst} <- append_metadata(acc, opts),
+         {:ok, acc} <- append_data(triple, new_acc, opts) do
+      {:cont, {:ok, acc, [{tmp_file, file} | moves], [sst | ssts]}}
+    else
+      error -> {:halt, error}
     end
   end
 
-  defp write_stream(stream, level_key, opts) do
-    file_getter = opts[:file_getter]
-
-    Enum.reduce_while(stream, {:ok, []}, fn chunk, {:ok, acc} ->
-      file = file_getter.()
-      tmp_file = tmp_file(file)
-
-      case write(tmp_file, level_key, chunk, opts) do
-        {:ok, sst} ->
-          {:cont, {:ok, [{tmp_file, file, sst} | acc]}}
-
-        {:error, _reason} = error ->
-          {:halt, error}
-      end
-    end)
+  defp sst_write_reducer(triple, {:ok, acc, moves, ssts}, _max_sst_size, opts) do
+    case append_data(triple, acc, opts) do
+      {:ok, acc} -> {:cont, {:ok, acc, moves, ssts}}
+      error -> {:halt, error}
+    end
   end
 
-  defp write(file, level_key, data, opts) do
-    disk = Disk.open!(file, write?: true)
+  defp append_data({k, seq, v}, acc, opts) do
+    compress? = opts[:compress?] || false
+    block = SST.encode_block(k, seq, v, compress?)
+    block_size = byte_size(block)
+    span = SST.span(block_size)
+    {min_seq, max_seq} = acc.seq_range
+    min_seq = if is_nil(min_seq), do: seq, else: min(min_seq, seq)
+    max_seq = max(max_seq, seq)
+    {min_key, _max_key} = acc.key_range
+    min_key = if min_key, do: min_key, else: k
+    max_key = k
+    bloom_filter = BloomFilter.put(acc.bloom_filter, k)
+    crc = :erlang.crc32(acc.crc, block)
 
-    result =
-      with {:ok, _disk, bloom_filter, seq_range, size, key_range} <-
-             write_sst(disk, level_key, data, opts) do
-        {:ok,
-         %SST{
-           bloom_filter: bloom_filter,
-           level_key: level_key,
-           seq_range: seq_range,
-           size: size,
-           key_range: key_range
-         }}
-      end
+    with {:ok, disk} <- Disk.write(acc.disk, block) do
+      acc = %{
+        acc
+        | no_of_blocks: acc.no_of_blocks + span,
+          key_range: {min_key, max_key},
+          seq_range: {min_seq, max_seq},
+          bloom_filter: bloom_filter,
+          size: acc.size + block_size,
+          crc: crc,
+          disk: disk
+      }
 
-    Disk.sync(disk)
-    Disk.close(disk)
-    result
+      {:ok, acc}
+    end
+  end
+
+  defp append_metadata(acc, opts) do
+    bf = BloomFilter.generate(acc.bloom_filter, opts[:bf_fpp])
+
+    footer =
+      SST.encode_footer(
+        opts[:level_key],
+        bf,
+        acc.key_range,
+        acc.seq_range,
+        acc.disk.offset,
+        acc.no_of_blocks,
+        acc.size,
+        acc.crc,
+        opts[:compress?] || false
+      )
+
+    with {:ok, disk} <- Disk.write(acc.disk, footer),
+         :ok <- Disk.close(disk) do
+      {:ok,
+       %SST{
+         file: acc.file,
+         level_key: opts[:level_key],
+         bloom_filter: bf,
+         seq_range: acc.seq_range,
+         key_range: acc.key_range,
+         size: acc.size + byte_size(footer)
+       }}
+    end
   end
 
   defp search_sst(disk, key) do
@@ -256,94 +309,11 @@ defmodule Goblin.SSTs do
     end
   end
 
-  defp write_sst(disk, level_key, data, opts) do
-    with {:ok, disk, data} <- write_data(disk, data, opts),
-         {:ok, disk, bloom_filter, meta_size} <- write_meta(disk, level_key, data, opts) do
-      {:ok, disk, bloom_filter, data.seq_range, data.size + meta_size, data.key_range}
-    end
-  end
+  defp switch([]), do: :ok
 
-  defp write_data(disk, data, opts) do
-    compress? = opts[:compress?] || false
-
-    init = %{
-      no_of_blocks: 0,
-      key_range: {nil, nil},
-      seq_range: {nil, 0},
-      bloom_filter: BloomFilter.new(),
-      size: 0,
-      crc: :erlang.crc32(<<>>)
-    }
-
-    Enum.reduce_while(data, {:ok, disk, init}, fn {k, seq, v}, {:ok, disk, acc} ->
-      block = SST.encode_block(k, seq, v, compress?)
-      block_size = byte_size(block)
-      span = SST.span(block_size)
-      {min_seq, max_seq} = acc.seq_range
-
-      min_seq =
-        if is_nil(min_seq) do
-          seq
-        else
-          min(min_seq, seq)
-        end
-
-      max_seq = max(max_seq, seq)
-      {min_key, _max_key} = acc.key_range
-      min_key = if min_key, do: min_key, else: k
-      max_key = k
-      bloom_filter = BloomFilter.put(acc.bloom_filter, k)
-      crc = :erlang.crc32(acc.crc, block)
-
-      case Disk.write(disk, block) do
-        {:ok, disk} ->
-          acc = %{
-            acc
-            | no_of_blocks: acc.no_of_blocks + span,
-              key_range: {min_key, max_key},
-              seq_range: {min_seq, max_seq},
-              bloom_filter: bloom_filter,
-              size: acc.size + block_size,
-              crc: crc
-          }
-
-          {:cont, {:ok, disk, acc}}
-
-        error ->
-          {:halt, error}
-      end
-    end)
-  end
-
-  defp write_meta(disk, level_key, data, opts) do
-    bf_fpp = opts[:bf_fpp]
-    compress? = opts[:compress?] || false
-    bloom_filter = BloomFilter.generate(data.bloom_filter, bf_fpp)
-
-    footer =
-      SST.encode_footer(
-        level_key,
-        bloom_filter,
-        data.key_range,
-        data.seq_range,
-        disk.offset,
-        data.no_of_blocks,
-        data.size,
-        data.crc,
-        compress?
-      )
-
-    with {:ok, disk} <- Disk.write(disk, footer) do
-      {:ok, disk, bloom_filter, byte_size(footer)}
-    end
-  end
-
-  defp switch(to_switch, acc \\ [])
-  defp switch([], acc), do: {:ok, acc}
-
-  defp switch([{from, to, sst} | to_switch], acc) do
+  defp switch([{from, to} | to_switch]) do
     with :ok <- Disk.rename(from, to) do
-      switch(to_switch, [%{sst | file: to} | acc])
+      switch(to_switch)
     end
   end
 

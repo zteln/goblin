@@ -21,7 +21,8 @@ defmodule Goblin.Writer do
     :pub_sub,
     :task_sup,
     :task_mod,
-    :key_limit,
+    :mem_limit,
+    :max_sst_size,
     :mem_table,
     :writer,
     :flushing,
@@ -44,7 +45,8 @@ defmodule Goblin.Writer do
         :pub_sub,
         :task_sup,
         :task_mod,
-        :key_limit
+        :mem_limit,
+        :max_sst_size
       ])
       |> Keyword.merge(local_name: local_name)
 
@@ -142,7 +144,8 @@ defmodule Goblin.Writer do
        pub_sub: args[:pub_sub],
        task_sup: args[:task_sup],
        task_mod: args[:task_mod] || Task.Supervisor,
-       key_limit: args[:key_limit],
+       mem_limit: args[:mem_limit],
+       max_sst_size: args[:max_sst_size],
        mem_table: MemTable.new(args[:local_name])
      }, {:continue, :recover_state}}
   end
@@ -266,10 +269,11 @@ defmodule Goblin.Writer do
     %{
       seq: seq,
       mem_table: mem_table,
-      key_limit: key_limit
+      mem_limit: mem_limit
+      # key_limit: key_limit
     } = state
 
-    if MemTable.size(mem_table) >= key_limit do
+    if MemTable.size(mem_table) >= mem_limit do
       with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
         ref = flush(state, seq - 1, rotated_wal)
         state = %{state | flushing: {ref, seq - 1, rotated_wal}}
@@ -309,25 +313,25 @@ defmodule Goblin.Writer do
       wal: wal,
       task_sup: task_sup,
       task_mod: task_mod,
-      key_limit: key_limit
+      max_sst_size: max_sst_size
     } = state
 
     %{ref: ref} =
       task_mod.async(task_sup, fn ->
-        data =
-          MemTable.get_seq_range(mem_table, seq)
-          |> Enum.chunk_every(key_limit)
-
         opts = [
+          level_key: @flush_level,
           file_getter: fn -> Store.new_file(store) end,
           bf_fpp: bf_fpp,
-          compress?: false
+          compress?: false,
+          max_sst_size: max_sst_size
         ]
 
-        with {:ok, flushed} <- SSTs.new([data], @flush_level, opts),
-             :ok <- Manifest.log_flush(manifest, Enum.map(flushed, & &1.file), rotated_wal),
+        data = MemTable.get_seq_range(mem_table, seq)
+
+        with {:ok, ssts} <- SSTs.new(data, opts),
+             :ok <- Manifest.log_flush(manifest, Enum.map(ssts, & &1.file), rotated_wal),
              :ok <- WAL.clean(wal, rotated_wal),
-             :ok <- Store.put(store, flushed) do
+             :ok <- Store.put(store, ssts) do
           {:ok, :flushed}
         end
       end)
