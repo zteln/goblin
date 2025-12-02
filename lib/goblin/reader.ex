@@ -167,7 +167,7 @@ defmodule Goblin.Reader do
   end
 
   defp read_ssts(key, ssts, max_seq) do
-    Task.async_stream(ssts, &SSTs.find(&1.file, key))
+    Task.async_stream(ssts, &DiskTable.find(&1, key))
     |> Stream.map(fn {:ok, res} -> res end)
     |> Stream.filter(&match?({:ok, _}, &1))
     |> Stream.map(fn {:ok, res} -> res end)

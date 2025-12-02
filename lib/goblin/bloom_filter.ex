@@ -35,10 +35,10 @@ defmodule Goblin.BloomFilter do
   end
 
   defp init(size, fpp) do
-    no_of_bits = no_of_bits(size, fpp)
-    no_of_hashes = no_of_hashes(size, no_of_bits)
-    hashes = hashes(no_of_hashes, no_of_bits)
-    array = :array.new(no_of_bits, default: 0)
+    no_bits = no_bits(size, fpp)
+    no_hashes = no_hashes(size, no_bits)
+    hashes = hashes(no_hashes, no_bits)
+    array = :array.new(no_bits, default: 0)
     %__MODULE__{hashes: hashes, array: array}
   end
 
@@ -51,12 +51,12 @@ defmodule Goblin.BloomFilter do
     end
   end
 
-  defp no_of_bits(size, fpp) do
+  defp no_bits(size, fpp) do
     floor(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
   end
 
-  defp no_of_hashes(size, no_of_bits) do
-    round(no_of_bits / size * :math.log(2))
+  defp no_hashes(size, no_bits) do
+    round(no_bits / size * :math.log(2))
   end
 
   defp hashes(salt, range, hashes \\ [])

@@ -44,14 +44,14 @@ defmodule Goblin.WALTest do
 
   describe "rotate/2" do
     test "rotates log and opens new", c do
-      no_of_files = length(File.ls!(c.tmp_dir))
+      no_files = length(File.ls!(c.tmp_dir))
       WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
 
       assert {:ok, rotation, _current} = WAL.rotate(c.wal)
 
       WAL.append(c.wal, [{:put, 2, 2, 2}])
 
-      assert no_of_files + 1 == length(File.ls!(c.tmp_dir))
+      assert no_files + 1 == length(File.ls!(c.tmp_dir))
 
       assert {:ok, [{^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}, {nil, [{:put, 2, 2, 2}]}]} =
                WAL.recover(c.wal)
@@ -61,7 +61,7 @@ defmodule Goblin.WALTest do
   describe "clean/2" do
     test "removes rotated wal from disk and state", c do
       {:ok, rotation, _current} = WAL.rotate(c.wal)
-      no_of_files = length(File.ls!(c.tmp_dir))
+      no_files = length(File.ls!(c.tmp_dir))
 
       assert %{rotations: [_]} = :sys.get_state(c.wal)
 
@@ -71,7 +71,7 @@ defmodule Goblin.WALTest do
         assert %{rotations: []} = :sys.get_state(c.wal)
       end
 
-      assert no_of_files - 1 == length(File.ls!(c.tmp_dir))
+      assert no_files - 1 == length(File.ls!(c.tmp_dir))
     end
 
     test "waits until there are no active readers", c do
