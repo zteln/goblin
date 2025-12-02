@@ -1,4 +1,4 @@
-defmodule Goblin.SSTs.Disk do
+defmodule Goblin.DiskTable.IOHandler do
   @moduledoc false
   defstruct [
     :io,

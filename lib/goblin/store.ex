@@ -4,7 +4,7 @@ defmodule Goblin.Store do
   alias Goblin.Compactor
   alias Goblin.Manifest
   alias Goblin.BloomFilter
-  alias Goblin.SSTs
+  alias Goblin.DiskTable
 
   @file_suffix ".goblin"
 
@@ -32,7 +32,7 @@ defmodule Goblin.Store do
     GenServer.start_link(__MODULE__, args, name: name)
   end
 
-  @spec get(store(), Goblin.db_key()) :: {Goblin.db_key(), [Goblin.SSTs.SST.t()]}
+  @spec get(store(), Goblin.db_key()) :: {Goblin.db_key(), [Goblin.DiskTable.SST.t()]}
   def get(store, key) do
     wait_until_store_ready(store)
 
@@ -40,7 +40,7 @@ defmodule Goblin.Store do
     {key, ssts}
   end
 
-  @spec get_multi(store(), [Goblin.db_key()]) :: [{Goblin.db_key(), [Goblin.SSTs.SST.t()]}]
+  @spec get_multi(store(), [Goblin.db_key()]) :: [{Goblin.db_key(), [Goblin.DiskTable.SST.t()]}]
   def get_multi(store, keys) do
     wait_until_store_ready(store)
 
@@ -50,8 +50,8 @@ defmodule Goblin.Store do
   end
 
   @spec iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
-          {Goblin.SSTs.iterator(),
-           (Goblin.SSTs.iterator() -> {Goblin.triple(), Goblin.SSTs.iterator()})}
+          {Goblin.DiskTable.iterator(),
+           (Goblin.DiskTable.iterator() -> {Goblin.triple(), Goblin.DiskTable.iterator()})}
         ]
   def iterators(store, min, max) do
     wait_until_store_ready(store)
@@ -67,10 +67,10 @@ defmodule Goblin.Store do
     ms = [{{:"$1", {:"$2", :"$3"}, :_}, guard, [:"$1"]}]
 
     :ets.select(store, ms)
-    |> Enum.map(&SSTs.iterator/1)
+    |> Enum.map(&DiskTable.iterator/1)
   end
 
-  @spec put(store(), [SSTs.SST.t()]) :: :ok
+  @spec put(store(), [DiskTable.SST.t()]) :: :ok
   def put(store, ssts) do
     GenServer.call(store, {:put, ssts})
   end
@@ -138,7 +138,7 @@ defmodule Goblin.Store do
   end
 
   defp recover_ssts([file | files], table_name, compactor) do
-    with {:ok, sst} <- SSTs.fetch_sst(file) do
+    with {:ok, sst} <- DiskTable.fetch_sst(file) do
       :ets.insert(table_name, {file, sst.key_range, sst})
       put_in_compactor(sst, compactor)
       recover_ssts(files, table_name, compactor)

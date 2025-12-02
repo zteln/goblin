@@ -6,7 +6,7 @@ defmodule Goblin.Writer do
   alias Goblin.Store
   alias Goblin.WAL
   alias Goblin.Manifest
-  alias Goblin.SSTs
+  alias Goblin.DiskTable
   alias Goblin.PubSub
 
   @flush_level 0
@@ -328,7 +328,7 @@ defmodule Goblin.Writer do
 
         data = MemTable.get_seq_range(mem_table, seq)
 
-        with {:ok, ssts} <- SSTs.new(data, opts),
+        with {:ok, ssts} <- DiskTable.new(data, opts),
              :ok <- Manifest.log_flush(manifest, Enum.map(ssts, & &1.file), rotated_wal),
              :ok <- WAL.clean(wal, rotated_wal),
              :ok <- Store.put(store, ssts) do

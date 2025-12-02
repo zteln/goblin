@@ -1,7 +1,7 @@
 defmodule Goblin.Reader do
   @moduledoc false
   use GenServer
-  alias Goblin.SSTs
+  alias Goblin.DiskTable
   alias Goblin.Writer
   alias Goblin.Store
   alias Goblin.Reader.Transaction

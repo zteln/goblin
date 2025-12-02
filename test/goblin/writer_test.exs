@@ -204,7 +204,7 @@ defmodule Goblin.WriterTest do
         assert [sst_file] = Enum.filter(files, &String.match?(&1, ~r/^\d+\.goblin$/))
 
         assert {:ok, %{seq_range: {0, 9}, key_range: {:k1, :k9}}} =
-                 Goblin.SSTs.fetch_sst(Path.join(c.tmp_dir, sst_file))
+                 Goblin.DiskTable.fetch_sst(Path.join(c.tmp_dir, sst_file))
       end
 
       for n <- 1..10 do

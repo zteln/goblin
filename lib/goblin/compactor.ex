@@ -1,7 +1,7 @@
 defmodule Goblin.Compactor do
   @moduledoc false
   use GenServer
-  alias Goblin.SSTs
+  alias Goblin.DiskTable
   alias Goblin.Store
   alias Goblin.Manifest
   alias Goblin.Reader
@@ -247,7 +247,7 @@ defmodule Goblin.Compactor do
 
         data = merge_stream(sources ++ targets, filter_tombstones)
 
-        with {:ok, ssts} <- SSTs.new(data, opts),
+        with {:ok, ssts} <- DiskTable.new(data, opts),
              :ok <-
                Manifest.log_compaction(
                  manifest,
@@ -297,7 +297,7 @@ defmodule Goblin.Compactor do
 
   defp merge_stream(ssts, filter_tombstones) do
     Goblin.Iterator.stream_k_merge(
-      fn -> Enum.map(ssts, &SSTs.iterator(&1.id)) end,
+      fn -> Enum.map(ssts, &DiskTable.iterator(&1.id)) end,
       filter_tombstones: filter_tombstones
     )
   end
@@ -305,7 +305,7 @@ defmodule Goblin.Compactor do
   defp remove_merged([]), do: :ok
 
   defp remove_merged([file | files]) do
-    with :ok <- SSTs.delete(file) do
+    with :ok <- DiskTable.delete(file) do
       remove_merged(files)
     end
   end

@@ -1,6 +1,6 @@
-defmodule Goblin.SSTs.SSTTest do
+defmodule Goblin.DiskTable.SSTTest do
   use ExUnit.Case, async: true
-  alias Goblin.SSTs.SST
+  alias Goblin.DiskTable.SST
   alias Goblin.BloomFilter
 
   describe "is_ss_table/1" do
@@ -158,7 +158,7 @@ defmodule Goblin.SSTs.SSTTest do
       key_range = {"a", "z"}
       seq_range = {123, 456}
       offset = 5120
-      no_of_blocks = 10
+      no_blocks = 10
       size = 5120
       crc = 123
 
@@ -169,7 +169,7 @@ defmodule Goblin.SSTs.SSTTest do
           key_range,
           seq_range,
           offset,
-          no_of_blocks,
+          no_blocks,
           size,
           crc,
           false
@@ -190,7 +190,7 @@ defmodule Goblin.SSTs.SSTTest do
                 key_range_size,
                 seq_range_pos,
                 seq_range_size,
-                ^no_of_blocks,
+                ^no_blocks,
                 total_size,
                 ^offset,
                 ^crc
@@ -262,7 +262,7 @@ defmodule Goblin.SSTs.SSTTest do
       key_range = {"aaa", "zzz"}
       seq_range = {123, 456}
       offset = 2048
-      no_of_blocks = 4
+      no_blocks = 4
       size = 2048
       crc = 123
 
@@ -273,7 +273,7 @@ defmodule Goblin.SSTs.SSTTest do
           key_range,
           seq_range,
           offset,
-          no_of_blocks,
+          no_blocks,
           size,
           crc,
           false
@@ -291,7 +291,7 @@ defmodule Goblin.SSTs.SSTTest do
                 key_range_size,
                 seq_range_pos,
                 seq_range_size,
-                ^no_of_blocks,
+                ^no_blocks,
                 _total_size,
                 ^offset,
                 ^crc

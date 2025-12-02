@@ -27,7 +27,7 @@ defmodule Goblin.CompactorTest do
         assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
 
         assert [{"k1", 2, "v2"}, {"k2", 4, "w1"}, {"k3", 5, "u0"}] ==
-                 Goblin.SSTs.stream!(entry.id) |> Enum.to_list()
+                 Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)
       end
@@ -62,7 +62,7 @@ defmodule Goblin.CompactorTest do
                  {"k1", 6, "v3"},
                  {"k2", 8, "w1"},
                  {"k3", 4, "u2"}
-               ] = Goblin.SSTs.stream!(entry.id) |> Enum.to_list()
+               ] = Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)
       end
@@ -107,13 +107,13 @@ defmodule Goblin.CompactorTest do
                  {"k2", 10, "w3"},
                  {"k3", 12, "u4"},
                  {"k4", 13, "x0"}
-               ] = Goblin.SSTs.stream!(entry.id) |> Enum.to_list()
+               ] = Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)
       end
     end
 
-    test "SST in one level above flush level is merged with overlapping SSTs in level above",
+    test "SST in one level above flush level is merged with overlapping DiskTable in level above",
          c do
       file1 = Path.join(c.tmp_dir, "foo1")
       file2 = Path.join(c.tmp_dir, "foo2")
@@ -144,13 +144,13 @@ defmodule Goblin.CompactorTest do
                  {"k1", 8, "v3"},
                  {"k2", 10, "w3"},
                  {"k3", 5, "u2"}
-               ] = Goblin.SSTs.stream!(entry.id) |> Enum.to_list()
+               ] = Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 1)
       end
     end
 
-    test "SSTs with no overlapping keys are not merged", c do
+    test "DiskTable with no overlapping keys are not merged", c do
       file1 = Path.join(c.tmp_dir, "foo1")
       file2 = Path.join(c.tmp_dir, "foo2")
 
@@ -175,13 +175,13 @@ defmodule Goblin.CompactorTest do
         assert [
                  {"k4", 4, "x0"},
                  {"k5", 5, "y0"}
-               ] = Goblin.SSTs.stream!(entry1.id) |> Enum.to_list()
+               ] = Goblin.DiskTable.stream!(entry1.id) |> Enum.to_list()
 
         assert [
                  {"k1", 1, "v0"},
                  {"k2", 2, "w0"},
                  {"k3", 3, "u0"}
-               ] = Goblin.SSTs.stream!(entry2.id) |> Enum.to_list()
+               ] = Goblin.DiskTable.stream!(entry2.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 1)
       end
@@ -207,7 +207,7 @@ defmodule Goblin.CompactorTest do
         assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
 
         assert [{"k2", 4, "w1"}, {"k3", 5, "u0"}] ==
-                 Goblin.SSTs.stream!(entry.id) |> Enum.to_list()
+                 Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)
       end
