@@ -270,7 +270,6 @@ defmodule Goblin.Writer do
       seq: seq,
       mem_table: mem_table,
       mem_limit: mem_limit
-      # key_limit: key_limit
     } = state
 
     if MemTable.size(mem_table) >= mem_limit do

@@ -13,70 +13,6 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp write_to_disk(data, opts) do
-    file_getter = opts[:file_getter]
-    max_sst_size = opts[:max_sst_size]
-    level_key = opts[:level_key]
-
-    file = file_getter.()
-    tmp_file = tmp_file(file)
-    sst = SST.new(file, level_key)
-    disk = IOHandler.open!(tmp_file, write?: true)
-
-    Enum.reduce_while(data, {sst, disk, [{tmp_file, file}], []}, fn
-      triple, {%{size: size} = sst, disk, moves, ssts} when size >= max_sst_size ->
-        file = file_getter.()
-        tmp_file = tmp_file(file)
-        new_sst = SST.new(file, level_key)
-
-        with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
-             :ok <- IOHandler.close(disk),
-             {:ok, new_disk} <- IOHandler.open(tmp_file, write?: true),
-             {:ok, new_sst, disk} <- append_data(triple, new_sst, new_disk, opts) do
-          {:cont, {new_sst, disk, [{tmp_file, file} | moves], [sst | ssts]}}
-        else
-          error -> {:halt, error}
-        end
-
-      triple, {sst, disk, moves, ssts} ->
-        case append_data(triple, sst, disk, opts) do
-          {:ok, sst, disk} -> {:cont, {sst, disk, moves, ssts}}
-          error -> {:halt, error}
-        end
-    end)
-    |> then(fn
-      {:error, _} = error ->
-        error
-
-      {sst, disk, moves, ssts} ->
-        with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
-             :ok <- IOHandler.close(disk) do
-          {:ok, moves, Enum.reverse([sst | ssts])}
-        end
-    end)
-  end
-
-  defp append_data(triple, sst, disk, opts) do
-    compress? = opts[:compress?] || false
-
-    {block, sst} = SST.add_data(sst, triple, compress?)
-
-    with {:ok, disk} <- IOHandler.write(disk, block) do
-      {:ok, sst, disk}
-    end
-  end
-
-  defp append_metadata(sst, disk, opts) do
-    compress? = opts[:compress?] || false
-    bf_fpp = opts[:bf_fpp]
-
-    {metadata_block, sst} = SST.add_metadata(sst, disk.offset, bf_fpp, compress?)
-
-    with {:ok, disk} <- IOHandler.write(disk, metadata_block) do
-      {:ok, sst, disk}
-    end
-  end
-
   @spec delete(Goblin.db_file()) :: :ok | {:error, term()}
   def delete(file), do: IOHandler.rm(file)
 
@@ -87,43 +23,6 @@ defmodule Goblin.DiskTable do
       result = binary_search(disk, key, 0, sst.no_blocks)
       IOHandler.close(disk)
       result
-    end
-  end
-
-  defp binary_search(_disk, _key, low, high) when high < low, do: :not_found
-
-  defp binary_search(disk, key, low, high) do
-    mid = div(low + high, 2)
-    position = (mid - 1) * SST.size(:block)
-
-    with {:ok, k, seq, v} <- read_block(disk, position) do
-      cond do
-        key == k ->
-          {:ok, {:value, seq, v}}
-
-        key < k ->
-          binary_search(disk, key, low, mid - 1)
-
-        key > k ->
-          binary_search(disk, key, mid + 1, high)
-      end
-    end
-  end
-
-  defp read_block(disk, position) do
-    position = max(0, position)
-
-    with {:ok, encoded_header} <- IOHandler.read(disk, position, SST.size(:block_header)),
-         {:ok, span} <- SST.block_span(encoded_header),
-         {:ok, encoded} <- IOHandler.read(disk, position, SST.size(:block) * span),
-         {:ok, {key, seq, value}} <- SST.decode_block(encoded) do
-      {:ok, key, seq, value}
-    else
-      {:error, :not_block_start} ->
-        read_block(disk, position - SST.size(:block))
-
-      e ->
-        e
     end
   end
 
@@ -197,7 +96,6 @@ defmodule Goblin.DiskTable do
         {data, disk}
 
       {:error, :eod} ->
-        # IOHandler.close(disk)
         :ok
 
       _e ->
@@ -212,6 +110,107 @@ defmodule Goblin.DiskTable do
     {disk, &iterate/1, &IOHandler.close/1}
   end
 
+  defp write_to_disk(data, opts) do
+    file_getter = opts[:file_getter]
+    max_sst_size = opts[:max_sst_size]
+    level_key = opts[:level_key]
+
+    file = file_getter.()
+    tmp_file = tmp_file(file)
+    sst = SST.new(file, level_key)
+    disk = IOHandler.open!(tmp_file, write?: true)
+
+    Enum.reduce_while(data, {sst, disk, [{tmp_file, file}], []}, fn
+      triple, {%{size: size} = sst, disk, moves, ssts} when size >= max_sst_size ->
+        file = file_getter.()
+        tmp_file = tmp_file(file)
+        new_sst = SST.new(file, level_key)
+
+        with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
+             :ok <- IOHandler.close(disk),
+             {:ok, new_disk} <- IOHandler.open(tmp_file, write?: true),
+             {:ok, new_sst, disk} <- append_data(triple, new_sst, new_disk, opts) do
+          {:cont, {new_sst, disk, [{tmp_file, file} | moves], [sst | ssts]}}
+        else
+          error -> {:halt, error}
+        end
+
+      triple, {sst, disk, moves, ssts} ->
+        case append_data(triple, sst, disk, opts) do
+          {:ok, sst, disk} -> {:cont, {sst, disk, moves, ssts}}
+          error -> {:halt, error}
+        end
+    end)
+    |> then(fn
+      {:error, _} = error ->
+        error
+
+      {sst, disk, moves, ssts} ->
+        with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
+             :ok <- IOHandler.close(disk) do
+          {:ok, moves, Enum.reverse([sst | ssts])}
+        end
+    end)
+  end
+
+  defp append_data(triple, sst, disk, opts) do
+    compress? = opts[:compress?] || false
+
+    {block, sst} = SST.add_data(sst, triple, compress?)
+
+    with {:ok, disk} <- IOHandler.write(disk, block) do
+      {:ok, sst, disk}
+    end
+  end
+
+  defp append_metadata(sst, disk, opts) do
+    compress? = opts[:compress?] || false
+    bf_fpp = opts[:bf_fpp]
+
+    {metadata_block, sst} = SST.add_metadata(sst, disk.offset, bf_fpp, compress?)
+
+    with {:ok, disk} <- IOHandler.write(disk, metadata_block) do
+      {:ok, sst, disk}
+    end
+  end
+
+  defp binary_search(_disk, _key, low, high) when high < low, do: :not_found
+
+  defp binary_search(disk, key, low, high) do
+    mid = div(low + high, 2)
+    position = (mid - 1) * SST.size(:block)
+
+    with {:ok, k, seq, v} <- read_block(disk, position) do
+      cond do
+        key == k ->
+          {:ok, {:value, seq, v}}
+
+        key < k ->
+          binary_search(disk, key, low, mid - 1)
+
+        key > k ->
+          binary_search(disk, key, mid + 1, high)
+      end
+    end
+  end
+
+  defp read_block(disk, position) do
+    position = max(0, position)
+
+    with {:ok, encoded_header} <- IOHandler.read(disk, position, SST.size(:block_header)),
+         {:ok, span} <- SST.block_span(encoded_header),
+         {:ok, encoded} <- IOHandler.read(disk, position, SST.size(:block) * span),
+         {:ok, {key, seq, value}} <- SST.decode_block(encoded) do
+      {:ok, key, seq, value}
+    else
+      {:error, :not_block_start} ->
+        read_block(disk, position - SST.size(:block))
+
+      e ->
+        e
+    end
+  end
+
   defp read_next_key(disk) do
     with {:ok, enc_header} <- IOHandler.read(disk, SST.size(:block_header)),
          {:ok, span} <- SST.block_span(enc_header),
@@ -223,7 +222,7 @@ defmodule Goblin.DiskTable do
 
   defp valid_sst(disk) do
     with {:ok, magic} <- IOHandler.read_from_end(disk, SST.size(:magic), SST.size(:magic)),
-         true <- SST.is_ss_table(magic) do
+         true <- SST.valid_magic?(magic) do
       :ok
     else
       _ ->

@@ -44,10 +44,28 @@ defmodule Goblin.DiskTable.SST do
 
   @block_header_size byte_size(<<@block_id::binary, 0::integer-16>>)
 
+  @spec new(Goblin.db_file(), Goblin.db_level_key()) :: t()
   def new(file, level_key) do
     %__MODULE__{file: file, level_key: level_key}
   end
 
+  @spec valid_magic?(binary()) :: boolean()
+  def valid_magic?(<<@magic>>), do: true
+  def valid_magic?(_), do: false
+
+  @spec block_span(binary()) :: {:ok, non_neg_integer()} | {:error, :eod | :not_block_start}
+  def block_span(<<@block_id, span::integer-16>>), do: {:ok, span}
+  def block_span(<<@separator, _rest::binary>>), do: {:error, :eod}
+  def block_span(_), do: {:error, :not_block_start}
+
+  @spec size(:block | :magic | :metadata | :block_header) :: non_neg_integer()
+  def size(:block), do: @block_size
+  def size(:magic), do: @magic_size
+  def size(:separator), do: @separator_size
+  def size(:metadata), do: @metadata_size
+  def size(:block_header), do: @block_header_size
+
+  @spec add_data(t(), Goblin.triple(), boolean()) :: {binary(), t()}
   def add_data(sst, {key, seq, _value} = triple, compress?) do
     data = encode(triple, compress?)
     data_size = byte_size(<<@block_id::binary, 0::integer-16, data::binary>>)
@@ -112,51 +130,6 @@ defmodule Goblin.DiskTable.SST do
 
     {metadata_block, %{sst | size: size, bloom_filter: bloom_filter}}
   end
-
-  defp update_key_range(%{key_range: {nil, nil}} = sst, key) do
-    %{sst | key_range: {key, key}}
-  end
-
-  defp update_key_range(sst, key) do
-    %{key_range: {min_key, _}} = sst
-    %{sst | key_range: {min_key, key}}
-  end
-
-  defp update_seq_range(%{seq_range: {nil, _}} = sst, seq) do
-    %{sst | seq_range: {seq, seq}}
-  end
-
-  defp update_seq_range(sst, seq) do
-    %{seq_range: {min_seq, _}} = sst
-    %{sst | seq_range: {min_seq, seq}}
-  end
-
-  defp update_bloom_filter(sst, key) do
-    %{sst | bloom_filter: BloomFilter.put(sst.bloom_filter, key)}
-  end
-
-  defp update_crc(sst, block) do
-    %{sst | crc: :erlang.crc32(sst.crc, block)}
-  end
-
-  @spec is_ss_table(binary()) :: boolean()
-  def is_ss_table(<<@magic>>), do: true
-  def is_ss_table(_), do: false
-
-  @spec block_span(binary()) :: {:ok, non_neg_integer()} | {:error, :eod | :not_block_start}
-  def block_span(<<@block_id, span::integer-16>>), do: {:ok, span}
-  def block_span(<<@separator, _rest::binary>>), do: {:error, :eod}
-  def block_span(_), do: {:error, :not_block_start}
-
-  @spec span(non_neg_integer()) :: non_neg_integer()
-  def span(size), do: div(size + @block_size - 1, @block_size)
-
-  @spec size(:block | :magic | :metadata | :block_header) :: non_neg_integer()
-  def size(:block), do: @block_size
-  def size(:magic), do: @magic_size
-  def size(:separator), do: @separator_size
-  def size(:metadata), do: @metadata_size
-  def size(:block_header), do: @block_header_size
 
   @spec decode_block(binary()) :: {:ok, Goblin.triple()} | {:error, :invalid_block}
   def decode_block(<<@block_id, _span::integer-16, triple::binary>>) do
@@ -228,7 +201,35 @@ defmodule Goblin.DiskTable.SST do
     end
   end
 
+  defp update_key_range(%{key_range: {nil, nil}} = sst, key) do
+    %{sst | key_range: {key, key}}
+  end
+
+  defp update_key_range(sst, key) do
+    %{key_range: {min_key, _}} = sst
+    %{sst | key_range: {min_key, key}}
+  end
+
+  defp update_seq_range(%{seq_range: {nil, _}} = sst, seq) do
+    %{sst | seq_range: {seq, seq}}
+  end
+
+  defp update_seq_range(sst, seq) do
+    %{seq_range: {min_seq, _}} = sst
+    %{sst | seq_range: {min_seq, seq}}
+  end
+
+  defp update_bloom_filter(sst, key) do
+    %{sst | bloom_filter: BloomFilter.put(sst.bloom_filter, key)}
+  end
+
+  defp update_crc(sst, block) do
+    %{sst | crc: :erlang.crc32(sst.crc, block)}
+  end
+
   defp encode(term, true), do: :erlang.term_to_binary(term, [:compressed])
   defp encode(term, false), do: :erlang.term_to_binary(term)
   defp decode(binary), do: :erlang.binary_to_term(binary)
+
+  defp span(size), do: div(size + @block_size - 1, @block_size)
 end
