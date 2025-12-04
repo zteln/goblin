@@ -8,7 +8,7 @@ defmodule Goblin.BloomFilterTest do
         acc ->
           BloomFilter.put(acc, n)
       end
-      |> BloomFilter.generate()
+      |> BloomFilter.generate(0.01)
 
     assert %BloomFilter{} = bloom_filter
 

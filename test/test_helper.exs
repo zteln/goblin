@@ -78,7 +78,7 @@ defmodule TestHelper do
 
   def fake_sst(file, data) do
     {:ok, [sst]} =
-      Goblin.DiskTable.new([[data]], 0, file_getter: fn -> file end)
+      Goblin.DiskTable.new(data, file_getter: fn -> file end, level_key: 0, bf_fpp: 0.01)
 
     sst
   end

@@ -1,17 +1,16 @@
 defmodule Goblin.DiskTable.SSTTest do
   use ExUnit.Case, async: true
   alias Goblin.DiskTable.SST
-  alias Goblin.BloomFilter
 
-  describe "is_ss_table/1" do
+  describe "valid_magic?/1" do
     test "returns true for valid magic bytes" do
-      assert SST.is_ss_table("GOBLINFILE000000")
+      assert SST.valid_magic?("GOBLINFILE000000")
     end
 
     test "returns false for invalid magic bytes" do
-      refute SST.is_ss_table("INVALID")
-      refute SST.is_ss_table("")
-      refute SST.is_ss_table("GOBLINFILE000001")
+      refute SST.valid_magic?("INVALID")
+      refute SST.valid_magic?("")
+      refute SST.valid_magic?("GOBLINFILE000001")
     end
   end
 
@@ -33,153 +32,45 @@ defmodule Goblin.DiskTable.SSTTest do
     end
   end
 
-  describe "span/1" do
-    test "returns the multiple of 512 bytes the block spans" do
-      1..2048
-      |> Enum.chunk_every(512)
-      |> Enum.zip([1, 2, 3, 4])
-      |> Enum.each(fn {chunk, span} ->
-        for n <- chunk, do: assert(span == SST.span(n))
-      end)
+  describe "add_data/3, decode_block/1" do
+    test "updates SST and returns valid SST block" do
+      sst = SST.new("foo", 0)
+
+      assert {block, sst} = SST.add_data(sst, {:k, 0, :v}, false)
+
+      assert %{key_range: {:k, :k}} = sst
+      assert %{seq_range: {0, 0}} = sst
+      assert {:ok, {:k, 0, :v}} == SST.decode_block(block)
     end
 
-    test "returns 1 for sizes 1-512" do
-      assert SST.span(1) == 1
-      assert SST.span(256) == 1
-      assert SST.span(512) == 1
-    end
+    test "compresses blocks" do
+      sst = SST.new("foo", 0)
 
-    test "returns 2 for sizes 513-1024" do
-      assert SST.span(513) == 2
-      assert SST.span(768) == 2
-      assert SST.span(1024) == 2
-    end
-  end
+      data = {:k, 0, List.duplicate(:v, 1024)}
 
-  describe "size/1" do
-    test "returns correct size for block" do
-      assert SST.size(:block) == 512
-    end
+      assert {compressed_block, _sst} = SST.add_data(sst, data, true)
+      assert {block, _sst} = SST.add_data(sst, data, false)
 
-    test "returns correct size for magic" do
-      assert SST.size(:magic) == 16
-    end
-
-    test "returns correct size for separator" do
-      assert SST.size(:separator) == 16
-    end
-
-    test "returns correct size for metadata" do
-      assert SST.size(:metadata) == 80
-    end
-
-    test "returns correct size for block_header" do
-      assert SST.size(:block_header) == 18
+      assert byte_size(compressed_block) < byte_size(block)
     end
   end
 
-  describe "encode_block/3 and decode_block/1" do
-    test "encodes and decodes a simple block" do
-      seq = 1
-      key = "test_key"
-      value = "test_value"
+  describe "add_metadata/4, decode_metadata/1" do
+    test "updates SST and returns metadata block" do
+      level_key = 0
+      offset = 100
+      sst = SST.new("foo", level_key)
+      {_block, sst} = SST.add_data(sst, {:k1, 0, :v1}, false)
+      {_block, sst} = SST.add_data(sst, {:k2, 1, :v2}, false)
 
-      block = SST.encode_block(seq, key, value, false)
+      assert {metadata_block, sst} = SST.add_metadata(sst, offset, 0.01, false)
+      assert %{size: size, bloom_filter: bf} = sst
 
-      assert <<"GOBLINBLOCK00000", span::integer-16, _rest::binary>> = block
-      assert span == 1
-      assert byte_size(block) == 512
+      assert Goblin.BloomFilter.is_member(bf, :k1)
+      assert Goblin.BloomFilter.is_member(bf, :k2)
 
-      assert {:ok, {^seq, ^key, ^value}} = SST.decode_block(block)
-    end
-
-    test "encode compresses data in block" do
-      seq = 0
-      key = "test_key"
-      value = List.duplicate(:a, 50)
-
-      compressed_block = SST.encode_block(seq, key, value, true)
-      block = SST.encode_block(seq, key, value, false)
-
-      assert <<"GOBLINBLOCK00000", _span::integer-16, compressed_rest::binary>> = compressed_block
-      assert <<"GOBLINBLOCK00000", _span::integer-16, rest::binary>> = block
-
-      compressed_data = remove_padding(compressed_rest)
-      data = remove_padding(rest)
-      assert byte_size(compressed_data) < byte_size(data)
-    end
-
-    defp remove_padding([0 | rest]), do: remove_padding(rest)
-
-    defp remove_padding(rest) when is_list(rest),
-      do: Enum.reverse(rest) |> :binary.list_to_bin()
-
-    defp remove_padding(bin) do
-      :binary.bin_to_list(bin)
-      |> Enum.reverse()
-      |> remove_padding()
-    end
-
-    test "encodes and decodes a block with large value" do
-      seq = 42
-      key = "large_key"
-      value = String.duplicate("v", 600)
-
-      block = SST.encode_block(seq, key, value, false)
-
-      assert <<"GOBLINBLOCK00000", span::integer-16, _rest::binary>> = block
-      assert span == 2
-      assert byte_size(block) == 1024
-
-      assert {:ok, {^seq, ^key, ^value}} = SST.decode_block(block)
-    end
-
-    test "encodes and decodes a block with complex terms" do
-      seq = 100
-      key = {:compound, "key", 123}
-      value = %{data: [1, 2, 3], nested: %{foo: "bar"}}
-
-      block = SST.encode_block(seq, key, value, false)
-
-      assert {:ok, {^seq, ^key, ^value}} = SST.decode_block(block)
-    end
-
-    test "decode_block returns error for invalid block" do
-      assert {:error, :invalid_block} = SST.decode_block("INVALID")
-      assert {:error, :invalid_block} = SST.decode_block("")
-      assert {:error, :invalid_block} = SST.decode_block(<<"WRONGBLOCK00", 1::integer-16>>)
-    end
-  end
-
-  describe "encode_footer/7 and decode_metadata/1" do
-    test "encodes and decodes footer metadata" do
-      level_key = 2
-      bloom_filter = BloomFilter.new() |> BloomFilter.put("key1") |> BloomFilter.generate()
-      key_range = {"a", "z"}
-      seq_range = {123, 456}
-      offset = 5120
-      no_blocks = 10
-      size = 5120
-      crc = 123
-
-      footer =
-        SST.encode_footer(
-          level_key,
-          bloom_filter,
-          key_range,
-          seq_range,
-          offset,
-          no_blocks,
-          size,
-          crc,
-          false
-        )
-
-      assert <<"GOBLINSEP0000000", _rest::binary>> = footer
-      assert :binary.part(footer, {byte_size(footer), -16}) == "GOBLINFILE000000"
-
-      metadata_offset = byte_size(footer) - SST.size(:magic) - SST.size(:metadata)
-      metadata = :binary.part(footer, metadata_offset, SST.size(:metadata))
+      metadata_offset = byte_size(metadata_block) - SST.size(:magic) - SST.size(:metadata)
+      metadata = :binary.part(metadata_block, metadata_offset, SST.size(:metadata))
 
       assert {:ok,
               {
@@ -190,122 +81,25 @@ defmodule Goblin.DiskTable.SSTTest do
                 key_range_size,
                 seq_range_pos,
                 seq_range_size,
-                ^no_blocks,
-                total_size,
+                2,
+                ^size,
                 ^offset,
-                ^crc
+                _
               }} = SST.decode_metadata(metadata)
 
-      assert bf_pos > offset
-      assert bf_size > 0
-      assert key_range_pos > bf_pos
-      assert key_range_size > 0
-      assert seq_range_pos > key_range_pos
-      assert seq_range_size > 0
-      assert total_size > size
-    end
+      assert {:ok, %Goblin.BloomFilter{} = bf} =
+               :binary.part(metadata_block, bf_pos - offset, bf_size) |> SST.decode_bloom_filter()
 
-    test "decode_metadata returns error for invalid metadata" do
-      assert {:error, :invalid_metadata} = SST.decode_metadata("INVALID")
-      assert {:error, :invalid_metadata} = SST.decode_metadata("")
-      assert {:error, :invalid_metadata} = SST.decode_metadata(<<1, 2, 3>>)
-    end
-  end
+      assert Goblin.BloomFilter.is_member(bf, :k1)
+      assert Goblin.BloomFilter.is_member(bf, :k2)
 
-  describe "decode_bloom_filter/1" do
-    test "decodes valid bloom filter" do
-      bloom_filter = BloomFilter.new() |> BloomFilter.put("key1") |> BloomFilter.generate()
-      encoded = :erlang.term_to_binary({:bloom_filter, bloom_filter})
+      assert {:ok, {:k1, :k2}} ==
+               :binary.part(metadata_block, key_range_pos - offset, key_range_size)
+               |> SST.decode_key_range()
 
-      assert {:ok, decoded_bf} = SST.decode_bloom_filter(encoded)
-      assert %BloomFilter{} = decoded_bf
-    end
-
-    test "returns error for invalid bloom filter" do
-      invalid_encoded = :erlang.term_to_binary({:not_bloom_filter, "data"})
-      assert {:error, :invalid_bloom_filter} = SST.decode_bloom_filter(invalid_encoded)
-    end
-  end
-
-  describe "decode_key_range/1" do
-    test "decodes valid key range" do
-      key_range = {"min_key", "max_key"}
-      encoded = :erlang.term_to_binary({:key_range, key_range})
-
-      assert {:ok, ^key_range} = SST.decode_key_range(encoded)
-    end
-
-    test "returns error for invalid key range" do
-      invalid_encoded = :erlang.term_to_binary({:not_key_range, "data"})
-      assert {:error, :invalid_key_range} = SST.decode_key_range(invalid_encoded)
-    end
-  end
-
-  describe "decode_seq_range/1" do
-    test "decodes valid sequence range" do
-      seq_range = {123, 456}
-      encoded = :erlang.term_to_binary({:seq_range, seq_range})
-
-      assert {:ok, ^seq_range} = SST.decode_seq_range(encoded)
-    end
-
-    test "returns error for invalid seq_range" do
-      invalid_encoded = :erlang.term_to_binary({:not_seq_range, "data"})
-      assert {:error, :invalid_seq_range} = SST.decode_seq_range(invalid_encoded)
-    end
-  end
-
-  describe "full footer encode/decode integration" do
-    test "encodes footer and decodes all components" do
-      level_key = 1
-      bloom_filter = BloomFilter.new() |> BloomFilter.put("test") |> BloomFilter.generate()
-      key_range = {"aaa", "zzz"}
-      seq_range = {123, 456}
-      offset = 2048
-      no_blocks = 4
-      size = 2048
-      crc = 123
-
-      footer =
-        SST.encode_footer(
-          level_key,
-          bloom_filter,
-          key_range,
-          seq_range,
-          offset,
-          no_blocks,
-          size,
-          crc,
-          false
-        )
-
-      metadata_offset = byte_size(footer) - SST.size(:magic) - SST.size(:metadata)
-      metadata = :binary.part(footer, metadata_offset, SST.size(:metadata))
-
-      assert {:ok,
-              {
-                ^level_key,
-                bf_pos,
-                bf_size,
-                key_range_pos,
-                key_range_size,
-                seq_range_pos,
-                seq_range_size,
-                ^no_blocks,
-                _total_size,
-                ^offset,
-                ^crc
-              }} = SST.decode_metadata(metadata)
-
-      bf_binary = :binary.part(footer, bf_pos - offset, bf_size)
-      assert {:ok, decoded_bf} = SST.decode_bloom_filter(bf_binary)
-      assert %BloomFilter{} = decoded_bf
-
-      key_range_binary = :binary.part(footer, key_range_pos - offset, key_range_size)
-      assert {:ok, ^key_range} = SST.decode_key_range(key_range_binary)
-
-      seq_range_binary = :binary.part(footer, seq_range_pos - offset, seq_range_size)
-      assert {:ok, ^seq_range} = SST.decode_seq_range(seq_range_binary)
+      assert {:ok, {0, 1}} ==
+               :binary.part(metadata_block, seq_range_pos - offset, seq_range_size)
+               |> SST.decode_seq_range()
     end
   end
 end

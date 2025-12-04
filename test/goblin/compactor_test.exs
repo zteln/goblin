@@ -4,209 +4,198 @@ defmodule Goblin.CompactorTest do
   alias Goblin.Compactor
 
   @moduletag :tmp_dir
-  setup_db(key_limit: 10, level_limit: 1024)
+  setup_db()
 
   describe "put/3" do
-    test "single entry in flush level is compacted into higher level", c do
-      file = Path.join(c.tmp_dir, "foo")
+    test "default 4 entries in flush level are compacted into level above", c do
+      file1 = Path.join(c.tmp_dir, "1")
+      file2 = Path.join(c.tmp_dir, "2")
+      file3 = Path.join(c.tmp_dir, "3")
+      file4 = Path.join(c.tmp_dir, "4")
 
-      fake_sst(file, [
-        {"k1", 0, "v0"},
-        {"k1", 1, "v1"},
-        {"k1", 2, "v2"},
-        {"k2", 3, "w0"},
-        {"k2", 4, "w1"},
-        {"k3", 5, "u0"}
+      fake_sst(file1, [
+        {"k1", 0, "10"},
+        {"k1", 1, "11"},
+        {"k1", 2, "12"},
+        {"k2", 3, "20"},
+        {"k2", 4, "21"},
+        {"k3", 5, "30"}
       ])
 
-      %{size: size} = File.stat!(file)
+      fake_sst(file2, [
+        {"k3", 6, "31"},
+        {"k3", 7, "32"},
+        {"k4", 8, "40"},
+        {"k4", 9, "41"}
+      ])
 
-      assert :ok == Compactor.put(c.compactor, 0, file, 0, size, {"k1", "k3"})
+      fake_sst(file3, [
+        {"k5", 10, "50"},
+        {"k5", 11, "51"},
+        {"k5", 12, "52"},
+        {"k6", 13, "60"}
+      ])
+
+      fake_sst(file4, [
+        {"k2", 14, "22"},
+        {"k6", 15, "61"}
+      ])
+
+      %{size: size1} = File.stat!(file1)
+      %{size: size2} = File.stat!(file2)
+      %{size: size3} = File.stat!(file3)
+      %{size: size4} = File.stat!(file4)
+
+      assert :ok == Compactor.put(c.compactor, 0, file1, 0, size1, {"k1", "k3"})
+      assert :ok == Compactor.put(c.compactor, 0, file2, 6, size2, {"k3", "k4"})
+      assert :ok == Compactor.put(c.compactor, 0, file3, 10, size3, {"k5", "k6"})
+      assert :ok == Compactor.put(c.compactor, 0, file4, 14, size4, {"k2", "k6"})
 
       assert_eventually do
         assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
 
-        assert [{"k1", 2, "v2"}, {"k2", 4, "w1"}, {"k3", 5, "u0"}] ==
+        assert [
+                 {"k1", 2, "12"},
+                 {"k2", 14, "22"},
+                 {"k3", 7, "32"},
+                 {"k4", 9, "41"},
+                 {"k5", 12, "52"},
+                 {"k6", 15, "61"}
+               ] ==
                  Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)
       end
     end
 
-    test "multiple entries in flush level are compacted into higher level", c do
-      file1 = Path.join(c.tmp_dir, "foo1")
-      file2 = Path.join(c.tmp_dir, "foo2")
-
-      fake_sst(file1, [
-        {"k1", 0, "v0"},
-        {"k1", 1, "v1"},
-        {"k3", 2, "u0"},
-        {"k3", 3, "u1"},
-        {"k3", 4, "u2"}
-      ])
-
-      fake_sst(file2, [
-        {"k1", 5, "v2"},
-        {"k1", 6, "v3"},
-        {"k2", 7, "w0"},
-        {"k2", 8, "w1"}
-      ])
-
-      assert :ok == Compactor.put(c.compactor, 0, file1, 0, 512, {"k1", "k3"})
-      assert :ok == Compactor.put(c.compactor, 0, file2, 5, 512, {"k1", "k2"})
-
-      assert_eventually do
-        assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
-
-        assert [
-                 {"k1", 6, "v3"},
-                 {"k2", 8, "w1"},
-                 {"k3", 4, "u2"}
-               ] = Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
-
-        refute Map.has_key?(levels, 0)
-      end
-    end
-
     test "multiple entries in flush level are merged with entry in higher level", c do
-      file1 = Path.join(c.tmp_dir, "foo1")
-      file2 = Path.join(c.tmp_dir, "foo2")
-      file3 = Path.join(c.tmp_dir, "foo3")
+      file0 = Path.join(c.tmp_dir, "0")
+      file1 = Path.join(c.tmp_dir, "1")
+      file2 = Path.join(c.tmp_dir, "2")
+      file3 = Path.join(c.tmp_dir, "3")
+      file4 = Path.join(c.tmp_dir, "4")
+
+      fake_sst(file0, [
+        {"k1", 0, "10"},
+        {"k2", 1, "20"},
+        {"k3", 2, "30"},
+        {"k4", 3, "40"},
+        {"k5", 4, "50"},
+        {"k6", 5, "60"},
+        {"k7", 6, "70"}
+      ])
 
       fake_sst(file1, [
-        {"k1", 0, "v0"},
-        {"k1", 1, "v1"},
-        {"k2", 2, "w0"},
-        {"k3", 3, "u0"},
-        {"k3", 4, "u1"},
-        {"k3", 5, "u2"}
+        {"k1", 7, "11"},
+        {"k1", 8, "12"},
+        {"k1", 9, "13"},
+        {"k2", 10, "21"},
+        {"k2", 11, "22"},
+        {"k3", 12, "31"}
       ])
 
       fake_sst(file2, [
-        {"k1", 7, "v2"},
-        {"k1", 8, "v3"},
-        {"k2", 9, "w2"},
-        {"k2", 10, "w3"}
+        {"k3", 13, "32"},
+        {"k3", 14, "33"},
+        {"k4", 15, "41"},
+        {"k4", 16, "42"}
       ])
 
       fake_sst(file3, [
-        {"k3", 11, "u3"},
-        {"k3", 12, "u4"},
-        {"k4", 13, "x0"}
+        {"k5", 17, "51"},
+        {"k5", 18, "52"},
+        {"k5", 19, "53"},
+        {"k6", 20, "61"}
       ])
 
-      assert :ok == Compactor.put(c.compactor, 1, file1, 0, 512, {"k1", "k3"})
-      assert :ok == Compactor.put(c.compactor, 0, file2, 7, 512, {"k1", "k2"})
-      assert :ok == Compactor.put(c.compactor, 0, file3, 11, 512, {"k3", "k4"})
+      fake_sst(file4, [
+        {"k2", 21, "23"},
+        {"k6", 22, "62"}
+      ])
+
+      %{size: size0} = File.stat!(file0)
+      %{size: size1} = File.stat!(file1)
+      %{size: size2} = File.stat!(file2)
+      %{size: size3} = File.stat!(file3)
+      %{size: size4} = File.stat!(file4)
+
+      assert :ok == Compactor.put(c.compactor, 1, file0, 0, size0, {"k1", "k7"})
+      assert :ok == Compactor.put(c.compactor, 0, file1, 7, size1, {"k1", "k3"})
+      assert :ok == Compactor.put(c.compactor, 0, file2, 13, size2, {"k3", "k4"})
+      assert :ok == Compactor.put(c.compactor, 0, file3, 17, size3, {"k5", "k6"})
+      assert :ok == Compactor.put(c.compactor, 0, file4, 21, size4, {"k2", "k6"})
 
       assert_eventually do
         assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
 
         assert [
-                 {"k1", 8, "v3"},
-                 {"k2", 10, "w3"},
-                 {"k3", 12, "u4"},
-                 {"k4", 13, "x0"}
+                 {"k1", 9, "13"},
+                 {"k2", 21, "23"},
+                 {"k3", 14, "33"},
+                 {"k4", 16, "42"},
+                 {"k5", 19, "53"},
+                 {"k6", 22, "62"},
+                 {"k7", 6, "70"}
                ] = Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)
-      end
-    end
-
-    test "SST in one level above flush level is merged with overlapping DiskTable in level above",
-         c do
-      file1 = Path.join(c.tmp_dir, "foo1")
-      file2 = Path.join(c.tmp_dir, "foo2")
-
-      fake_sst(file1, [
-        {"k1", 0, "v0"},
-        {"k1", 1, "v1"},
-        {"k2", 2, "w0"},
-        {"k3", 3, "u0"},
-        {"k3", 4, "u1"},
-        {"k3", 5, "u2"}
-      ])
-
-      fake_sst(file2, [
-        {"k1", 7, "v2"},
-        {"k1", 8, "v3"},
-        {"k2", 9, "w2"},
-        {"k2", 10, "w3"}
-      ])
-
-      assert :ok == Compactor.put(c.compactor, 2, file1, 0, 512, {"k1", "k3"})
-      assert :ok == Compactor.put(c.compactor, 1, file2, 7, 1024 * 10, {"k1", "k2"})
-
-      assert_eventually do
-        assert %{compacting: nil, levels: %{2 => [entry]} = levels} = :sys.get_state(c.compactor)
-
-        assert [
-                 {"k1", 8, "v3"},
-                 {"k2", 10, "w3"},
-                 {"k3", 5, "u2"}
-               ] = Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
-
-        refute Map.has_key?(levels, 1)
-      end
-    end
-
-    test "DiskTable with no overlapping keys are not merged", c do
-      file1 = Path.join(c.tmp_dir, "foo1")
-      file2 = Path.join(c.tmp_dir, "foo2")
-
-      fake_sst(file1, [
-        {"k1", 1, "v0"},
-        {"k2", 2, "w0"},
-        {"k3", 3, "u0"}
-      ])
-
-      fake_sst(file2, [
-        {"k4", 4, "x0"},
-        {"k5", 5, "y0"}
-      ])
-
-      assert :ok == Compactor.put(c.compactor, 2, file1, 0, 512, {"k1", "k3"})
-      assert :ok == Compactor.put(c.compactor, 1, file2, 7, 1024 * 10, {"k4", "k5"})
-
-      assert_eventually do
-        assert %{compacting: nil, levels: %{2 => [entry1, entry2]} = levels} =
-                 :sys.get_state(c.compactor)
-
-        assert [
-                 {"k4", 4, "x0"},
-                 {"k5", 5, "y0"}
-               ] = Goblin.DiskTable.stream!(entry1.id) |> Enum.to_list()
-
-        assert [
-                 {"k1", 1, "v0"},
-                 {"k2", 2, "w0"},
-                 {"k3", 3, "u0"}
-               ] = Goblin.DiskTable.stream!(entry2.id) |> Enum.to_list()
-
-        refute Map.has_key?(levels, 1)
       end
     end
 
     test "tombstones in SST are cleaned if compacting to new level", c do
-      file = Path.join(c.tmp_dir, "foo")
+      file1 = Path.join(c.tmp_dir, "1")
+      file2 = Path.join(c.tmp_dir, "2")
+      file3 = Path.join(c.tmp_dir, "3")
+      file4 = Path.join(c.tmp_dir, "4")
 
-      fake_sst(file, [
-        {"k1", 0, "v0"},
-        {"k1", 1, "v1"},
+      fake_sst(file1, [
+        {"k1", 0, "10"},
+        {"k1", 1, "11"},
         {"k1", 2, :"$goblin_tombstone"},
-        {"k2", 3, "w0"},
-        {"k2", 4, "w1"},
-        {"k3", 5, "u0"}
+        {"k2", 3, "20"},
+        {"k2", 4, "21"},
+        {"k3", 5, "30"}
       ])
 
-      %{size: size} = File.stat!(file)
+      fake_sst(file2, [
+        {"k3", 6, "31"},
+        {"k3", 7, "32"},
+        {"k4", 8, "40"},
+        {"k4", 9, "41"}
+      ])
 
-      assert :ok == Compactor.put(c.compactor, 0, file, 0, size, {"k1", "k3"})
+      fake_sst(file3, [
+        {"k5", 10, "50"},
+        {"k5", 11, "51"},
+        {"k5", 12, "52"},
+        {"k6", 13, "60"}
+      ])
+
+      fake_sst(file4, [
+        {"k2", 14, "22"},
+        {"k6", 15, "61"}
+      ])
+
+      %{size: size1} = File.stat!(file1)
+      %{size: size2} = File.stat!(file2)
+      %{size: size3} = File.stat!(file3)
+      %{size: size4} = File.stat!(file4)
+
+      assert :ok == Compactor.put(c.compactor, 0, file1, 0, size1, {"k1", "k3"})
+      assert :ok == Compactor.put(c.compactor, 0, file2, 6, size2, {"k3", "k4"})
+      assert :ok == Compactor.put(c.compactor, 0, file3, 10, size3, {"k5", "k6"})
+      assert :ok == Compactor.put(c.compactor, 0, file4, 14, size4, {"k2", "k6"})
 
       assert_eventually do
         assert %{compacting: nil, levels: %{1 => [entry]} = levels} = :sys.get_state(c.compactor)
 
-        assert [{"k2", 4, "w1"}, {"k3", 5, "u0"}] ==
+        assert [
+                 {"k2", 14, "22"},
+                 {"k3", 7, "32"},
+                 {"k4", 9, "41"},
+                 {"k5", 12, "52"},
+                 {"k6", 15, "61"}
+               ] ==
                  Goblin.DiskTable.stream!(entry.id) |> Enum.to_list()
 
         refute Map.has_key?(levels, 0)

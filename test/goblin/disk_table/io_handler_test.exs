@@ -7,7 +7,7 @@ defmodule Goblin.DiskTable.IOHandlerTest do
   test "open!/2 returns io and offset to a file", c do
     file = Path.join(c.tmp_dir, "foo")
     File.touch(file)
-    assert %Disk{io: {:file_descriptor, :prim_file, _}, offset: 0} = IOHandler.open!(file)
+    assert %IOHandler{io: {:file_descriptor, :prim_file, _}, offset: 0} = IOHandler.open!(file)
   end
 
   test "open!/2 raises on error", c do
@@ -18,7 +18,7 @@ defmodule Goblin.DiskTable.IOHandlerTest do
   test "open/2 opens in read-only mode", c do
     file = Path.join(c.tmp_dir, "foo")
     File.write(file, "bar")
-    assert {:ok, %Disk{offset: 3} = disk} = IOHandler.open(file)
+    assert {:ok, %IOHandler{offset: 3} = disk} = IOHandler.open(file)
     assert {:ok, "bar"} = IOHandler.read(disk, 0, 3)
     assert {:error, :ebadf} == IOHandler.write(disk, "baz")
   end
@@ -43,14 +43,14 @@ defmodule Goblin.DiskTable.IOHandlerTest do
   test "write/2 writes to a file", c do
     file = Path.join(c.tmp_dir, "foo")
     File.touch(file)
-    assert {:ok, %Disk{offset: 0} = disk} = IOHandler.open(file, write?: true)
-    assert {:ok, %Disk{offset: 3}} = IOHandler.write(disk, "bar")
+    assert {:ok, %IOHandler{offset: 0} = disk} = IOHandler.open(file, write?: true)
+    assert {:ok, %IOHandler{offset: 3}} = IOHandler.write(disk, "bar")
   end
 
   test "write/2 failes if not opened in write mode", c do
     file = Path.join(c.tmp_dir, "foo")
     File.touch(file)
-    assert {:ok, %Disk{offset: 0} = disk} = IOHandler.open(file)
+    assert {:ok, %IOHandler{offset: 0} = disk} = IOHandler.open(file)
     assert {:error, :ebadf} = IOHandler.write(disk, "bar")
   end
 
@@ -86,7 +86,7 @@ defmodule Goblin.DiskTable.IOHandlerTest do
   test "advance_offset/2 adds to offset", c do
     file = Path.join(c.tmp_dir, "foo")
     File.write(file, "foobarbaz")
-    assert {:ok, %Disk{offset: 0} = disk} = IOHandler.open(file, start?: true)
-    assert %Disk{offset: 3} = IOHandler.advance_offset(disk, 3)
+    assert {:ok, %IOHandler{offset: 0} = disk} = IOHandler.open(file, start?: true)
+    assert %IOHandler{offset: 3} = IOHandler.advance_offset(disk, 3)
   end
 end
