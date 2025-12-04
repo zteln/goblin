@@ -571,8 +571,10 @@ defmodule Goblin do
 
   - `:name` - Registered name for the supervisor (optional)
   - `:db_dir` - Directory path for database files (required)
-  - `:key_limit` - Max keys in MemTable before flush (default: 50,000)
-  - `:level_limit` - Size threshold for level 0 compaction in bytes (default: 128 MB)
+  - `:flush_level_file_limit` - How many files in flush level before compaction is triggered (default: 4)
+  - `:mem_limit` - How many bytes are stored in memory before flushing (default: 64 * 1024 * 1024)
+  - `:level_base_size` - How many bytes are stored in level 1 before compaction is triggered (default: 256 * 1024 * 1024)
+  - `:level_size_multiplier` - Which factor each level size is multiplied with (default: 10)
   - `:bf_fpp` - Bloom filter false positive probability (default: 0.05)
 
   ## Returns
@@ -585,9 +587,11 @@ defmodule Goblin do
       {:ok, db} = Goblin.start_link(
         name: MyApp.DB,
         db_dir: "/var/lib/myapp/db",
-        key_limit: 100_000,
-        level_limit: 256 * 1024 * 1024,
-        bf_fpp: 0.05
+        flush_level_file_limit: 4,
+        mem_limit: 64 * 1024 * 1024,
+        level_base_size: 256 * 1024 * 1024,
+        level_size_multiplier: 10,
+        bf_fpp: 0.01
       )
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
