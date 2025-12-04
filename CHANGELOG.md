@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.2 (2025-12-04)
+* Enhancments
+    * Flush and compaction are now triggered via byte sizes instead of amount of keys
+* Bug fixes
+    * Add functionality for iterators to clean up after iteration ends
+    * Fix key range computation when compacting from flush level to higher level
+
 ## v0.3.1 (2025-11-23)
 * Bug fixes
     * Writes are published on a database specific topic instead of a global topic

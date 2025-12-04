@@ -4,8 +4,8 @@ defmodule Goblin.MixProject do
   def project do
     [
       app: :goblin,
-      version: "0.3.1",
-      elixir: "~> 1.17",
+      version: "0.3.2",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       name: "Goblin",
       deps: deps(),
