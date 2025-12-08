@@ -25,6 +25,9 @@ defmodule Goblin.DiskTable.SST do
   @separator "GOBLINSEP0000000"
   @separator_size byte_size(@separator)
 
+  @crc_size byte_size(<<0::integer-32>>)
+  @filesize_size byte_size(<<0::integer-64>>)
+
   @metadata_size byte_size(<<
                    0::integer-32,
                    0::integer-64,
@@ -33,10 +36,7 @@ defmodule Goblin.DiskTable.SST do
                    0::integer-64,
                    0::integer-64,
                    0::integer-64,
-                   0::integer-64,
-                   0::integer-64,
-                   0::integer-64,
-                   0::integer-32
+                   0::integer-64
                  >>)
 
   @block_id "GOBLINBLOCK00000"
@@ -49,18 +49,20 @@ defmodule Goblin.DiskTable.SST do
     %__MODULE__{file: file, level_key: level_key}
   end
 
-  @spec valid_magic?(binary()) :: boolean()
-  def valid_magic?(<<@magic>>), do: true
-  def valid_magic?(_), do: false
+  @spec verify_magic(binary()) :: :ok | {:error, :invalid_magic}
+  def verify_magic(<<@magic>>), do: :ok
+  def verify_magic(_), do: {:error, :invalid_magic}
 
   @spec block_span(binary()) :: {:ok, non_neg_integer()} | {:error, :eod | :not_block_start}
   def block_span(<<@block_id, span::integer-16>>), do: {:ok, span}
   def block_span(<<@separator, _rest::binary>>), do: {:error, :eod}
   def block_span(_), do: {:error, :not_block_start}
 
-  @spec size(:block | :magic | :metadata | :block_header) :: non_neg_integer()
+  @spec size(:block | :magic | :crc | :size | :metadata | :block_header) :: non_neg_integer()
   def size(:block), do: @block_size
   def size(:magic), do: @magic_size
+  def size(:crc), do: @crc_size
+  def size(:size), do: @filesize_size
   def size(:separator), do: @separator_size
   def size(:metadata), do: @metadata_size
   def size(:block_header), do: @block_header_size
@@ -83,6 +85,7 @@ defmodule Goblin.DiskTable.SST do
     {block, sst}
   end
 
+  # def add_footer(sst, offset, bf_fpp, compress?) do
   def add_metadata(sst, offset, bf_fpp, compress?) do
     bloom_filter = BloomFilter.generate(sst.bloom_filter, bf_fpp)
     enc_bf = encode({:bloom_filter, bloom_filter}, compress?)
@@ -95,40 +98,36 @@ defmodule Goblin.DiskTable.SST do
     seq_range_pos = key_range_pos + key_range_size
     seq_range_size = byte_size(enc_seq_range)
 
-    size =
-      sst.size +
-        bf_size +
-        key_range_size +
-        seq_range_size +
-        @metadata_size +
-        @separator_size +
-        @magic_size
+    metadata = <<
+      sst.level_key::integer-32,
+      bf_pos::integer-64,
+      bf_size::integer-64,
+      key_range_pos::integer-64,
+      key_range_size::integer-64,
+      seq_range_pos::integer-64,
+      seq_range_size::integer-64,
+      sst.no_blocks::integer-64
+    >>
 
-    metadata =
-      <<
-        sst.level_key::integer-32,
-        bf_pos::integer-64,
-        bf_size::integer-64,
-        key_range_pos::integer-64,
-        key_range_size::integer-64,
-        seq_range_pos::integer-64,
-        seq_range_size::integer-64,
-        sst.no_blocks::integer-64,
-        size::integer-64,
-        offset::integer-64,
-        sst.crc::integer-32
-      >>
-
-    metadata_block = <<
+    block = <<
       @separator::binary,
       enc_bf::binary,
       enc_key_range::binary,
       enc_seq_range::binary,
-      metadata::binary,
+      metadata::binary
+    >>
+
+    size = sst.size + bf_size + key_range_size + seq_range_size + @metadata_size + @separator_size
+    crc = add_to_crc(sst.crc, block)
+
+    metadata_block = <<
+      block::binary,
+      size::integer-64,
+      crc::integer-32,
       @magic::binary
     >>
 
-    {metadata_block, %{sst | size: size, bloom_filter: bloom_filter}}
+    {metadata_block, %{sst | size: size, bloom_filter: bloom_filter, crc: crc}}
   end
 
   @spec decode_block(binary()) :: {:ok, Goblin.triple()} | {:error, :invalid_block}
@@ -140,8 +139,16 @@ defmodule Goblin.DiskTable.SST do
 
   @spec decode_metadata(binary()) ::
           {:ok,
-           {Goblin.db_level_key(), size(), position(), size(), position(), size(), position(),
-            no_blocks(), size(), offset(), non_neg_integer()}}
+           {
+             Goblin.db_level_key(),
+             size(),
+             position(),
+             size(),
+             position(),
+             size(),
+             position(),
+             no_blocks()
+           }}
           | {:error, :invalid_metadata}
   def decode_metadata(<<
         level_key::integer-32,
@@ -151,10 +158,10 @@ defmodule Goblin.DiskTable.SST do
         key_range_size::integer-64,
         seq_range_pos::integer-64,
         seq_range_size::integer-64,
-        no_blocks::integer-64,
-        size::integer-64,
-        offset::integer-64,
-        crc::integer-32
+        no_blocks::integer-64
+        # size::integer-64,
+        # offset::integer-64
+        # crc::integer-32
       >>) do
     {:ok,
      {
@@ -165,14 +172,20 @@ defmodule Goblin.DiskTable.SST do
        key_range_size,
        seq_range_pos,
        seq_range_size,
-       no_blocks,
-       size,
-       offset,
-       crc
+       no_blocks
+       # size,
+       # offset
+       # crc
      }}
   end
 
   def decode_metadata(_), do: {:error, :invalid_metadata}
+
+  def decode_size(<<size::integer-64>>), do: {:ok, size}
+  def decode_size(_), do: {:error, :invalid_size}
+
+  def decode_crc(<<crc::integer-32>>), do: {:ok, crc}
+  def decode_crc(_), do: {:error, :invalid_crc}
 
   @spec decode_bloom_filter(binary()) ::
           {:ok, BloomFilter.t()} | {:error, :invalid_bloom_filter}
@@ -224,7 +237,11 @@ defmodule Goblin.DiskTable.SST do
   end
 
   defp update_crc(sst, block) do
-    %{sst | crc: :erlang.crc32(sst.crc, block)}
+    %{sst | crc: add_to_crc(sst.crc, block)}
+  end
+
+  defp add_to_crc(crc, block) do
+    :erlang.crc32(crc, block)
   end
 
   defp encode(term, true), do: :erlang.term_to_binary(term, [:compressed])

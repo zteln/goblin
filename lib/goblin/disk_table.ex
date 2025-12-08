@@ -31,7 +31,7 @@ defmodule Goblin.DiskTable do
     disk = IOHandler.open!(file)
 
     result =
-      with :ok <- valid_sst(disk),
+      with {:ok, size} <- valid_sst(disk),
            {:ok,
             {
               level_key,
@@ -41,12 +41,8 @@ defmodule Goblin.DiskTable do
               key_range_size,
               seq_range_pos,
               seq_range_size,
-              no_blocks,
-              size,
-              offset,
-              crc
+              no_blocks
             }} <- read_metadata(disk),
-           :ok <- verify_crc(disk, 0, offset, crc),
            {:ok, bf} <- read_bloom_filter(disk, bf_pos, bf_size),
            {:ok, key_range} <- read_key_range(disk, key_range_pos, key_range_size),
            {:ok, seq_range} <- read_seq_range(disk, seq_range_pos, seq_range_size) do
@@ -221,12 +217,29 @@ defmodule Goblin.DiskTable do
   end
 
   defp valid_sst(disk) do
-    with {:ok, magic} <- IOHandler.read_from_end(disk, SST.size(:magic), SST.size(:magic)),
-         true <- SST.valid_magic?(magic) do
-      :ok
-    else
-      _ ->
-        {:error, :not_an_ss_table}
+    with {:ok, magic} <-
+           IOHandler.read_from_end(
+             disk,
+             SST.size(:magic),
+             SST.size(:magic)
+           ),
+         :ok <- SST.verify_magic(magic),
+         {:ok, crc} <-
+           IOHandler.read_from_end(
+             disk,
+             SST.size(:magic) + SST.size(:crc),
+             SST.size(:crc)
+           ),
+         {:ok, crc} <- SST.decode_crc(crc),
+         {:ok, size} <-
+           IOHandler.read_from_end(
+             disk,
+             SST.size(:magic) + SST.size(:crc) + SST.size(:size),
+             SST.size(:size)
+           ),
+         {:ok, size} <- SST.decode_size(size),
+         :ok <- verify_crc(disk, 0, size, crc) do
+      {:ok, size}
     end
   end
 
@@ -234,7 +247,7 @@ defmodule Goblin.DiskTable do
     with {:ok, encoded_metadata} <-
            IOHandler.read_from_end(
              disk,
-             SST.size(:magic) + SST.size(:metadata),
+             SST.size(:magic) + SST.size(:crc) + SST.size(:size) + SST.size(:metadata),
              SST.size(:metadata)
            ) do
       SST.decode_metadata(encoded_metadata)
@@ -269,13 +282,8 @@ defmodule Goblin.DiskTable do
 
   defp verify_crc(disk, start_pos, end_pos, target_crc, crc \\ :erlang.crc32(<<>>))
 
-  defp verify_crc(_disk, end_pos, end_pos, target_crc, crc) do
-    if target_crc == crc do
-      :ok
-    else
-      {:error, :corrupted_sst}
-    end
-  end
+  defp verify_crc(_disk, end_pos, end_pos, target_crc, target_crc), do: :ok
+  defp verify_crc(_disk, end_pos, end_pos, _target_crc, _crc), do: {:error, :corrupt_sst}
 
   defp verify_crc(disk, start_pos, end_pos, target_crc, crc) do
     inc = min(end_pos - start_pos, 4096)
