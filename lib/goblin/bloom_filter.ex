@@ -63,11 +63,11 @@ defmodule Goblin.BloomFilter do
   defp hashes(0, _range, hashes), do: hashes
 
   defp hashes(salt, range, hashes) do
-    hash = {:erlang, :phash2, [salt, range]}
+    hash = {salt, range}
     hashes(salt - 1, range, [hash | hashes])
   end
 
-  defp calc_hash({m, f, [salt, range]}, key) do
-    apply(m, f, [{key, salt}, range])
+  defp calc_hash({salt, range}, key) do
+    :erlang.phash2({key, salt}, range)
   end
 end
