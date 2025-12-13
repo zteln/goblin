@@ -13,10 +13,6 @@ defmodule Goblin.Writer.MemTable do
   end
 
   @spec put_commit_seq(t(), Goblin.seq_no()) :: true
-  def put_commit_seq(_table, seq) when seq < 0 do
-    true
-  end
-
   def put_commit_seq(table, seq) do
     :ets.insert(table, {:commit_seq, seq})
   end
@@ -42,7 +38,7 @@ defmodule Goblin.Writer.MemTable do
     wait_until_memtable_ready(table)
     commit_seq = commit_seq(table)
 
-    case do_read(table, key, commit_seq) do
+    case read_key(table, key, commit_seq) do
       :not_found -> :not_found
       {{key, seq}, value} -> {key, seq, value}
     end
@@ -51,7 +47,7 @@ defmodule Goblin.Writer.MemTable do
   def read(table, key, seq) do
     wait_until_memtable_ready(table)
 
-    case do_read(table, key, seq) do
+    case read_key(table, key, seq) do
       :not_found -> :not_found
       {{key, seq}, value} -> {key, seq, value}
     end
@@ -65,10 +61,10 @@ defmodule Goblin.Writer.MemTable do
 
     guard =
       cond do
-        is_nil(min) and is_nil(max) -> [{:"=<", :"$2", commit_seq}]
-        is_nil(min) -> [{:and, {:"=<", :"$1", max}, {:"=<", :"$2", commit_seq}}]
-        is_nil(max) -> [{:and, {:"=<", min, :"$1"}, {:"=<", :"$2", commit_seq}}]
-        true -> [{:and, {:"=<", :"$1", max}, {:"=<", min, :"$1"}, {:"=<", :"$2", commit_seq}}]
+        is_nil(min) and is_nil(max) -> [{:<, :"$2", commit_seq}]
+        is_nil(min) -> [{:and, {:"=<", :"$1", max}, {:<, :"$2", commit_seq}}]
+        is_nil(max) -> [{:and, {:"=<", min, :"$1"}, {:<, :"$2", commit_seq}}]
+        true -> [{:and, {:"=<", :"$1", max}, {:"=<", min, :"$1"}, {:<, :"$2", commit_seq}}]
       end
 
     ms = [{{{:"$1", :"$2"}, :_}, guard, [:"$_"]}]
@@ -93,10 +89,10 @@ defmodule Goblin.Writer.MemTable do
     |> Enum.map(fn {{key, seq}, value} -> {key, seq, value} end)
   end
 
-  @spec commit_seq(t()) :: Goblin.seq_no() | -1
+  @spec commit_seq(t()) :: Goblin.seq_no()
   def commit_seq(table) do
     case :ets.lookup(table, :commit_seq) do
-      [] -> -1
+      [] -> 0
       [{_, commit_seq}] -> commit_seq
     end
   end
@@ -113,11 +109,11 @@ defmodule Goblin.Writer.MemTable do
     end
   end
 
-  defp do_read(table, key, seq) do
+  defp read_key(table, key, seq) do
     ms = [
       {
         {{:"$1", :"$2"}, :_},
-        [{:andalso, {:"=:=", :"$1", key}, {:"=<", :"$2", seq}}],
+        [{:andalso, {:"=:=", :"$1", key}, {:<, :"$2", seq}}],
         [:"$_"]
       }
     ]

@@ -174,16 +174,18 @@ defmodule Goblin.Writer do
       mem_table: mem_table
     } = state
 
-    case WAL.append(wal, tx.writes) do
+    %{
+      writes: writes,
+      seq: seq
+    } = tx
+
+    writes = Enum.reverse(writes)
+
+    case WAL.append(wal, writes) do
       :ok ->
-        tx.writes
-        |> Enum.reverse()
-        |> tap(&publish_commit(&1, state))
-        |> Enum.each(&apply_write(mem_table, &1))
-
-        seq = tx.seq
-        MemTable.put_commit_seq(mem_table, seq - 1)
-
+        Enum.each(writes, &apply_write(mem_table, &1))
+        publish_commit(writes, state)
+        MemTable.put_commit_seq(mem_table, seq)
         {:reply, :ok, %{state | seq: seq, writer: nil}, {:continue, :next_tx}}
 
       {:error, reason} ->

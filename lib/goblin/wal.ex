@@ -96,7 +96,7 @@ defmodule Goblin.WAL do
 
   @impl GenServer
   def handle_call({:append, buffer}, _from, state) do
-    case append_and_sync_log(state.name, Enum.reverse(buffer)) do
+    case append_and_sync_log(state.name, buffer) do
       :ok -> {:reply, :ok, state}
       {:error, reason} -> {:stop, reason, state}
     end
