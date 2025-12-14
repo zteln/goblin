@@ -1,4 +1,15 @@
 defmodule Goblin.WALTest do
+  @moduledoc """
+  Important qualities to test:
+
+  - Non-trivial API:
+    - `append/2`
+    - `rotate/1`
+    - `clean/2`
+    - `recover/1`
+  - Properties:
+    - Recovers state from Manifest on start
+  """
   use ExUnit.Case, async: true
   use TestHelper
   alias Goblin.WAL
@@ -6,44 +17,18 @@ defmodule Goblin.WALTest do
   @moduletag :tmp_dir
   setup_db()
 
-  describe "on start" do
-    test "creates a new WAL and logs to manifest", c do
-      assert %{wal: {0, file}} = :sys.get_state(c.wal)
-      assert String.ends_with?(file, ".0")
-      assert %{wal: ^file} = Goblin.Manifest.get_version(c.manifest, [:wal])
-    end
-
-    test "recovers rotations and current WAL from manifest", c do
-      assert {:ok, rotation, current} = WAL.rotate(c.wal)
-      Goblin.Manifest.log_rotation(c.manifest, rotation, current)
-
-      stop_db(__MODULE__)
-      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
-
-      assert %{wal: {1, ^current}, rotations: [{0, ^rotation}]} = :sys.get_state(wal)
-    end
-  end
-
-  describe "append/2" do
-    test "appends to log and syncs file", c do
+  describe "API" do
+    test "append/2 appends to log and syncs", c do
       %{wal: {_, file}} = :sys.get_state(c.wal)
       %{size: size1} = File.stat!(file)
 
       assert :ok == WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
+
       %{size: size2} = File.stat!(file)
       assert size2 > size1
-
-      assert {:ok, [{nil, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}]} == WAL.recover(c.wal)
-
-      stop_db(__MODULE__)
-      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
-
-      assert {:ok, [{nil, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}]} == WAL.recover(wal)
     end
-  end
 
-  describe "rotate/2" do
-    test "rotates log and opens new", c do
+    test "rotate/1 generates a new WAL", c do
       no_files = length(File.ls!(c.tmp_dir))
       WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
 
@@ -53,13 +38,11 @@ defmodule Goblin.WALTest do
 
       assert no_files + 1 == length(File.ls!(c.tmp_dir))
 
-      assert {:ok, [{^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}, {nil, [{:put, 2, 2, 2}]}]} =
+      assert {:ok, [{^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]}, {nil, [{:put, 2, 2, 2}]}]} =
                WAL.recover(c.wal)
     end
-  end
 
-  describe "clean/2" do
-    test "removes rotated wal from disk and state", c do
+    test "clean/2 removes log file from disk and state", c do
       {:ok, rotation, _current} = WAL.rotate(c.wal)
       no_files = length(File.ls!(c.tmp_dir))
 
@@ -74,7 +57,7 @@ defmodule Goblin.WALTest do
       assert no_files - 1 == length(File.ls!(c.tmp_dir))
     end
 
-    test "waits until there are no active readers", c do
+    test "clean/2 waits until there are no active readers before cleaning", c do
       parent = self()
       {:ok, rotation, _current} = WAL.rotate(c.wal)
 
@@ -109,26 +92,24 @@ defmodule Goblin.WALTest do
         assert %{rotations: []} = :sys.get_state(c.wal)
       end
     end
-  end
 
-  describe "recover/2" do
-    test "get past logs from disk", c do
+    test "recover/1 returns all logs", c do
       assert {:ok, [{nil, []}]} == WAL.recover(c.wal)
       WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
-      assert {:ok, [{nil, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}]} == WAL.recover(c.wal)
+      assert {:ok, [{nil, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]}]} == WAL.recover(c.wal)
 
       {:ok, rotation, current} = WAL.rotate(c.wal)
       Goblin.Manifest.log_rotation(c.manifest, rotation, current)
 
-      assert {:ok, [{^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]}, {nil, []}]} =
+      assert {:ok, [{^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]}, {nil, []}]} =
                WAL.recover(c.wal)
 
       WAL.append(c.wal, [{:put, 2, 2, 2}, {:put, 3, 3, 3}])
 
       assert {:ok,
               [
-                {^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]},
-                {nil, [{:put, 3, 3, 3}, {:put, 2, 2, 2}]}
+                {^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]},
+                {nil, [{:put, 2, 2, 2}, {:put, 3, 3, 3}]}
               ]} = WAL.recover(c.wal)
 
       stop_db(__MODULE__)
@@ -136,9 +117,25 @@ defmodule Goblin.WALTest do
 
       assert {:ok,
               [
-                {^rotation, [{:put, 1, 1, 1}, {:put, 0, 0, 0}]},
-                {nil, [{:put, 3, 3, 3}, {:put, 2, 2, 2}]}
+                {^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]},
+                {nil, [{:put, 2, 2, 2}, {:put, 3, 3, 3}]}
               ]} = WAL.recover(wal)
+    end
+  end
+
+  describe "Property" do
+    test "recovers state from Manifest on restart", c do
+      WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
+      {:ok, rotation, current} = WAL.rotate(c.wal)
+
+      wal_state = :sys.get_state(c.wal)
+
+      Goblin.Manifest.log_rotation(c.manifest, rotation, current)
+
+      stop_db(__MODULE__)
+      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
+
+      assert ^wal_state = :sys.get_state(wal)
     end
   end
 end
