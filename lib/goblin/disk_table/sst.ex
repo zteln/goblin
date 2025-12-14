@@ -159,9 +159,6 @@ defmodule Goblin.DiskTable.SST do
         seq_range_pos::integer-64,
         seq_range_size::integer-64,
         no_blocks::integer-64
-        # size::integer-64,
-        # offset::integer-64
-        # crc::integer-32
       >>) do
     {:ok,
      {
@@ -173,9 +170,6 @@ defmodule Goblin.DiskTable.SST do
        seq_range_pos,
        seq_range_size,
        no_blocks
-       # size,
-       # offset
-       # crc
      }}
   end
 
