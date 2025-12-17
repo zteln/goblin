@@ -5,6 +5,48 @@ defmodule Goblin.DiskTable do
 
   @tmp_suffix ".tmp"
 
+  defmodule Iterator do
+    @moduledoc false
+    defstruct [
+      :file,
+      :disk
+    ]
+
+    defimpl Goblin.Iterable do
+      def init(iterator) do
+        disk = IOHandler.open!(iterator.file, start?: true)
+        %{iterator | disk: disk}
+      end
+
+      def next(iterator) do
+        case read_next_key(iterator.disk) do
+          {:ok, triple, disk} ->
+            {triple, %{iterator | disk: disk}}
+
+          {:error, :eod} ->
+            :ok
+
+          error ->
+            IOHandler.close(iterator.disk)
+            raise "Iteration failed with error: #{inspect(error)}"
+        end
+      end
+
+      def close(iterator) do
+        IOHandler.close(iterator.disk)
+      end
+
+      defp read_next_key(disk) do
+        with {:ok, enc_header} <- IOHandler.read(disk, SST.size(:block_header)),
+             {:ok, span} <- SST.block_span(enc_header),
+             {:ok, enc_block} <- IOHandler.read(disk, SST.size(:block) * span),
+             {:ok, triple} <- SST.decode_block(enc_block) do
+          {:ok, triple, IOHandler.advance_offset(disk, SST.size(:block) * span)}
+        end
+      end
+    end
+  end
+
   @spec new(Enumerable.t(Goblin.triple()), keyword()) :: {:ok, [SST.t()]} | {:error, term()}
   def new(data, opts) do
     with {:ok, moves, ssts} <- write_to_disk(data, opts),
@@ -62,48 +104,9 @@ defmodule Goblin.DiskTable do
     result
   end
 
-  @spec stream!(Goblin.db_file()) :: Enumerable.t()
-  def stream!(file) do
-    Stream.resource(
-      fn ->
-        IOHandler.open!(file, start?: true)
-      end,
-      fn disk ->
-        case read_next_key(disk) do
-          {:ok, data, disk} ->
-            {[data], disk}
-
-          {:error, :eod} ->
-            {:halt, disk}
-
-          {:error, _reason} ->
-            IOHandler.close(disk)
-            raise "stream failed"
-        end
-      end,
-      fn disk -> IOHandler.close(disk) end
-    )
-  end
-
-  @spec iterate(IOHandler.t()) :: {Goblin.triple(), IOHandler.t()} | :ok
-  def iterate(disk) do
-    case read_next_key(disk) do
-      {:ok, data, disk} ->
-        {data, disk}
-
-      {:error, :eod} ->
-        :ok
-
-      _e ->
-        IOHandler.close(disk)
-        raise "Iteration failed."
-    end
-  end
-
-  @spec iterator(Goblin.db_file()) :: Goblin.Iterator.iterator()
+  @spec iterator(Goblin.db_file()) :: Goblin.Iterable.t()
   def iterator(file) do
-    disk = IOHandler.open!(file, start?: true)
-    {disk, &iterate/1, &IOHandler.close/1}
+    %Iterator{file: file}
   end
 
   defp write_to_disk(data, opts) do
@@ -204,15 +207,6 @@ defmodule Goblin.DiskTable do
 
       e ->
         e
-    end
-  end
-
-  defp read_next_key(disk) do
-    with {:ok, enc_header} <- IOHandler.read(disk, SST.size(:block_header)),
-         {:ok, span} <- SST.block_span(enc_header),
-         {:ok, enc_block} <- IOHandler.read(disk, SST.size(:block) * span),
-         {:ok, data} <- SST.decode_block(enc_block) do
-      {:ok, data, IOHandler.advance_offset(disk, SST.size(:block) * span)}
     end
   end
 

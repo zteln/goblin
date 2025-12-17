@@ -2,6 +2,72 @@ defmodule Goblin.Writer.MemTable do
   @moduledoc false
   @type t :: :ets.table()
 
+  defmodule Iterator do
+    @moduledoc false
+    defstruct [
+      :idx,
+      :table,
+      :max_seq,
+      :min_key,
+      :max_key
+    ]
+
+    defimpl Goblin.Iterable do
+      def init(iterator), do: iterator
+
+      def next(%{idx: nil} = iterator) do
+        idx = :ets.first(iterator.table)
+        handle_iteration(iterator, idx)
+      end
+
+      def next(iterator) do
+        idx = :ets.next(iterator.table, iterator.idx)
+        handle_iteration(iterator, idx)
+      end
+
+      def close(_iterator), do: :ok
+
+      defp handle_iteration(_iterator, :"$end_of_table"), do: :ok
+
+      defp handle_iteration(
+             %{min_key: nil, max_key: nil, max_seq: max_seq} = iterator,
+             {key, seq} = idx
+           )
+           when seq < max_seq do
+        [{{_key, _seq}, value}] = :ets.lookup(iterator.table, idx)
+        {{key, seq, value}, %{iterator | idx: idx}}
+      end
+
+      defp handle_iteration(
+             %{min_key: nil, max_key: max_key, max_seq: max_seq} = iterator,
+             {key, seq} = idx
+           )
+           when key <= max_key and seq < max_seq do
+        [{{_key, _seq}, value}] = :ets.lookup(iterator.table, idx)
+        {{key, seq, value}, %{iterator | idx: idx}}
+      end
+
+      defp handle_iteration(
+             %{min_key: min_key, max_key: nil, max_seq: max_seq} = iterator,
+             {key, seq} = idx
+           )
+           when min_key <= key and seq < max_seq do
+        [{{_key, _seq}, value}] = :ets.lookup(iterator.table, idx)
+        {{key, seq, value}, %{iterator | idx: idx}}
+      end
+
+      defp handle_iteration(%{max_seq: max_seq} = iterator, {key, seq} = idx)
+           when seq < max_seq do
+        [{{_key, _seq}, value}] = :ets.lookup(iterator.table, idx)
+        {{key, seq, value}, %{iterator | idx: idx}}
+      end
+
+      defp handle_iteration(iterator, idx) do
+        next(%{iterator | idx: idx})
+      end
+    end
+  end
+
   @spec new(atom()) :: t()
   def new(name) do
     :ets.new(name, [:named_table, :ordered_set])
@@ -53,40 +119,23 @@ defmodule Goblin.Writer.MemTable do
     end
   end
 
-  @spec get_range(t(), Goblin.db_key(), Goblin.db_key()) :: [Goblin.triple()]
-  def get_range(table, min, max) do
+  @spec iterator(t(), keyword()) :: Goblin.Iterable.t()
+  def iterator(table, opts \\ []) do
     wait_until_memtable_ready(table)
+    max_seq = opts[:max_seq] || commit_seq(table)
 
-    commit_seq = commit_seq(table)
-
-    guard =
-      cond do
-        is_nil(min) and is_nil(max) -> [{:<, :"$2", commit_seq}]
-        is_nil(min) -> [{:and, {:"=<", :"$1", max}, {:<, :"$2", commit_seq}}]
-        is_nil(max) -> [{:and, {:"=<", min, :"$1"}, {:<, :"$2", commit_seq}}]
-        true -> [{:and, {:"=<", :"$1", max}, {:"=<", min, :"$1"}, {:<, :"$2", commit_seq}}]
-      end
-
-    ms = [{{{:"$1", :"$2"}, :_}, guard, [:"$_"]}]
-
-    :ets.select(table, ms)
-    |> Enum.map(fn
-      {{key, seq}, value} -> {key, seq, value}
-    end)
+    %Iterator{
+      table: table,
+      min_key: opts[:min_key],
+      max_key: opts[:max_key],
+      max_seq: max_seq
+    }
   end
 
   @spec clean_seq_range(t(), Goblin.seq_no()) :: non_neg_integer()
   def clean_seq_range(table, seq) do
     ms = [{{{:_, :"$1"}, :_}, [{:"=<", :"$1", seq}], [true]}]
     :ets.select_delete(table, ms)
-  end
-
-  @spec get_seq_range(t(), Goblin.seq_no()) :: [Goblin.triple()]
-  def get_seq_range(table, seq) do
-    ms = [{{{:_, :"$1"}, :_}, [{:"=<", :"$1", seq}], [:"$_"]}]
-
-    :ets.select(table, ms)
-    |> Enum.map(fn {{key, seq}, value} -> {key, seq, value} end)
   end
 
   @spec commit_seq(t()) :: Goblin.seq_no()

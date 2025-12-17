@@ -245,9 +245,13 @@ defmodule Goblin.Compactor do
           max_sst_size: max_sst_size
         ]
 
-        data = merge_stream(sources ++ targets, filter_tombstones)
+        stream =
+          Goblin.Iterator.k_merge_stream(
+            fn -> Enum.map(sources ++ targets, &DiskTable.iterator(&1.id)) end,
+            filter_tombstones: filter_tombstones
+          )
 
-        with {:ok, ssts} <- DiskTable.new(data, opts),
+        with {:ok, ssts} <- DiskTable.new(stream, opts),
              :ok <-
                Manifest.log_compaction(
                  manifest,
@@ -293,13 +297,6 @@ defmodule Goblin.Compactor do
       target_min > max -> find_overlapping(targets, {min, max}, acc)
       true -> find_overlapping(targets, {min, max}, [target | acc])
     end
-  end
-
-  defp merge_stream(ssts, filter_tombstones) do
-    Goblin.Iterator.stream_k_merge(
-      fn -> Enum.map(ssts, &DiskTable.iterator(&1.id)) end,
-      filter_tombstones: filter_tombstones
-    )
   end
 
   defp remove_merged([]), do: :ok

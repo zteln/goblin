@@ -1,14 +1,24 @@
+defprotocol Goblin.Iterable do
+  @moduledoc false
+  @type t :: t()
+  @spec init(t()) :: t()
+  def init(iter)
+  @spec next(t()) :: t()
+  def next(iter)
+  @spec close(t()) :: t()
+  def close(iter)
+end
+
 defmodule Goblin.Iterator do
   @moduledoc false
-  @type iterator :: {term(), (term() -> {Goblin.triple(), term()} | :ok), (term() -> :ok)}
 
-  @spec stream_k_merge((-> [iterator()]), keyword()) :: Enumerable.t(Goblin.triple())
-  def stream_k_merge(init, opts \\ []) do
+  @spec k_merge_stream((-> [Goblin.Iterable.t()]), keyword()) :: Enumerable.t(Goblin.triple())
+  def k_merge_stream(init, opts \\ []) do
     Stream.resource(
-      fn -> Enum.map(init.(), &{&1, nil}) end,
+      fn -> Enum.map(init.(), &{Goblin.Iterable.init(&1), nil}) end,
       &k_merge(&1, opts),
       &Enum.each(&1, fn
-        {{state, _, close}, _} -> close.(state)
+        {iterator, _} -> Goblin.Iterable.close(iterator)
         _ -> :ok
       end)
     )
@@ -42,10 +52,10 @@ defmodule Goblin.Iterator do
     end
   end
 
-  defp iterate({state, next, close}) do
-    case next.(state) do
-      :ok -> close.(state)
-      {out, state} -> {out, {state, next, close}}
+  defp iterate(iterator) do
+    case Goblin.Iterable.next(iterator) do
+      :ok -> Goblin.Iterable.close(iterator)
+      {out, iterator} -> {out, iterator}
     end
   end
 

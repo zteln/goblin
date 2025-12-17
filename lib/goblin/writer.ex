@@ -74,18 +74,9 @@ defmodule Goblin.Writer do
   end
 
   @spec iterators(writer(), Goblin.db_key() | nil, Goblin.db_key() | nil) ::
-          Goblin.Iterator.iterator()
-  def iterators(writer_name, min, max) do
-    state = MemTable.get_range(writer_name, min, max)
-
-    next = fn
-      [] -> :ok
-      [next | range] -> {next, range}
-    end
-
-    close = fn _ -> :ok end
-
-    {state, next, close}
+          Goblin.Iterable.t()
+  def iterators(writer_name, min_key, max_key) do
+    MemTable.iterator(writer_name, min_key: min_key, max_key: max_key)
   end
 
   @spec latest_commit_sequence(writer()) :: Goblin.seq_no() | -1
@@ -327,9 +318,12 @@ defmodule Goblin.Writer do
           max_sst_size: max_sst_size
         ]
 
-        data = MemTable.get_seq_range(mem_table, seq)
+        stream =
+          Goblin.Iterator.k_merge_stream(fn ->
+            [MemTable.iterator(mem_table, max_seq: seq + 1)]
+          end)
 
-        with {:ok, ssts} <- DiskTable.new(data, opts),
+        with {:ok, ssts} <- DiskTable.new(stream, opts),
              :ok <- Manifest.log_flush(manifest, Enum.map(ssts, & &1.file), rotated_wal),
              :ok <- WAL.clean(wal, rotated_wal),
              :ok <- Store.put(store, ssts) do
