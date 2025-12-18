@@ -78,7 +78,7 @@ defmodule Goblin.Reader do
   def select(min, max, writer, store) do
     Goblin.Iterator.k_merge_stream(
       fn ->
-        mem_iterators = Writer.iterators(writer, min, max)
+        mem_iterators = Writer.iterators(writer)
         sst_iterators = Store.iterators(store, min, max)
         [mem_iterators | sst_iterators]
       end,

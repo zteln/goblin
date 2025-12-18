@@ -74,10 +74,9 @@ defmodule Goblin.Writer do
     end)
   end
 
-  @spec iterators(writer(), Goblin.db_key() | nil, Goblin.db_key() | nil) ::
-          Goblin.Iterable.t()
-  def iterators(writer_name, min_key, max_key) do
-    MemTable.iterator(writer_name, min_key: min_key, max_key: max_key)
+  @spec iterators(writer()) :: Goblin.Iterable.t()
+  def iterators(writer_name) do
+    MemTable.iterator(writer_name)
   end
 
   @spec latest_commit_sequence(writer()) :: Goblin.seq_no() | -1
@@ -321,7 +320,7 @@ defmodule Goblin.Writer do
 
         stream =
           Iterator.k_merge_stream(fn ->
-            [MemTable.iterator(mem_table, max_seq: seq + 1)]
+            [MemTable.iterator(mem_table, seq + 1)]
           end)
 
         with {:ok, ssts} <- DiskTable.new(stream, opts),
