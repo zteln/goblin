@@ -76,15 +76,8 @@ defmodule Goblin.Reader do
           Goblin.Store.store()
         ) :: Enumerable.t(Goblin.pair())
   def select(min, max, writer, store) do
-    Goblin.Iterator.k_merge_stream(
-      fn ->
-        mem_iterators = Writer.iterators(writer)
-        sst_iterators = Store.iterators(store, min, max)
-        [mem_iterators | sst_iterators]
-      end,
-      min: min,
-      max: max
-    )
+    iterators = [Writer.iterators(writer) | Store.iterators(store, min, max)]
+    Goblin.Iterator.k_merge_stream(iterators, min: min, max: max)
   end
 
   @impl GenServer

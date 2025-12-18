@@ -12,10 +12,10 @@ end
 defmodule Goblin.Iterator do
   @moduledoc false
 
-  @spec k_merge_stream((-> [Goblin.Iterable.t()]), keyword()) :: Enumerable.t(Goblin.triple())
-  def k_merge_stream(init, opts \\ []) do
+  @spec k_merge_stream([Goblin.Iterable.t()], keyword()) :: Enumerable.t(Goblin.triple())
+  def k_merge_stream(iterators, opts \\ []) do
     Stream.resource(
-      fn -> Enum.map(init.(), &{Goblin.Iterable.init(&1), nil}) end,
+      fn -> Enum.map(iterators, &{Goblin.Iterable.init(&1), nil}) end,
       &k_merge(&1, opts),
       &Enum.each(&1, fn
         {iterator, _} -> Goblin.Iterable.close(iterator)

@@ -49,10 +49,7 @@ defmodule Goblin.Store do
     end)
   end
 
-  @spec iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [
-          {Goblin.Iterator.iterator(),
-           (Goblin.Iterator.iterator() -> {Goblin.triple(), Goblin.Iterator.iterator()})}
-        ]
+  @spec iterators(store(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: [Goblin.Iterable.t()]
   def iterators(store, min, max) do
     wait_until_store_ready(store)
 

@@ -318,10 +318,7 @@ defmodule Goblin.Writer do
           max_sst_size: max_sst_size
         ]
 
-        stream =
-          Iterator.k_merge_stream(fn ->
-            [MemTable.iterator(mem_table, seq + 1)]
-          end)
+        stream = Iterator.k_merge_stream([MemTable.iterator(mem_table, seq + 1)])
 
         with {:ok, ssts} <- DiskTable.new(stream, opts),
              :ok <- Manifest.log_flush(manifest, Enum.map(ssts, & &1.file), rotated_wal),

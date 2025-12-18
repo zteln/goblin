@@ -246,11 +246,8 @@ defmodule Goblin.Compactor do
           max_sst_size: max_sst_size
         ]
 
-        stream =
-          Iterator.k_merge_stream(
-            fn -> Enum.map(sources ++ targets, &DiskTable.iterator(&1.id)) end,
-            filter_tombstones: filter_tombstones
-          )
+        iterators = Enum.map(sources ++ targets, &DiskTable.iterator(&1.id))
+        stream = Iterator.k_merge_stream(iterators, filter_tombstones: filter_tombstones)
 
         with {:ok, ssts} <- DiskTable.new(stream, opts),
              :ok <-
