@@ -8,6 +8,7 @@ defmodule Goblin.Writer do
   alias Goblin.Manifest
   alias Goblin.DiskTable
   alias Goblin.PubSub
+  alias Goblin.Iterator
 
   @flush_level 0
 
@@ -319,7 +320,7 @@ defmodule Goblin.Writer do
         ]
 
         stream =
-          Goblin.Iterator.k_merge_stream(fn ->
+          Iterator.k_merge_stream(fn ->
             [MemTable.iterator(mem_table, max_seq: seq + 1)]
           end)
 

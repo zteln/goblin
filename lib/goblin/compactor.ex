@@ -5,6 +5,7 @@ defmodule Goblin.Compactor do
   alias Goblin.Store
   alias Goblin.Manifest
   alias Goblin.Reader
+  alias Goblin.Iterator
 
   @flush_level 0
 
@@ -246,7 +247,7 @@ defmodule Goblin.Compactor do
         ]
 
         stream =
-          Goblin.Iterator.k_merge_stream(
+          Iterator.k_merge_stream(
             fn -> Enum.map(sources ++ targets, &DiskTable.iterator(&1.id)) end,
             filter_tombstones: filter_tombstones
           )
