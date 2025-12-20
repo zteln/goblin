@@ -2,81 +2,100 @@ defmodule Goblin.IteratorTest do
   use ExUnit.Case, async: true
   alias Goblin.Iterator
 
-  describe "stream_k_merge/2" do
-    test "merges multiple iterators into stream" do
-      assert [
-               {1, 6, 6},
-               {6, 11, 11},
-               {11, 16, 16},
-               {16, 21, 21},
-               {21, 26, 26}
-             ] ==
-               Iterator.stream_k_merge(gen_iterator())
-               |> Enum.to_list()
-    end
+  defmodule TestIterator do
+    defstruct [
+      :data
+    ]
 
-    test "merges multiple iterators within range" do
-      assert [
-               {6, 11, 11},
-               {11, 16, 16},
-               {16, 21, 21}
-             ] ==
-               Iterator.stream_k_merge(gen_iterator(), min: 6, max: 16)
-               |> Enum.to_list()
-    end
+    defimpl Goblin.Iterable do
+      def init(iterator), do: iterator
 
-    test "filters tombstone values" do
-      assert [
-               {1, 6, 6},
-               {6, 11, 11},
-               {11, 16, 16},
-               {21, 26, 26}
-             ] ==
-               Iterator.stream_k_merge(gen_iterator(tombstone_key: 16), filter_tombstones: true)
-               |> Enum.to_list()
-    end
+      def next(%{data: []}), do: :ok
 
-    test "closes all iterators" do
-      close = fn _ ->
-        send(self(), :iterator_closed)
-        :ok
+      def next(iterator) do
+        [next | data] = iterator.data
+        {next, %{iterator | data: data}}
       end
 
-      assert [
-               {1, 6, 6},
-               {6, 11, 11},
-               {11, 16, 16},
-               {16, 21, 21},
-               {21, 26, 26}
-             ] ==
-               Iterator.stream_k_merge(gen_iterator(close: close))
-               |> Enum.to_list()
-
-      for _n <- 1..5 do
-        assert_receive :iterator_closed
+      def close(_iterator) do
+        send(self(), :closed)
+        :ok
       end
     end
   end
 
-  defp gen_iterator(opts \\ []) do
-    tombstone_key = opts[:tombstone_key]
-    close = opts[:close] || fn _ -> :ok end
+  describe "k_merge_stream/2" do
+    test "merges multiple iterators into stream" do
+      {iterators, data} = random_iterators_and_data()
 
-    fn ->
-      for n <- 1..25//5 do
-        data =
-          for i <- n..(n + 5) do
-            val = if n == tombstone_key, do: :"$goblin_tombstone", else: i
-            {n, i, val}
-          end
+      assert data
+             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+             |> Enum.uniq_by(fn {key, _seq, _val} -> key end) ==
+               Iterator.k_merge_stream(iterators) |> Enum.to_list()
+    end
 
-        next = fn
-          [] -> :ok
-          [hd | tl] -> {hd, tl}
-        end
+    test "merges multiple iterators within provided range" do
+      min = 5
+      max = 15
 
-        {data, next, close}
+      {iterators, data} = random_iterators_and_data()
+
+      assert data
+             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+             |> Enum.uniq_by(fn {key, _seq, _val} -> key end)
+             |> Enum.filter(fn {key, _seq, _val} -> key >= min and key <= max end) ==
+               Iterator.k_merge_stream(iterators, min: min, max: max) |> Enum.to_list()
+    end
+
+    test "filters tombstones" do
+      {iterators, data} = random_iterators_and_data(true)
+
+      assert data
+             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+             |> Enum.uniq_by(fn {key, _seq, _val} -> key end)
+             |> Enum.reject(fn {_key, _seq, val} -> val == :"$goblin_tombstone" end) ==
+               Iterator.k_merge_stream(iterators, filter_tombstones: true)
+               |> Enum.to_list()
+    end
+
+    test "closes iterators when finished" do
+      {iterators, data} = random_iterators_and_data()
+
+      assert data
+             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+             |> Enum.uniq_by(fn {key, _seq, _val} -> key end) ==
+               Iterator.k_merge_stream(iterators, filter_tombstones: true) |> Enum.to_list()
+
+      for _ <- 1..length(iterators) do
+        assert_receive :closed
       end
+    end
+  end
+
+  defp random_iterators_and_data(tombstones? \\ false) do
+    counter = :counters.new(1, [])
+
+    for _ <- 1..5, reduce: {[], []} do
+      {iterators_acc, data_acc} ->
+        data =
+          1..20
+          |> Enum.take_random(Enum.random(1..10))
+          |> Enum.map(fn n ->
+            seq = :counters.get(counter, 1)
+            :counters.add(counter, 1, 1)
+
+            value =
+              if tombstones? and :rand.uniform() > 0.5 do
+                :"$goblin_tombstone"
+              else
+                n
+              end
+
+            {n, seq, value}
+          end)
+          |> List.keysort(0)
+
+        {[%TestIterator{data: data} | iterators_acc], data ++ data_acc}
     end
   end
 end

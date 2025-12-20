@@ -17,10 +17,7 @@ defmodule Goblin.Iterator do
     Stream.resource(
       fn -> Enum.map(iterators, &{Goblin.Iterable.init(&1), nil}) end,
       &k_merge(&1, opts),
-      &Enum.each(&1, fn
-        {iterator, _} -> Goblin.Iterable.close(iterator)
-        _ -> :ok
-      end)
+      fn cursors -> Enum.each(cursors, &k_merge_close/1) end
     )
   end
 
@@ -59,27 +56,27 @@ defmodule Goblin.Iterator do
     end
   end
 
-  defp skip({nil, data}), do: [{nil, data}]
+  defp skip({nil, triple}), do: [{nil, triple}]
 
   defp skip({iterator, nil}) do
     case iterate(iterator) do
       :ok -> []
-      {data, iterator} -> skip({iterator, data})
+      {triple, iterator} -> skip({iterator, triple})
     end
   end
 
-  defp skip({iterator, data}) do
-    {key, _, _} = data
+  defp skip({iterator, triple}) do
+    {key, _, _} = triple
 
     case iterate(iterator) do
-      :ok -> [{nil, data}]
-      {{^key, _, _} = data, iterator} -> skip({iterator, data})
-      _ -> [{iterator, data}]
+      :ok -> [{nil, triple}]
+      {{^key, _, _} = triple, iterator} -> skip({iterator, triple})
+      _ -> [{iterator, triple}]
     end
   end
 
   defp jump({nil, {key, _, _}}, key), do: []
-  defp jump({nil, data}, _), do: [{nil, data}]
+  defp jump({nil, triple}, _), do: [{nil, triple}]
 
   defp jump({iterator, {key, _, _}}, key) do
     case iterate(iterator) do
@@ -89,4 +86,8 @@ defmodule Goblin.Iterator do
   end
 
   defp jump(cursor, _key), do: [cursor]
+
+  defp k_merge_close({nil, _}), do: :ok
+  defp k_merge_close({iterator, _}), do: Goblin.Iterable.close(iterator)
+  defp k_merge_close(_), do: :ok
 end

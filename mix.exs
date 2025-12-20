@@ -9,6 +9,7 @@ defmodule Goblin.MixProject do
       start_permanent: Mix.env() == :prod,
       name: "Goblin",
       deps: deps(),
+      consolidate_protocols: Mix.env() != :test,
       package: package(),
       description: description(),
       docs: &docs/0,
