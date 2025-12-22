@@ -95,11 +95,9 @@ defmodule Goblin.Compactor do
     {:reply, :ok, state, {:continue, :maybe_compact}}
   end
 
-  def handle_call(:is_compacting, _from, %{compacting: nil} = state),
-    do: {:reply, false, state}
-
-  def handle_call(:is_compacting, _from, state),
-    do: {:reply, true, state}
+  def handle_call(:is_compacting, _from, state) do
+    {:reply, state.compacting != nil, state}
+  end
 
   @impl GenServer
   def handle_continue(:maybe_compact, %{compacting: nil} = state) do
