@@ -114,40 +114,44 @@ defmodule Goblin.DiskTable do
     max_sst_size = opts[:max_sst_size]
     level_key = opts[:level_key]
 
-    file = file_getter.()
-    tmp_file = tmp_file(file)
-    sst = SST.new(file, level_key)
-    disk = IOHandler.open!(tmp_file, write?: true)
-
-    Enum.reduce_while(data, {sst, disk, [{tmp_file, file}], []}, fn
-      triple, {%{size: size} = sst, disk, moves, ssts} when size >= max_sst_size ->
+    Enum.reduce_while(data, {nil, nil, [], []}, fn
+      triple, {nil, nil, moves, ssts} ->
         file = file_getter.()
         tmp_file = tmp_file(file)
-        new_sst = SST.new(file, level_key)
+        sst = SST.new(file, level_key)
+        disk = IOHandler.open!(tmp_file, write?: true)
 
-        with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
-             :ok <- IOHandler.close(disk),
-             {:ok, new_disk} <- IOHandler.open(tmp_file, write?: true),
-             {:ok, new_sst, disk} <- append_data(triple, new_sst, new_disk, opts) do
-          {:cont, {new_sst, disk, [{tmp_file, file} | moves], [sst | ssts]}}
-        else
+        case append_data(triple, sst, disk, opts) do
+          {:ok, sst, disk} -> {:cont, {sst, disk, [{tmp_file, file} | moves], ssts}}
           error -> {:halt, error}
         end
 
       triple, {sst, disk, moves, ssts} ->
         case append_data(triple, sst, disk, opts) do
-          {:ok, sst, disk} -> {:cont, {sst, disk, moves, ssts}}
-          error -> {:halt, error}
+          {:ok, %{size: size} = sst, disk} when size >= max_sst_size ->
+            case finalize_sst(sst, disk, opts) do
+              {:ok, sst} -> {:cont, {nil, nil, moves, [sst | ssts]}}
+              error -> {:halt, error}
+            end
+
+          {:ok, sst, disk} ->
+            {:cont, {sst, disk, moves, ssts}}
+
+          error ->
+            {:halt, error}
         end
     end)
     |> then(fn
       {:error, _} = error ->
         error
 
+      {nil, nil, moves, ssts} ->
+        {:ok, moves, Enum.reverse(ssts)}
+
       {sst, disk, moves, ssts} ->
-        with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
-             :ok <- IOHandler.close(disk) do
-          {:ok, moves, Enum.reverse([sst | ssts])}
+        case finalize_sst(sst, disk, opts) do
+          {:ok, sst} -> {:ok, moves, Enum.reverse([sst | ssts])}
+          error -> error
         end
     end)
   end
@@ -170,6 +174,13 @@ defmodule Goblin.DiskTable do
 
     with {:ok, disk} <- IOHandler.write(disk, metadata_block) do
       {:ok, sst, disk}
+    end
+  end
+
+  defp finalize_sst(sst, disk, opts) do
+    with {:ok, sst, disk} <- append_metadata(sst, disk, opts),
+         :ok <- IOHandler.close(disk) do
+      {:ok, sst}
     end
   end
 
