@@ -139,7 +139,7 @@ defmodule Goblin.Manifest do
       end)
       |> Map.replace_lazy(:wal_rotations, fn wal_rotations ->
         wal_rotations
-        |> MapSet.to_list()
+        |> Enum.reverse()
         |> Enum.map(&Path.join(dir, &1))
       end)
 
@@ -210,7 +210,7 @@ defmodule Goblin.Manifest do
   defp rm_orphaned_files!(dir, version) do
     %{ssts: ssts, wal_rotations: wal_rotations, wal: wal} = version
 
-    tracked_files = [wal | MapSet.to_list(ssts) ++ MapSet.to_list(wal_rotations)]
+    tracked_files = [wal | MapSet.to_list(ssts) ++ wal_rotations]
 
     dir
     |> File.ls!()
@@ -304,12 +304,12 @@ defmodule Goblin.Manifest do
   end
 
   defp apply_edit(version, {:wal_added, wal}) do
-    wal_rotations = MapSet.put(version.wal_rotations, wal)
+    wal_rotations = [wal | version.wal_rotations]
     %{version | wal_rotations: wal_rotations}
   end
 
   defp apply_edit(version, {:wal_removed, wal}) do
-    wal_rotations = MapSet.delete(version.wal_rotations, wal)
+    wal_rotations = Enum.reject(version.wal_rotations, &(&1 == wal))
     %{version | wal_rotations: wal_rotations}
   end
 
@@ -324,7 +324,7 @@ defmodule Goblin.Manifest do
   defp new_version,
     do: %{
       ssts: MapSet.new(),
-      wal_rotations: MapSet.new(),
+      wal_rotations: [],
       wal: nil,
       count: 0,
       seq: 0
@@ -390,8 +390,7 @@ defmodule Goblin.Manifest do
       {~c"#{manifest_archive_name}", ~c"#{manifest}"}
 
     rest =
-      ([version.wal] ++
-         MapSet.to_list(version.ssts) ++ MapSet.to_list(version.wal_rotations))
+      ([version.wal | version.wal_rotations] ++ MapSet.to_list(version.ssts))
       |> Enum.map(fn file ->
         {~c"#{file}", ~c"#{Path.join(dir, file)}"}
       end)
