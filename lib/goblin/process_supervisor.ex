@@ -21,7 +21,7 @@ defmodule Goblin.ProcessSupervisor do
     level_base_size = args[:level_base_size] || @default_level_base_size
     level_size_multiplier = args[:level_size_multiplier] || @default_level_size_multiplier
     bf_fpp = args[:bf_fpp] || @default_bf_fpp
-    max_sst_size = div(level_base_size, 10)
+    max_sst_size = div(level_base_size, level_size_multiplier)
     pub_sub = args[:pub_sub]
 
     %{
