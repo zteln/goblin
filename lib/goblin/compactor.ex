@@ -46,15 +46,16 @@ defmodule Goblin.Compactor do
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec put(
-          compactor(),
-          Goblin.db_level_key(),
-          Goblin.db_file(),
-          Goblin.seq_no(),
-          non_neg_integer(),
-          {Goblin.db_key(), Goblin.db_key()}
-        ) :: :ok
-  def put(compactor, level_key, file, priority, size, key_range) do
+  @spec put(compactor(), Goblin.DiskTable.SST.t()) :: :ok
+  def put(compactor, sst) do
+    %{
+      level_key: level_key,
+      file: file,
+      seq_range: {priority, _},
+      size: size,
+      key_range: key_range
+    } = sst
+
     GenServer.call(compactor, {:put, level_key, file, priority, size, key_range})
   end
 
@@ -332,6 +333,6 @@ defmodule Goblin.Compactor do
          level_base_size,
          level_size_multiplier
        ) do
-    Enum.sum_by(level, & &1.size) >= level_base_size * level_size_multiplier ** level_key
+    Enum.sum_by(level, & &1.size) >= level_base_size * level_size_multiplier ** (level_key - 1)
   end
 end
