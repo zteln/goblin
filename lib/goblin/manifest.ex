@@ -139,7 +139,6 @@ defmodule Goblin.Manifest do
       end)
       |> Map.replace_lazy(:wal_rotations, fn wal_rotations ->
         wal_rotations
-        |> Enum.reverse()
         |> Enum.map(&Path.join(dir, &1))
       end)
 

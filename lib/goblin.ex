@@ -467,6 +467,26 @@ defmodule Goblin do
   end
 
   @doc """
+  Force a flush, producing at least one SST file.
+  If the database is currently flushing, then this operation is queued and will be eventually executed.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+
+  ## Returns
+
+  - `:ok` - The flush was or will be executed
+  - `{:error, reason}` - A flush could not be executed
+  """
+  @spec flush_now(db_server()) :: :ok | {:error, term()}
+  def flush_now(db) do
+    registry = name(db, ProcessRegistry)
+    writer = name(db, Writer)
+    Goblin.Writer.flush_now(via(registry, writer))
+  end
+
+  @doc """
   Subscribes the current process for database writes. 
   When a write occurs then either `{:put, key, value}` or `{:remove, key}` is dispatched to the subscribers mailbox.
   Batch writes result in separate messages.

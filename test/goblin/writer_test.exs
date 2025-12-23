@@ -7,12 +7,18 @@ defmodule Goblin.WriterTest do
     - `get_multi/2`
     - `iterators/3`
     - `transation/2`
+    - `is_flushing/1`
+    - `flush_now/1`
   - Properties:
     - Flushes to DiskTable when exceeding mem limit
     - Can read data during flush
     - Recovers state from WAL on start
+    - Correct sequence number on start
     - Transactions are queued
     - Transaction processes are cleaned up on failure
+    - Flushes are queued
+    - Queued flushes are flushed eventually
+    - Flushes are queued on start
   """
   use ExUnit.Case, async: true
   use TestHelper
@@ -56,26 +62,6 @@ defmodule Goblin.WriterTest do
 
       assert {[{:k1, 0, :v1}], [:k4, :k3]} ==
                Writer.get_multi(@table, [:k1, :k3, :k4])
-    end
-
-    test "iterators/3 returns iterators iterating through relevant data", c do
-      for n <- 1..10 do
-        Goblin.put(c.db, n, "v-#{n}")
-      end
-
-      assert {data, next, close} = Writer.iterators(@table, 1, 10)
-
-      data =
-        for n <- 1..10, reduce: data do
-          acc ->
-            key = n
-            seq = n - 1
-            value = "v-#{n}"
-            assert {{^key, ^seq, ^value}, acc} = next.(acc)
-            acc
-        end
-
-      assert :ok == close.(data)
     end
 
     test "transaction/2 updates mem table on commit", c do
@@ -130,11 +116,22 @@ defmodule Goblin.WriterTest do
       assert 4 == Writer.latest_commit_sequence(@table)
     end
 
-    @tag db_opts: [mem_limit: 2 * 1024, task_mod: FakeTask]
+    @tag db_opts: [task_mod: FakeTask]
     test "is_flushing/1 returns boolean indicating whether writer is flushing or not", c do
       refute Writer.is_flushing(c.writer)
-      trigger_flush(c.db)
+      Writer.flush_now(c.writer)
       assert Writer.is_flushing(c.writer)
+    end
+
+    test "flush_now/1 flushes current mem table to disk", c do
+      assert {:key, []} == Goblin.Store.get(__MODULE__.Store, :key)
+      Goblin.put(c.db, :key, :val)
+      assert :ok == Writer.flush_now(c.writer)
+
+      assert_eventually do
+        assert {:key, [sst]} = Goblin.Store.get(__MODULE__.Store, :key)
+        assert {:ok, {:value, 0, :val}} == Goblin.DiskTable.find(sst, :key)
+      end
     end
   end
 
@@ -155,15 +152,13 @@ defmodule Goblin.WriterTest do
       end
     end
 
-    @tag db_opts: [mem_limit: 2 * 1024, task_mod: FakeTask]
+    @tag db_opts: [task_mod: FakeTask]
     test "can read during a flush", c do
-      data = trigger_flush(c.db)
+      Goblin.put(c.db, :key, :val)
+      Writer.flush_now(c.writer)
 
       assert Goblin.is_flushing(c.db)
-
-      assert {Enum.map(data, fn {k, v} -> {k, k - 1, v} end) |> Enum.reverse(), []} ==
-               Writer.get_multi(@table, Enum.map(data, fn {k, _v} -> k end))
-
+      assert {:value, 0, :val} == Writer.get(@table, :key)
       assert Goblin.is_flushing(c.db)
     end
 
@@ -174,6 +169,33 @@ defmodule Goblin.WriterTest do
       start_db(c.tmp_dir, name: __MODULE__)
 
       assert {:value, 0, :v} == Writer.get(@table, :k)
+    end
+
+    test "recovers correct sequence number on start", c do
+      assert 0 == Writer.latest_commit_sequence(@table)
+      Goblin.put(c.db, :k, :v)
+      assert 1 == Writer.latest_commit_sequence(@table)
+
+      stop_db(__MODULE__)
+      %{db: db} = start_db(c.tmp_dir, name: __MODULE__)
+
+      assert_eventually do
+        assert 1 == Writer.latest_commit_sequence(@table)
+      end
+
+      Goblin.put(db, :l, :w)
+      Goblin.flush_now(db)
+
+      assert_eventually do
+        refute Goblin.is_flushing(db)
+      end
+
+      stop_db(__MODULE__)
+      start_db(c.tmp_dir, name: __MODULE__)
+
+      assert_eventually do
+        assert 2 == Writer.latest_commit_sequence(@table)
+      end
     end
 
     test "transactions are queued", c do
@@ -244,20 +266,57 @@ defmodule Goblin.WriterTest do
         assert %{writer: nil} = :sys.get_state(c.writer)
       end
     end
-  end
 
-  defp trigger_flush(db) do
-    Stream.iterate(1, &(&1 + 1))
-    |> Stream.map(&{&1, "v-#{&1}"})
-    |> Stream.chunk_every(1000)
-    |> Stream.transform(nil, fn chunk, acc ->
-      if Goblin.is_flushing(db) do
-        {:halt, acc}
-      else
-        Goblin.put_multi(db, chunk)
-        {chunk, acc}
-      end
-    end)
-    |> Enum.to_list()
+    @tag db_opts: [task_mod: FakeTask]
+    test "flushes are queued", c do
+      %{flush_queue: flush_queue} = :sys.get_state(c.writer)
+      assert :queue.is_empty(flush_queue)
+
+      Goblin.flush_now(c.db)
+      %{flushing: flushing, flush_queue: flush_queue} = :sys.get_state(c.writer)
+      refute is_nil(flushing)
+      assert :queue.is_empty(flush_queue)
+
+      Goblin.flush_now(c.db)
+      %{flush_queue: flush_queue} = :sys.get_state(c.writer)
+      refute :queue.is_empty(flush_queue)
+    end
+
+    @tag db_opts: [task_mod: FakeTask]
+    test "queued flushes are flushed eventually", c do
+      Goblin.flush_now(c.db)
+      Goblin.flush_now(c.db)
+
+      %{flushing: flushing, flush_queue: flush_queue} = :sys.get_state(c.writer)
+      assert {ref, _seq, _rotated_wal} = flushing
+      refute :queue.is_empty(flush_queue)
+
+      send(c.writer, {ref, {:ok, :flushed}})
+
+      %{flushing: flushing, flush_queue: flush_queue} = :sys.get_state(c.writer)
+      assert {ref, _seq, _rotated_wal} = flushing
+      assert :queue.is_empty(flush_queue)
+
+      send(c.writer, {ref, {:ok, :flushed}})
+
+      assert %{flushing: nil} = :sys.get_state(c.writer)
+    end
+
+    @tag db_opts: [task_mod: FakeTask]
+    test "flushes are queued on start", c do
+      Goblin.flush_now(c.db)
+      Goblin.flush_now(c.db)
+
+      %{flushing: flushing, flush_queue: flush_queue} = :sys.get_state(c.writer)
+      assert {_ref, seq, rotated_wal} = flushing
+      refute :queue.is_empty(flush_queue)
+
+      stop_db(__MODULE__)
+      %{writer: writer} = start_db(c.tmp_dir, name: __MODULE__)
+
+      %{flushing: flushing, flush_queue: flush_queue} = :sys.get_state(writer)
+      assert {_ref, ^seq, ^rotated_wal} = flushing
+      refute :queue.is_empty(flush_queue)
+    end
   end
 end

@@ -28,7 +28,8 @@ defmodule Goblin.Writer do
     :writer,
     :flushing,
     seq: 0,
-    write_queue: :queue.new()
+    write_queue: :queue.new(),
+    flush_queue: :queue.new()
   ]
 
   @spec start_link(opts :: keyword()) :: GenServer.on_start()
@@ -87,6 +88,11 @@ defmodule Goblin.Writer do
   @spec is_flushing(writer()) :: boolean()
   def is_flushing(writer) do
     GenServer.call(writer, :is_flushing)
+  end
+
+  @spec flush_now(writer()) :: :ok | {:error, term()}
+  def flush_now(writer) do
+    GenServer.call(writer, :flush_now)
   end
 
   @spec transaction(writer(), (Goblin.Tx.t() -> Goblin.Tx.return())) ::
@@ -197,7 +203,23 @@ defmodule Goblin.Writer do
   end
 
   def handle_call(:is_flushing, _from, state) do
-    {:reply, not is_nil(state.flushing), state}
+    {:reply, state.flushing != nil, state}
+  end
+
+  def handle_call(:flush_now, _from, state) do
+    %{
+      seq: seq,
+      wal: wal,
+      manifest: manifest
+    } = state
+
+    case coordinate_wal_rotation(wal, manifest) do
+      {:ok, rotated_wal} ->
+        {:reply, :ok, enqueue_flush(state, seq, rotated_wal)}
+
+      {:error, reason} = error ->
+        {:stop, reason, error, state}
+    end
   end
 
   @impl GenServer
@@ -216,9 +238,38 @@ defmodule Goblin.Writer do
   end
 
   def handle_continue(:maybe_flush, state) do
-    case maybe_flush(state) do
-      {:ok, state} -> {:noreply, state}
-      {:error, reason} -> {:stop, reason, state}
+    %{
+      mem_table: mem_table,
+      mem_limit: mem_limit,
+      wal: wal,
+      manifest: manifest,
+      seq: seq
+    } = state
+
+    if MemTable.size(mem_table) >= mem_limit do
+      case coordinate_wal_rotation(wal, manifest) do
+        {:ok, rotated_wal} ->
+          {:noreply, enqueue_flush(state, seq, rotated_wal)}
+
+        {:error, reason} = error ->
+          {:stop, reason, error, state}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_continue(:next_flush, state) do
+    case :queue.out(state.flush_queue) do
+      {:empty, _flush_queue} ->
+        {:noreply, state, {:continue, :maybe_flush}}
+
+      {{:value, {seq, rotated_wal}}, flush_queue} ->
+        state =
+          %{state | flush_queue: flush_queue}
+          |> flush(seq, rotated_wal)
+
+        {:noreply, state}
     end
   end
 
@@ -238,7 +289,7 @@ defmodule Goblin.Writer do
 
     MemTable.clean_seq_range(mem_table, flushed_seq)
     state = %{state | flushing: nil}
-    {:noreply, state, {:continue, :maybe_flush}}
+    {:noreply, state, {:continue, :next_flush}}
   end
 
   def handle_info({ref, {:error, _reason} = error}, %{flushing: {ref, _, _}} = state) do
@@ -256,45 +307,21 @@ defmodule Goblin.Writer do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp maybe_flush(state, rotated_wal \\ nil)
-
-  defp maybe_flush(%{writer: nil, flushing: nil} = state, rotated_wal) do
-    %{
-      seq: seq,
-      mem_table: mem_table,
-      mem_limit: mem_limit
-    } = state
-
-    if MemTable.size(mem_table) >= mem_limit do
-      with {:ok, rotated_wal} <- maybe_rotate(state, rotated_wal) do
-        ref = flush(state, seq - 1, rotated_wal)
-        state = %{state | flushing: {ref, seq - 1, rotated_wal}}
-        {:ok, state}
-      end
+  defp enqueue_flush(state, seq, rotated_wal) do
+    if is_nil(state.flushing) and :queue.is_empty(state.flush_queue) do
+      flush(state, seq, rotated_wal)
     else
-      {:ok, state}
+      flush_queue = :queue.in({seq, rotated_wal}, state.flush_queue)
+      %{state | flush_queue: flush_queue}
     end
   end
 
-  defp maybe_flush(state, _rotated_wal) do
-    {:ok, state}
-  end
-
-  defp maybe_rotate(state, nil) do
-    %{
-      wal: wal,
-      manifest: manifest,
-      seq: seq
-    } = state
-
-    with {:ok, rotation_wal, current_wal} <- WAL.rotate(wal),
-         :ok <- Manifest.log_rotation(manifest, rotation_wal, current_wal),
-         :ok <- Manifest.log_sequence(manifest, seq) do
-      {:ok, rotation_wal}
+  defp coordinate_wal_rotation(wal, manifest) do
+    with {:ok, rotated_wal, current_wal} <- WAL.rotate(wal),
+         :ok <- Manifest.log_rotation(manifest, rotated_wal, current_wal) do
+      {:ok, rotated_wal}
     end
   end
-
-  defp maybe_rotate(_state, rotated_wal), do: {:ok, rotated_wal}
 
   defp flush(state, seq, rotated_wal) do
     %{
@@ -318,17 +345,18 @@ defmodule Goblin.Writer do
           max_sst_size: max_sst_size
         ]
 
-        stream = Iterator.k_merge_stream([MemTable.iterator(mem_table, seq + 1)])
+        stream = Iterator.k_merge_stream([MemTable.iterator(mem_table, seq)])
 
         with {:ok, ssts} <- DiskTable.new(stream, opts),
              :ok <- Manifest.log_flush(manifest, Enum.map(ssts, & &1.file), rotated_wal),
+             :ok <- Manifest.log_sequence(manifest, seq),
              :ok <- WAL.clean(wal, rotated_wal),
              :ok <- Store.put(store, ssts) do
           {:ok, :flushed}
         end
       end)
 
-    ref
+    %{state | flushing: {ref, seq, rotated_wal}}
   end
 
   defp publish_commit(writes, state) do
@@ -363,38 +391,36 @@ defmodule Goblin.Writer do
     %{seq: flushed_seq} = Manifest.get_version(manifest, [:seq])
 
     with {:ok, logs} <- WAL.recover(wal),
-         {:ok, state} <- recover_state(state, logs, flushed_seq) do
+         {:ok, state} <- recover_state(%{state | seq: flushed_seq}, logs) do
       MemTable.put_commit_seq(mem_table, state.seq)
       MemTable.set_ready(mem_table)
       {:ok, state}
     end
   end
 
-  defp recover_state(state, [], _default_seq), do: {:ok, state}
+  defp recover_state(state, []), do: {:ok, state}
 
-  defp recover_state(state, [{_wal, []} | logs], default_seq) do
-    state = %{state | seq: default_seq}
-    recover_state(state, logs, default_seq)
-  end
-
-  defp recover_state(state, [{rotated_wal, writes} | logs], default_seq) do
+  defp recover_state(state, [{rotated_wal, writes} | logs]) do
     %{mem_table: mem_table} = state
 
-    seq =
-      writes
-      |> Enum.max_by(&elem(&1, 1), fn -> default_seq end)
-      |> elem(1)
-
+    seq = Enum.count(writes)
     Enum.each(writes, &apply_write(mem_table, &1))
-    state = %{state | seq: seq + 1}
+    state = %{state | seq: state.seq + seq}
 
-    with {:ok, state} <- maybe_flush(state, rotated_wal) do
-      recover_state(state, logs, seq)
+    case rotated_wal do
+      nil ->
+        recover_state(state, logs)
+
+      _ ->
+        state
+        |> enqueue_flush(seq, rotated_wal)
+        |> recover_state(logs)
     end
   end
 
   defp apply_write(mem_table, {:put, seq, key, value}),
     do: MemTable.upsert(mem_table, key, seq, value)
 
-  defp apply_write(mem_table, {:remove, seq, key}), do: MemTable.delete(mem_table, key, seq)
+  defp apply_write(mem_table, {:remove, seq, key}),
+    do: MemTable.delete(mem_table, key, seq)
 end
