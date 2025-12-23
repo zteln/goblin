@@ -100,7 +100,7 @@ defmodule Goblin.Store do
   def handle_call({:put, ssts}, _from, state) do
     Enum.each(ssts, fn sst ->
       :ets.insert(state.local_name, {sst.file, sst.key_range, sst})
-      put_in_compactor(sst, state.compactor)
+      Compactor.put(state.compactor, sst)
     end)
 
     {:reply, :ok, state}
@@ -137,21 +137,9 @@ defmodule Goblin.Store do
   defp recover_ssts([file | files], table_name, compactor) do
     with {:ok, sst} <- DiskTable.fetch_sst(file) do
       :ets.insert(table_name, {file, sst.key_range, sst})
-      put_in_compactor(sst, compactor)
+      Compactor.put(compactor, sst)
       recover_ssts(files, table_name, compactor)
     end
-  end
-
-  defp put_in_compactor(sst, compactor) do
-    %{
-      level_key: level_key,
-      file: file,
-      seq_range: {min_seq, _max_seq},
-      size: size,
-      key_range: key_range
-    } = sst
-
-    Compactor.put(compactor, level_key, file, min_seq, size, key_range)
   end
 
   defp wait_until_store_ready(store, timeout \\ 5000)
