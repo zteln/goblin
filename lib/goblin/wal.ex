@@ -36,8 +36,8 @@ defmodule Goblin.WAL do
   end
 
   @spec append(wal(), [term()]) :: :ok | {:error, term()}
-  def append(wal, buffer) do
-    GenServer.call(wal, {:append, buffer})
+  def append(wal, logs) do
+    GenServer.call(wal, {:append, logs})
   end
 
   @spec rotate(wal()) :: {:ok, Goblin.db_file(), Goblin.db_file()}
@@ -50,10 +50,9 @@ defmodule Goblin.WAL do
     GenServer.call(wal, {:clean, rotation})
   end
 
-  @spec recover(wal()) ::
-          {:ok, [{Goblin.db_file() | nil, [term()]}]} | {:error, term()}
-  def recover(wal) do
-    GenServer.call(wal, :recover)
+  @spec get_log_streams(wal()) :: [{Goblin.db_file(), Enumerable.t()}]
+  def get_log_streams(wal) do
+    GenServer.call(wal, :get_log_streams)
   end
 
   @impl GenServer
@@ -95,8 +94,8 @@ defmodule Goblin.WAL do
   end
 
   @impl GenServer
-  def handle_call({:append, buffer}, _from, state) do
-    case append_and_sync_log(state.name, buffer) do
+  def handle_call({:append, logs}, _from, state) do
+    case append_and_sync_log(state.name, logs) do
       :ok -> {:reply, :ok, state}
       {:error, reason} -> {:stop, reason, state}
     end
@@ -124,8 +123,8 @@ defmodule Goblin.WAL do
     {:reply, :ok, state}
   end
 
-  def handle_call(:recover, _from, state) do
-    {:reply, recover_writes(state), state}
+  def handle_call(:get_log_streams, _from, state) do
+    {:reply, recover_logs(state), state}
   end
 
   @impl GenServer
@@ -199,54 +198,47 @@ defmodule Goblin.WAL do
     ref
   end
 
-  defp append_and_sync_log(name, buffer) do
-    with :ok <- :disk_log.log_terms(name, buffer) do
+  defp append_and_sync_log(name, logs) do
+    with :ok <- :disk_log.log_terms(name, logs) do
       :disk_log.sync(name)
     end
   end
 
-  defp recover_writes(state) do
+  defp recover_logs(state) do
     %{
-      name: name,
       ro_name: ro_name,
-      rotations: rotations
+      rotations: rotations,
+      wal: wal
     } = state
 
-    with {:ok, rotated_writes} <- recover_rotated_writes(rotations, ro_name),
-         {:ok, writes} <- recover_logs(name) do
-      {:ok, rotated_writes ++ [{nil, writes}]}
-    end
+    [wal | rotations]
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.map(&{&1, stream_logs(&1, ro_name)})
+    |> Enum.reverse()
   end
 
-  defp recover_rotated_writes(rotations, ro_name) do
-    Enum.reduce_while(rotations, {:ok, []}, fn {_count, rotation}, {:ok, acc} ->
-      case get_writes(rotation, ro_name) do
-        {:ok, writes} -> {:cont, {:ok, [{rotation, writes} | acc]}}
-        {:error, _reason} = error -> {:halt, error}
+  defp stream_logs(log_file, name) do
+    Stream.resource(
+      fn ->
+        case open_log(log_file, name, mode: :read_only) do
+          :ok -> {name, :start}
+          {:error, _reason} -> raise "Failed to open WAL log"
+        end
+      end,
+      fn {name, continuation} ->
+        case :disk_log.chunk(name, continuation) do
+          {:error, _reason} -> raise "Failed to stream WAL log"
+          :eof -> {:halt, name}
+          {continuation, chunk} -> {chunk, {name, continuation}}
+        end
+      end,
+      fn name ->
+        case close_log(name) do
+          :ok -> :ok
+          {:error, _reason} -> raise "Failed to close WAL log"
+        end
       end
-    end)
-  end
-
-  defp get_writes(file, ro_name) do
-    with :ok <- open_log(file, ro_name, mode: :read_only),
-         {:ok, writes} <- recover_logs(ro_name),
-         :ok <- close_log(ro_name) do
-      {:ok, writes}
-    end
-  end
-
-  defp recover_logs(name, continuation \\ :start, acc \\ []) do
-    case :disk_log.chunk(name, continuation) do
-      {:error, _reason} ->
-        {:error, :failed_to_recover}
-
-      :eof ->
-        {:ok, acc}
-
-      {continuation, chunk} ->
-        acc = acc ++ chunk
-        recover_logs(name, continuation, acc)
-    end
+    )
   end
 
   defp parse_file(file) do

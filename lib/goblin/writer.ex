@@ -273,10 +273,7 @@ defmodule Goblin.Writer do
   end
 
   def handle_continue(:recover_state, state) do
-    case recover_writes(state) do
-      {:ok, state} -> {:noreply, state}
-      {:error, reason} -> {:stop, reason, state}
-    end
+    {:noreply, recover_writes(state)}
   end
 
   @impl GenServer
@@ -389,32 +386,29 @@ defmodule Goblin.Writer do
 
     %{seq: flushed_seq} = Manifest.get_version(manifest, [:seq])
 
-    with {:ok, logs} <- WAL.recover(wal),
-         {:ok, state} <- recover_state(%{state | seq: flushed_seq}, logs) do
-      MemTable.put_commit_seq(mem_table, state.seq)
-      MemTable.set_ready(mem_table)
-      {:ok, state}
-    end
+    logs = WAL.get_log_streams(wal)
+    state = recover_state(%{state | seq: flushed_seq}, logs)
+    MemTable.put_commit_seq(mem_table, state.seq)
+    MemTable.set_ready(mem_table)
+    state
   end
 
-  defp recover_state(state, []), do: {:ok, state}
+  defp recover_state(state, [{_current_wal, log_stream}]) do
+    replay_logs!(state, log_stream)
+  end
 
-  defp recover_state(state, [{rotated_wal, writes} | logs]) do
+  defp recover_state(state, [{rotated_wal, log_stream} | logs]) do
+    state
+    |> replay_logs!(log_stream)
+    |> enqueue_flush(state.seq, rotated_wal)
+    |> recover_state(logs)
+  end
+
+  defp replay_logs!(state, log_stream) do
     %{mem_table: mem_table} = state
-
-    seq = Enum.count(writes)
-    Enum.each(writes, &apply_write(mem_table, &1))
-    state = %{state | seq: state.seq + seq}
-
-    case rotated_wal do
-      nil ->
-        recover_state(state, logs)
-
-      _ ->
-        state
-        |> enqueue_flush(seq, rotated_wal)
-        |> recover_state(logs)
-    end
+    seq = Enum.count(log_stream)
+    Enum.each(log_stream, &apply_write(mem_table, &1))
+    %{state | seq: state.seq + seq}
   end
 
   defp apply_write(mem_table, {:put, seq, key, value}),
