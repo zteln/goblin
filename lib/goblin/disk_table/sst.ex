@@ -222,8 +222,10 @@ defmodule Goblin.DiskTable.SST do
   end
 
   defp update_seq_range(sst, seq) do
-    %{seq_range: {min_seq, _}} = sst
-    %{sst | seq_range: {min_seq, seq}}
+    %{seq_range: {min_seq, max_seq}} = sst
+    min_seq = min(min_seq, seq)
+    max_seq = max(max_seq, seq)
+    %{sst | seq_range: {min_seq, max_seq}}
   end
 
   defp update_bloom_filter(sst, key) do
