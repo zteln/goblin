@@ -111,6 +111,7 @@ defmodule Goblin.Writer do
   defp run_transaction(writer, f, tx) do
     case f.(tx) do
       {:commit, tx, reply} ->
+        tx = Transaction.reverse_writes(tx)
         {:ok, tx, reply}
 
       :cancel ->
@@ -175,8 +176,6 @@ defmodule Goblin.Writer do
       writes: writes,
       seq: seq
     } = tx
-
-    writes = Enum.reverse(writes)
 
     case WAL.append(wal, writes) do
       :ok ->
