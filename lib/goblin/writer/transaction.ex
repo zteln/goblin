@@ -22,6 +22,11 @@ defmodule Goblin.Writer.Transaction do
     }
   end
 
+  @spec reverse_writes(Goblin.Tx.t()) :: Goblin.Tx.t()
+  def reverse_writes(tx) do
+    %{tx | writes: Enum.reverse(tx.writes)}
+  end
+
   defimpl Goblin.Tx do
     def put(tx, key, value) do
       write = {:put, tx.seq, key, value}
