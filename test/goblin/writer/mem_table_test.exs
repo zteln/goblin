@@ -4,7 +4,6 @@ defmodule Goblin.Writer.MemTableTest do
 
   setup do
     table = MemTable.new(__MODULE__)
-    MemTable.set_ready(__MODULE__)
     %{table: table}
   end
 
@@ -43,27 +42,14 @@ defmodule Goblin.Writer.MemTableTest do
   end
 
   describe "read/3" do
-    test "reads nothing if no commit seq exists", c do
+    test "reads up to (exclusive) of provided sequence number", c do
       MemTable.upsert(c.table, :k1, 0, :v1)
       MemTable.upsert(c.table, :k2, 1, :v2)
       MemTable.upsert(c.table, :k3, 2, :v3)
 
-      assert :not_found == MemTable.read(c.table, :k1, nil)
-      assert :not_found == MemTable.read(c.table, :k2, nil)
-      assert :not_found == MemTable.read(c.table, :k3, nil)
-    end
-
-    test "reads from latest committed seq no if seq not provided", c do
-      MemTable.upsert(c.table, :k, 0, :v)
-      MemTable.put_commit_seq(c.table, 1)
-      assert {:k, 0, :v} == MemTable.read(c.table, :k, nil)
-    end
-
-    test "reads from latest provided seq", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-      MemTable.upsert(c.table, :k3, 2, :v3)
-      MemTable.put_commit_seq(c.table, 3)
+      assert :not_found == MemTable.read(c.table, :k1, 0)
+      assert :not_found == MemTable.read(c.table, :k2, 0)
+      assert :not_found == MemTable.read(c.table, :k3, 0)
 
       assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, 1)
       assert :not_found == MemTable.read(c.table, :k2, 1)
@@ -77,15 +63,6 @@ defmodule Goblin.Writer.MemTableTest do
       assert {:k2, 1, :v2} == MemTable.read(c.table, :k2, 3)
       assert {:k3, 2, :v3} == MemTable.read(c.table, :k3, 3)
     end
-
-    test "reads up to seq (exclusive)", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.put_commit_seq(c.table, 1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-
-      assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, nil)
-      assert :not_found == MemTable.read(c.table, :k2, nil)
-    end
   end
 
   describe "clean_seq_range/2" do
@@ -95,94 +72,73 @@ defmodule Goblin.Writer.MemTableTest do
       MemTable.upsert(c.table, :k3, 2, :v3)
       MemTable.put_commit_seq(c.table, 3)
 
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] ==
-               MemTable.get_range(c.table, nil, nil)
+      assert {:k1, 0, :v1} == MemTable.read(c.table, :k1, nil)
+      assert {:k2, 1, :v2} == MemTable.read(c.table, :k2, nil)
+      assert {:k3, 2, :v3} == MemTable.read(c.table, :k3, nil)
 
       assert 1 == MemTable.clean_seq_range(c.table, 0)
-      assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, nil, nil)
+
+      assert :not_found == MemTable.read(c.table, :k1, nil)
+      assert {:k2, 1, :v2} == MemTable.read(c.table, :k2, nil)
+      assert {:k3, 2, :v3} == MemTable.read(c.table, :k3, nil)
 
       assert 2 == MemTable.clean_seq_range(c.table, 2)
-      assert [] == MemTable.get_range(c.table, nil, nil)
+
+      assert :not_found == MemTable.read(c.table, :k1, nil)
+      assert :not_found == MemTable.read(c.table, :k2, nil)
+      assert :not_found == MemTable.read(c.table, :k3, nil)
     end
   end
 
-  describe "get_range/3" do
-    test "returns nothing if commit seq does not exist", c do
+  describe "iterator/2" do
+    test "is iterable", c do
       MemTable.upsert(c.table, :k1, 0, :v1)
       MemTable.upsert(c.table, :k2, 1, :v2)
       MemTable.upsert(c.table, :k3, 2, :v3)
 
-      assert [] == MemTable.get_range(c.table, :k1, :k3)
+      assert %MemTable.Iterator{} = iterator = MemTable.iterator(c.table, 3)
+      assert ^iterator = Goblin.Iterable.init(iterator)
+
+      assert {{:k1, 0, :v1}, iterator} = Goblin.Iterable.next(iterator)
+      assert {{:k2, 1, :v2}, iterator} = Goblin.Iterable.next(iterator)
+      assert {{:k3, 2, :v3}, iterator} = Goblin.Iterable.next(iterator)
+      assert :ok == Goblin.Iterable.next(iterator)
+      assert :ok == Goblin.Iterable.close(iterator)
     end
 
-    test "returns all keys", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-      MemTable.upsert(c.table, :k3, 2, :v3)
-      MemTable.upsert(c.table, :k4, 3, :v4)
-      MemTable.put_commit_seq(c.table, 4)
-
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}, {:k4, 3, :v4}] ==
-               MemTable.get_range(c.table, nil, nil)
-    end
-
-    test "returns subset range over min and max keys (inclusive)", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-      MemTable.upsert(c.table, :k3, 2, :v3)
-      MemTable.upsert(c.table, :k4, 3, :v4)
-      MemTable.put_commit_seq(c.table, 4)
-
-      assert [{:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_range(c.table, :k2, :k3)
-    end
-
-    test "returns subset range from min and onwards (inclusive)", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-      MemTable.upsert(c.table, :k3, 2, :v3)
-      MemTable.upsert(c.table, :k4, 3, :v4)
-      MemTable.put_commit_seq(c.table, 4)
-
-      assert [{:k2, 1, :v2}, {:k3, 2, :v3}, {:k4, 3, :v4}] ==
-               MemTable.get_range(c.table, :k2, nil)
-    end
-
-    test "returns subset range from smallest to max (inclusive)", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-      MemTable.upsert(c.table, :k3, 2, :v3)
-      MemTable.upsert(c.table, :k4, 3, :v4)
-      MemTable.put_commit_seq(c.table, 4)
-
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] ==
-               MemTable.get_range(c.table, nil, :k3)
-    end
-
-    test "range is ordered by key", c do
-      for n <- 1..5 do
-        MemTable.upsert(c.table, :"k#{n}", n - 1, :"v#{n}")
+    test "iterates up to provided sequence number", c do
+      for n <- 1..10 do
+        MemTable.upsert(c.table, n, n - 1, "v-#{n}")
+        MemTable.put_commit_seq(c.table, n)
       end
 
-      MemTable.put_commit_seq(c.table, 6)
+      assert %MemTable.Iterator{max_seq: 8} = iterator = MemTable.iterator(c.table, 8)
 
-      range = MemTable.get_range(c.table, nil, nil)
+      iterator =
+        for n <- 1..8, reduce: iterator do
+          iterator ->
+            key = n
+            seq = n - 1
+            value = "v-#{n}"
+            assert {{^key, ^seq, ^value}, iterator} = Goblin.Iterable.next(iterator)
+            iterator
+        end
 
-      assert List.keysort(range, 0) == range
+      assert :ok == Goblin.Iterable.next(iterator)
+      assert :ok == Goblin.Iterable.close(iterator)
     end
   end
 
-  describe "get_seq_range/2" do
-    test "returns list of keys inbetween smallest and provided seq no", c do
-      MemTable.upsert(c.table, :k1, 0, :v1)
-      MemTable.upsert(c.table, :k2, 1, :v2)
-      MemTable.upsert(c.table, :k3, 2, :v3)
-      MemTable.upsert(c.table, :k4, 3, :v4)
+  describe "wait_until_memtable_ready/2" do
+    test "returns :ok if MemTable is ready", c do
+      MemTable.set_ready(c.table)
+      assert :ok == MemTable.wait_until_memtable_ready(c.table)
+    end
 
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}] == MemTable.get_seq_range(c.table, 1)
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}] == MemTable.get_seq_range(c.table, 2)
-
-      assert [{:k1, 0, :v1}, {:k2, 1, :v2}, {:k3, 2, :v3}, {:k4, 3, :v4}] ==
-               MemTable.get_seq_range(c.table, 3)
+    test "raises if not ready within timeout", c do
+      assert_raise RuntimeError, fn ->
+        MemTable.wait_until_memtable_ready(c.table, 200)
+      end
     end
   end
 end

@@ -69,35 +69,19 @@ defmodule Goblin.Writer.MemTable do
     :ets.insert(table, {{key, seq}, :"$goblin_tombstone"})
   end
 
-  @spec read(t(), Goblin.db_key(), Goblin.seq_no() | nil) :: Goblin.triple() | :not_found
-  def read(table, key, nil) do
-    wait_until_memtable_ready(table)
-    commit_seq = commit_seq(table)
-
-    case read_key(table, key, commit_seq) do
-      :not_found -> :not_found
-      {{key, seq}, value} -> {key, seq, value}
-    end
-  end
-
+  @spec read(t(), Goblin.db_key(), Goblin.seq_no()) :: Goblin.triple() | :not_found
   def read(table, key, seq) do
-    wait_until_memtable_ready(table)
-
     case read_key(table, key, seq) do
       :not_found -> :not_found
       {{key, seq}, value} -> {key, seq, value}
     end
   end
 
-  @spec iterator(t(), Goblin.seq_no() | nil) :: Goblin.Iterable.t()
-  def iterator(table, max_seq \\ nil) do
-    wait_until_memtable_ready(table)
-
+  @spec iterator(t(), Goblin.seq_no()) :: Goblin.Iterable.t()
+  def iterator(table, max_seq) do
     %Iterator{
       table: table,
-      # min_key: opts[:min_key],
-      # max_key: opts[:max_key],
-      max_seq: max_seq || commit_seq(table)
+      max_seq: max_seq
     }
   end
 
@@ -115,10 +99,13 @@ defmodule Goblin.Writer.MemTable do
     end
   end
 
-  defp wait_until_memtable_ready(table, timeout \\ 5000)
-  defp wait_until_memtable_ready(_table, 0), do: raise("MemTable failed to get ready")
+  @spec wait_until_memtable_ready(t(), non_neg_integer()) :: :ok
+  def wait_until_memtable_ready(table, timeout \\ 5000)
 
-  defp wait_until_memtable_ready(table, timeout) do
+  def wait_until_memtable_ready(_table, timeout) when timeout <= 0,
+    do: raise("MemTable failed to get ready")
+
+  def wait_until_memtable_ready(table, timeout) do
     if :ets.member(table, :ready) do
       :ok
     else
