@@ -6,7 +6,7 @@ defmodule Goblin.WALTest do
     - `append/2`
     - `rotate/1`
     - `clean/2`
-    - `recover/1`
+    - `get_log_streams/1`
   - Properties:
     - Recovers state from Manifest on start
   """
@@ -32,14 +32,15 @@ defmodule Goblin.WALTest do
       no_files = length(File.ls!(c.tmp_dir))
       WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
 
-      assert {:ok, rotation, _current} = WAL.rotate(c.wal)
+      assert {:ok, rotation, current} = WAL.rotate(c.wal)
 
       WAL.append(c.wal, [{:put, 2, 2, 2}])
 
       assert no_files + 1 == length(File.ls!(c.tmp_dir))
 
-      assert {:ok, [{^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]}, {nil, [{:put, 2, 2, 2}]}]} =
-               WAL.recover(c.wal)
+      assert [{^rotation, stream1}, {^current, stream2}] = WAL.get_log_streams(c.wal)
+      assert [{:put, 0, 0, 0}, {:put, 1, 1, 1}] == Enum.to_list(stream1)
+      assert [{:put, 2, 2, 2}] == Enum.to_list(stream2)
     end
 
     test "clean/2 removes log file from disk and state", c do
@@ -93,33 +94,47 @@ defmodule Goblin.WALTest do
       end
     end
 
-    test "recover/1 returns all logs", c do
-      assert {:ok, [{nil, []}]} == WAL.recover(c.wal)
+    test "get_log_streams/1 returns all logs", c do
+      assert [{_current_wal, stream}] = WAL.get_log_streams(c.wal)
+      assert [] == Enum.to_list(stream)
       WAL.append(c.wal, [{:put, 0, 0, 0}, {:put, 1, 1, 1}])
-      assert {:ok, [{nil, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]}]} == WAL.recover(c.wal)
+      assert [{_current_wal, stream}] = WAL.get_log_streams(c.wal)
+      assert [{:put, 0, 0, 0}, {:put, 1, 1, 1}] == Enum.to_list(stream)
 
       {:ok, rotation, current} = WAL.rotate(c.wal)
       Goblin.Manifest.log_rotation(c.manifest, rotation, current)
 
-      assert {:ok, [{^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]}, {nil, []}]} =
-               WAL.recover(c.wal)
+      assert [
+               {^rotation, stream1},
+               {^current, stream2}
+             ] = WAL.get_log_streams(c.wal)
+
+      assert [{:put, 0, 0, 0}, {:put, 1, 1, 1}] == Enum.to_list(stream1)
+      assert [] == Enum.to_list(stream2)
 
       WAL.append(c.wal, [{:put, 2, 2, 2}, {:put, 3, 3, 3}])
 
-      assert {:ok,
-              [
-                {^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]},
-                {nil, [{:put, 2, 2, 2}, {:put, 3, 3, 3}]}
-              ]} = WAL.recover(c.wal)
+      assert [
+               {^rotation, stream1},
+               {^current, stream2}
+             ] = WAL.get_log_streams(c.wal)
+
+      assert [{:put, 0, 0, 0}, {:put, 1, 1, 1}] == Enum.to_list(stream1)
+      assert [{:put, 2, 2, 2}, {:put, 3, 3, 3}] == Enum.to_list(stream2)
 
       stop_db(__MODULE__)
-      %{wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
+      %{db: db, wal: wal} = start_db(c.tmp_dir, name: __MODULE__)
 
-      assert {:ok,
-              [
-                {^rotation, [{:put, 0, 0, 0}, {:put, 1, 1, 1}]},
-                {nil, [{:put, 2, 2, 2}, {:put, 3, 3, 3}]}
-              ]} = WAL.recover(wal)
+      assert [
+               {^rotation, stream1},
+               {^current, stream2}
+             ] = WAL.get_log_streams(wal)
+
+      # wait for Writer to finish recovering...
+      Goblin.is_flushing(db)
+
+      assert [{:put, 0, 0, 0}, {:put, 1, 1, 1}] == Enum.to_list(stream1)
+      assert [{:put, 2, 2, 2}, {:put, 3, 3, 3}] == Enum.to_list(stream2)
     end
   end
 
