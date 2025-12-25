@@ -57,8 +57,11 @@ defmodule Goblin.Writer do
 
   @spec get(writer(), Goblin.db_key(), Goblin.seq_no() | nil) ::
           {:value, non_neg_integer(), Goblin.db_value()} | :not_found
-  def get(writer_name, key, seq \\ nil) do
-    case MemTable.read(writer_name, key, seq) do
+  def get(mem_table, key, seq \\ nil) do
+    MemTable.wait_until_memtable_ready(mem_table)
+    seq = seq || MemTable.commit_seq(mem_table)
+
+    case MemTable.read(mem_table, key, seq) do
       :not_found -> :not_found
       {_key, seq, value} -> {:value, seq, value}
     end
@@ -66,9 +69,12 @@ defmodule Goblin.Writer do
 
   @spec get_multi(writer(), [Goblin.db_key()]) ::
           {[Goblin.triple()], [Goblin.db_key()]}
-  def get_multi(writer_name, keys) do
+  def get_multi(mem_table, keys) do
+    MemTable.wait_until_memtable_ready(mem_table)
+    seq = MemTable.commit_seq(mem_table)
+
     Enum.reduce(keys, {[], []}, fn key, {found, not_found} ->
-      case MemTable.read(writer_name, key, nil) do
+      case MemTable.read(mem_table, key, seq) do
         :not_found -> {found, [key | not_found]}
         result -> {[result | found], not_found}
       end
@@ -76,13 +82,16 @@ defmodule Goblin.Writer do
   end
 
   @spec iterators(writer()) :: Goblin.Iterable.t()
-  def iterators(writer_name) do
-    MemTable.iterator(writer_name)
+  def iterators(mem_table) do
+    MemTable.wait_until_memtable_ready(mem_table)
+    seq = MemTable.commit_seq(mem_table)
+    MemTable.iterator(mem_table, seq)
   end
 
-  @spec latest_commit_sequence(writer()) :: Goblin.seq_no() | -1
-  def latest_commit_sequence(writer_name) do
-    MemTable.commit_seq(writer_name)
+  @spec latest_commit_sequence(writer()) :: Goblin.seq_no()
+  def latest_commit_sequence(mem_table) do
+    MemTable.wait_until_memtable_ready(mem_table)
+    MemTable.commit_seq(mem_table)
   end
 
   @spec is_flushing(writer()) :: boolean()
