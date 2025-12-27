@@ -3,7 +3,7 @@ defmodule Goblin.Manifest do
   use GenServer
 
   @manifest_file "manifest.goblin"
-  @tmp_suffix ".goblin.tmp"
+  # @tmp_suffix ".goblin.tmp"
   @manifest_max_size 1024 * 1024
 
   @type version :: %{
@@ -194,19 +194,6 @@ defmodule Goblin.Manifest do
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp clean_up(dir, version) do
-    rm_tmp_files!(dir)
-    rm_orphaned_files!(dir, version)
-  end
-
-  defp rm_tmp_files!(dir) do
-    dir
-    |> File.ls!()
-    |> Enum.map(&Path.join(dir, &1))
-    |> Enum.filter(&String.ends_with?(&1, @tmp_suffix))
-    |> Enum.each(&File.rm!/1)
-  end
-
-  defp rm_orphaned_files!(dir, version) do
     %{ssts: ssts, wal_rotations: wal_rotations, wal: wal} = version
 
     tracked_files = [wal | MapSet.to_list(ssts) ++ wal_rotations]
