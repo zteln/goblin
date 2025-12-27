@@ -254,16 +254,18 @@ defmodule Goblin.Writer do
       seq: seq
     } = state
 
-    if MemTable.size(mem_table) >= mem_limit do
-      case coordinate_wal_rotation(wal, manifest) do
-        {:ok, rotated_wal} ->
-          {:noreply, enqueue_flush(state, seq, rotated_wal)}
+    cond do
+      not_flushing?(state) and MemTable.size(mem_table) >= mem_limit ->
+        case coordinate_wal_rotation(wal, manifest) do
+          {:ok, rotated_wal} ->
+            {:noreply, enqueue_flush(state, seq, rotated_wal)}
 
-        {:error, reason} = error ->
-          {:stop, reason, error, state}
-      end
-    else
-      {:noreply, state}
+          {:error, reason} = error ->
+            {:stop, reason, error, state}
+        end
+
+      true ->
+        {:noreply, state}
     end
   end
 
@@ -313,12 +315,16 @@ defmodule Goblin.Writer do
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp enqueue_flush(state, seq, rotated_wal) do
-    if is_nil(state.flushing) and :queue.is_empty(state.flush_queue) do
+    if not_flushing?(state) do
       flush(state, seq, rotated_wal)
     else
       flush_queue = :queue.in({seq, rotated_wal}, state.flush_queue)
       %{state | flush_queue: flush_queue}
     end
+  end
+
+  defp not_flushing?(state) do
+    is_nil(state.flushing) and :queue.is_empty(state.flush_queue)
   end
 
   defp coordinate_wal_rotation(wal, manifest) do
@@ -409,7 +415,9 @@ defmodule Goblin.Writer do
   defp recover_state(state, [{rotated_wal, log_stream} | logs]) do
     state
     |> replay_logs!(log_stream)
-    |> enqueue_flush(state.seq, rotated_wal)
+    |> then(fn state ->
+      enqueue_flush(state, state.seq, rotated_wal)
+    end)
     |> recover_state(logs)
   end
 
