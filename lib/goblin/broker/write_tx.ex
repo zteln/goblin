@@ -12,6 +12,8 @@ defmodule Goblin.Broker.WriteTx do
   ]
 
   defmodule Iterator do
+    @moduledoc false
+
     defstruct [
       :writes
     ]

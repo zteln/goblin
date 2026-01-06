@@ -1,4 +1,5 @@
 defmodule Goblin.Broker.ReadTx do
+  @moduledoc false
   alias Goblin.MemTable
   alias Goblin.DiskTables
   alias Goblin.Iterator
