@@ -4,40 +4,30 @@ defprotocol Goblin.Tx do
 
   ## Usage
 
-      alias Goblin.Tx
-
       Goblin.transaction(db, fn tx ->
-        user = Tx.get(tx, :user_123)
+        user = Goblin.Tx.get(tx, :user_123)
         
         if user do
           updated = Map.update!(user, :login_count, &(&1 + 1))
-          tx = Tx.put(tx, :user_123, updated)
+          tx = Goblin.Tx.put(tx, :user_123, updated)
           {:commit, tx, :ok}
         else
-          :cancel
+          :abort
         end
       end)
 
-  ## Return values
-
-  Write transaction functions must return either:
-
-  - `{:commit, tx, result}` - Commits the transaction and returns `result`
-  - `:cancel` - Cancels the transaction and returns `:ok`
-
-  Returning anything else causes the write transaction to raise.
-
-  Read transactions return the last evaluation.
+      Goblin.read(db, fn tx -> 
+        key1 = Goblin.Tx.get(tx, :start, 0)
+        key2 = Goblin.Tx.get(tx, key1)
+        {key1, key2}
+      end)
   """
 
   @type t :: t()
-  @type return :: {:commit, Goblin.Tx.t(), term()} | :cancel | any()
+  @type return :: {:commit, Goblin.Tx.t(), term()} | :abort
 
   @doc """
   Writes a key-value pair within a transaction.
-
-  The write is buffered in the transaction and only becomes visible to other
-  transactions after a successful commit.
 
   ## Parameters
 
@@ -51,19 +41,32 @@ defprotocol Goblin.Tx do
 
   ## Examples
 
-      Goblin.transaction(db, fn tx ->
-        tx = Goblin.Tx.put(tx, :counter, 42)
-        {:commit, tx, :ok}
-      end)
+      tx = Goblin.Tx.put(tx, :user, %{name: "Alice"})
   """
   @spec put(t(), Goblin.db_key(), Goblin.db_value()) :: t()
   def put(tx, key, value)
 
   @doc """
-  Removes a key within a transaction.
+  Writes key-value pairs within a transaction.
 
-  The removal is buffered in the transaction and only takes effect after
-  a successful commit.
+  ## Parameters
+
+  - `tx` - The transaction struct
+  - `pairs` - The key-value pairs
+
+  ## Returns
+
+  - Updated transaction structj
+
+  ## Examples
+
+      tx = Goblin.Tx.put_multi(tx, [user1: %{name: "Alice"}, user2: %{name: "Bob"}])
+  """
+  @spec put_multi(t(), [{Goblin.db_key(), Goblin.db_value()}]) :: t()
+  def put_multi(tx, pairs)
+
+  @doc """
+  Removes a key within a transaction.
 
   ## Parameters
 
@@ -76,19 +79,32 @@ defprotocol Goblin.Tx do
 
   ## Examples
 
-      Goblin.transaction(db, fn tx ->
-        tx = Goblin.Tx.remove(tx, :old_key)
-        {:commit, tx, :ok}
-      end)
+      tx = Goblin.Tx.remove(tx, :user)
   """
   @spec remove(t(), Goblin.db_key()) :: t()
   def remove(tx, key)
 
   @doc """
-  Retrieves a value within a transaction.
+  Removes keys within a transaction.
 
-  Reads from the transaction's snapshot, including any uncommitted writes
-  made within the same transaction. 
+  ## Parameters
+
+  - `tx` - The transaction struct
+  - `keys` - The list of keys to remove
+
+  ## Returns
+
+  - Updated transaction struct
+
+  ## Examples
+
+      tx = Goblin.Tx.remove_multi(tx, [:user1, :user2])
+  """
+  @spec remove_multi(t(), [Goblin.db_key()]) :: t()
+  def remove_multi(tx, keys)
+
+  @doc """
+  Retrieves a value within a transaction.
 
   ## Parameters
 
@@ -98,16 +114,54 @@ defprotocol Goblin.Tx do
 
   ## Returns
 
-  - The value associated with the key, or `nil` if not found
+  - The value associated with the key, or `default` if not found
 
   ## Examples
 
-      Goblin.transaction(db, fn tx ->
-        value = Goblin.Tx.get(tx, :counter, 0)
-        tx = Goblin.Tx.put(tx, :counter, value + 1)
-        {:commit, tx, value + 1}
-      end)
+      counter = Goblin.Tx.get(tx, :counter, 0)
   """
   @spec get(t(), Goblin.db_key(), term()) :: Goblin.db_value()
   def get(tx, key, default \\ nil)
+
+  @doc """
+  Retrieves key-value pairs associated with the provided list of keys.
+
+  ## Parameters
+
+  - `tx` - The transaction struct
+  - `keys` - A list of keys to look up
+
+  ## Returns
+
+  - Key-value pairs
+
+  ## Examples
+
+      [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.get_multi(tx, [:user1, :user2])
+  """
+  @spec get_multi(t(), [Goblin.db_key()]) :: [{Goblin.db_key(), Goblin.db_value()}]
+  def get_multi(tx, keys)
+
+  @doc """
+  Retrieves a stream over key-value pairs sorted in ascending order by key.
+
+  ## Parameters
+
+  - `tx` - The transaction struct
+  - `opts` - A keyword list with two options:
+    - `:min` - The minimum key to range over
+    - `:max` - The maximum key to range over
+
+  ## Examples
+
+      [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.select(tx) |> Enum.to_list()
+
+      [user1: %{name: "Alice"}] = Goblin.Tx.select(tx, max: :user1) |> Enum.to_list()
+
+      [user2: %{name: "Bob"}] = Goblin.Tx.select(tx, min: :user2) |> Enum.to_list()
+
+      [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.select(tx, min: :user1, max: :user2) |> Enum.to_list()
+  """
+  @spec select(t(), keyword()) :: Enumerable.t({Goblin.db_key(), Goblin.db_value()})
+  def select(tx, opts \\ [])
 end
