@@ -1,83 +1,66 @@
 defmodule Goblin.Compactor do
   @moduledoc false
   use GenServer
-  alias Goblin.DiskTable
-  alias Goblin.Store
+  alias Goblin.DiskTables
   alias Goblin.Manifest
-  alias Goblin.Reader
-  alias Goblin.Iterator
+  alias Goblin.Cleaner
 
   @flush_level 0
 
   defstruct [
-    :bf_fpp,
-    :manifest,
-    :store,
-    :reader,
-    :task_sup,
-    :task_mod,
+    :manifest_server,
+    :disk_tables_server,
+    :cleaner_server,
     :flush_level_file_limit,
-    :max_sst_size,
     :level_base_size,
     :level_size_multiplier,
     :compacting,
-    levels: %{},
-    cleaning: []
+    levels: %{}
   ]
-
-  @typep compactor :: module() | {:via, Registry, {module(), module()}}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     args =
       Keyword.take(opts, [
-        :bf_fpp,
-        :store,
-        :manifest,
-        :reader,
+        :manifest_server,
+        :disk_tables_server,
+        :cleaner_server,
         :flush_level_file_limit,
-        :max_sst_size,
         :level_base_size,
-        :level_size_multiplier,
-        :task_sup,
-        :task_mod
+        :level_size_multiplier
       ])
 
     GenServer.start_link(__MODULE__, args, name: opts[:name])
   end
 
-  @spec put(compactor(), Goblin.DiskTable.SST.t()) :: :ok
-  def put(compactor, sst) do
+  @spec put(Goblin.server(), Goblin.DiskTables.DiskTable.t()) :: :ok
+  def put(server, disk_table) do
     %{
       level_key: level_key,
       file: file,
       seq_range: {priority, _},
       size: size,
       key_range: key_range
-    } = sst
+    } = disk_table
 
-    GenServer.call(compactor, {:put, level_key, file, priority, size, key_range})
+    GenServer.call(server, {:put, level_key, file, priority, size, key_range})
   end
 
-  @spec is_compacting(compactor()) :: boolean()
-  def is_compacting(compactor) do
-    GenServer.call(compactor, :is_compacting)
+  @spec is_compacting?(Goblin.server()) :: boolean()
+  def is_compacting?(server) do
+    GenServer.call(server, :is_compacting?)
   end
 
   @impl GenServer
   def init(args) do
     {:ok,
      %__MODULE__{
-       bf_fpp: args[:bf_fpp],
-       store: args[:store],
-       manifest: args[:manifest],
-       reader: args[:reader],
+       manifest_server: args[:manifest_server],
+       disk_tables_server: args[:disk_tables_server],
+       cleaner_server: args[:cleaner_server],
        flush_level_file_limit: args[:flush_level_file_limit],
-       max_sst_size: args[:max_sst_size],
        level_base_size: args[:level_base_size],
-       level_size_multiplier: args[:level_size_multiplier],
-       task_sup: args[:task_sup],
-       task_mod: args[:task_mod] || Task.Supervisor
+       level_size_multiplier: args[:level_size_multiplier]
      }}
   end
 
@@ -96,7 +79,7 @@ defmodule Goblin.Compactor do
     {:reply, :ok, state, {:continue, :maybe_compact}}
   end
 
-  def handle_call(:is_compacting, _from, state) do
+  def handle_call(:is_compacting?, _from, state) do
     {:reply, state.compacting != nil, state}
   end
 
@@ -115,7 +98,10 @@ defmodule Goblin.Compactor do
 
   @impl GenServer
   def handle_info({ref, {:ok, :compacted}}, %{compacting: {ref, _, _}} = state) do
-    %{compacting: {_, source_clean_ups, target_clean_ups}} = state
+    %{
+      compacting: {_, source_clean_ups, target_clean_ups},
+      cleaner_server: cleaner_server
+    } = state
 
     {_, source_ids} = source_clean_ups
     {_, target_ids} = target_clean_ups
@@ -125,41 +111,18 @@ defmodule Goblin.Compactor do
       |> clean_up(source_clean_ups)
       |> clean_up(target_clean_ups)
 
-    cleaning_ref = start_clean_up(state, source_ids ++ target_ids)
-    cleaning = [cleaning_ref | state.cleaning]
+    Cleaner.clean(cleaner_server, source_ids ++ target_ids, true)
 
-    state = %{state | compacting: nil, levels: levels, cleaning: cleaning}
+    state = %{state | compacting: nil, levels: levels}
     {:noreply, state, {:continue, :maybe_compact}}
   end
 
-  def handle_info({ref, {:ok, :cleaned}}, state) do
-    cleaning = Enum.reject(state.cleaning, &(&1 == ref))
-    state = %{state | cleaning: cleaning}
-    {:noreply, state}
-  end
-
-  def handle_info({ref, {:error, _reason} = error}, %{compacting: {ref, _, _}} = state) do
-    {:stop, error, state}
-  end
-
-  def handle_info({ref, {:error, _reason} = error}, state) do
-    if ref in state.cleaning do
-      {:stop, error, state}
-    else
-      {:noreply, state}
-    end
+  def handle_info({ref, {:error, reason}}, %{compacting: {ref, _, _}} = state) do
+    {:stop, reason, state}
   end
 
   def handle_info({:DOWN, ref, _, _, reason}, %{compacting: {ref, _, _}} = state) do
     {:stop, {:error, reason}, state}
-  end
-
-  def handle_info({:DOWN, ref, _, _, reason}, state) do
-    if ref in state.cleaning do
-      {:stop, {:error, reason}, state}
-    else
-      {:noreply, state}
-    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -185,12 +148,8 @@ defmodule Goblin.Compactor do
 
   defp compact(state, source_level_key) do
     %{
-      task_mod: task_mod,
-      task_sup: task_sup,
-      store: store,
-      manifest: manifest,
-      max_sst_size: max_sst_size,
-      bf_fpp: bf_fpp,
+      manifest_server: manifest_server,
+      disk_tables_server: disk_tables_server,
       levels: levels
     } = state
 
@@ -236,51 +195,27 @@ defmodule Goblin.Compactor do
     target_ids = Enum.map(targets, & &1.id)
 
     %{ref: ref} =
-      task_mod.async(task_sup, fn ->
+      Task.async(fn ->
         opts = [
           level_key: target_level_key,
-          file_getter: fn -> Store.new_file(store) end,
-          bf_fpp: bf_fpp,
-          compress?: target_level_key > 1,
-          max_sst_size: max_sst_size
+          compress?: target_level_key > 1
         ]
 
-        iterators = Enum.map(sources ++ targets, &DiskTable.iterator(&1.id))
-        stream = Iterator.k_merge_stream(iterators, filter_tombstones: filter_tombstones)
+        iterators = Enum.map(sources ++ targets, &DiskTables.iterator(&1.id))
+        stream = Goblin.Iterator.k_merge_stream(iterators, filter_tombstones: filter_tombstones)
 
-        with {:ok, ssts} <- DiskTable.new(stream, opts),
+        with {:ok, disk_tables} <- DiskTables.new(disk_tables_server, stream, opts),
              :ok <-
                Manifest.log_compaction(
-                 manifest,
+                 manifest_server,
                  source_ids ++ target_ids,
-                 Enum.map(ssts, & &1.file)
-               ),
-             :ok <- Store.put(store, ssts) do
+                 disk_tables
+               ) do
           {:ok, :compacted}
         end
       end)
 
     {ref, {source_level_key, source_ids}, {target_level_key, target_ids}}
-  end
-
-  defp start_clean_up(state, files) do
-    %{
-      store: store,
-      reader: reader,
-      task_mod: task_mod,
-      task_sup: task_sup
-    } = state
-
-    %{ref: ref} =
-      task_mod.async(task_sup, fn ->
-        with :ok <- Reader.empty?(reader),
-             :ok <- Store.remove(store, files),
-             :ok <- remove_merged(files) do
-          {:ok, :cleaned}
-        end
-      end)
-
-    ref
   end
 
   defp find_overlapping(targets, key_range, acc \\ [])
@@ -293,14 +228,6 @@ defmodule Goblin.Compactor do
       target_max < min -> find_overlapping(targets, {min, max}, acc)
       target_min > max -> find_overlapping(targets, {min, max}, acc)
       true -> find_overlapping(targets, {min, max}, [target | acc])
-    end
-  end
-
-  defp remove_merged([]), do: :ok
-
-  defp remove_merged([file | files]) do
-    with :ok <- DiskTable.delete(file) do
-      remove_merged(files)
     end
   end
 
