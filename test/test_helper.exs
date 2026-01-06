@@ -2,7 +2,7 @@ defmodule TestHelper do
   @moduledoc false
   require ExUnit.Assertions
   require ExUnit.Callbacks
-  require Goblin.ProcessRegistry
+  require Goblin.Registry
 
   defmacro __using__(_) do
     quote do
@@ -12,6 +12,8 @@ defmodule TestHelper do
 
   defmacro setup_db(opts \\ []) do
     quote do
+      @moduletag :tmp_dir
+
       setup c do
         opts =
           Keyword.merge(
@@ -34,29 +36,32 @@ defmodule TestHelper do
     [
       {_, proc_sup, _, _},
       {registry, _, _, _},
-      {_, _, _, _}
+      _
     ] = Supervisor.which_children(db)
 
     [
-      {Goblin.Writer, writer, _, _},
-      {Goblin.Store, store, _, _},
+      {Goblin.Broker, broker, _, _},
+      {Goblin.MemTable, mem_table, _, _},
+      {Goblin.DiskTables, disk_tables, _, _},
       {Goblin.Compactor, compactor, _, _},
       {Goblin.WAL, wal, _, _},
-      {Goblin.Reader, reader, _, _},
-      {Goblin.Manifest, manifest, _, _},
-      {_, task_sup, _, _}
+      {Goblin.Cleaner, cleaner, _, _},
+      {Goblin.Manifest, manifest, _, _}
     ] = Supervisor.which_children(proc_sup)
+
+    # Wait for mem_table to finish recovering...
+    :sys.get_status(mem_table)
 
     %{
       db: db,
       registry: registry,
-      writer: writer,
-      store: store,
+      broker: broker,
+      mem_table: mem_table,
+      disk_tables: disk_tables,
       compactor: compactor,
       wal: wal,
-      manifest: manifest,
-      reader: reader,
-      task_sup: task_sup
+      cleaner: cleaner,
+      manifest: manifest
     }
   end
 
@@ -64,23 +69,37 @@ defmodule TestHelper do
     ExUnit.Callbacks.stop_supervised!(id)
   end
 
-  def stream_flush_data(data, key_limit) do
-    Stream.resource(
-      fn -> data end,
-      fn
-        [] -> {:halt, :ok}
-        [next | data] -> {[next], data}
-      end,
-      fn _ -> :ok end
-    )
-    |> Stream.chunk_every(key_limit)
+  def trigger_flush(db, opts \\ []) do
+    Stream.iterate(Keyword.get(opts, :key_start, 1), &(&1 + 1))
+    |> Stream.map(&{&1, "#{Keyword.get(opts, :key_prefix, "v")}-#{&1}"})
+    |> Stream.chunk_every(1000)
+    |> Stream.transform(nil, fn chunk, acc ->
+      if Goblin.is_flushing?(db) do
+        {:halt, acc}
+      else
+        Goblin.put_multi(db, chunk)
+        {chunk, acc}
+      end
+    end)
+    |> Enum.to_list()
   end
 
-  def fake_sst(file, data) do
-    {:ok, [sst]} =
-      Goblin.DiskTable.new(data, file_getter: fn -> file end, level_key: 0, bf_fpp: 0.01)
+  def generate_disk_table(data, opts \\ []) do
+    next_file_f = fn ->
+      file = Goblin.DiskTables.new_file(opts[:disk_tables_server])
+      {"#{file}.tmp", file}
+    end
 
-    sst
+    %{opts: disk_tables_server_opts} = :sys.get_state(opts[:disk_tables_server])
+
+    opts =
+      Keyword.merge(disk_tables_server_opts,
+        level_key: opts[:level_key] || 0,
+        compress?: false,
+        max_sst_size: opts[:max_sst_size] || disk_tables_server_opts[:max_sst_size]
+      )
+
+    Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
   end
 
   defmacro assert_eventually(opts \\ [], do: block) do
@@ -110,4 +129,7 @@ defmodule TestHelper do
   end
 end
 
+Mimic.copy(Goblin.DiskTables)
+Mimic.copy(Goblin.DiskTables.Handler)
+Mimic.copy(Goblin.MemTable)
 ExUnit.start()
