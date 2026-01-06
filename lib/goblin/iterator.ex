@@ -1,16 +1,33 @@
 defprotocol Goblin.Iterable do
   @moduledoc false
   @type t :: t()
+
   @spec init(t()) :: t()
   def init(iter)
-  @spec next(t()) :: t()
+
+  @spec next(t()) :: t() | :ok
   def next(iter)
-  @spec close(t()) :: t()
+
+  @spec close(t()) :: :ok
   def close(iter)
 end
 
 defmodule Goblin.Iterator do
   @moduledoc false
+
+  @spec linear_stream(Goblin.Iterable.t()) :: Enumerable.t(Goblin.triple())
+  def linear_stream(iterator) do
+    Stream.resource(
+      fn -> Goblin.Iterable.init(iterator) end,
+      fn iterator ->
+        case iterate(iterator) do
+          :ok -> {:halt, nil}
+          {triple, iterator} -> {[triple], iterator}
+        end
+      end,
+      fn _ -> :ok end
+    )
+  end
 
   @spec k_merge_stream([Goblin.Iterable.t()], keyword()) :: Enumerable.t(Goblin.triple())
   def k_merge_stream(iterators, opts \\ []) do
@@ -61,19 +78,11 @@ defmodule Goblin.Iterator do
   defp skip({iterator, nil}) do
     case iterate(iterator) do
       :ok -> []
-      {triple, iterator} -> skip({iterator, triple})
+      {triple, iterator} -> [{iterator, triple}]
     end
   end
 
-  defp skip({iterator, triple}) do
-    {key, _, _} = triple
-
-    case iterate(iterator) do
-      :ok -> [{nil, triple}]
-      {{^key, _, _} = triple, iterator} -> skip({iterator, triple})
-      _ -> [{iterator, triple}]
-    end
-  end
+  defp skip({iterator, triple}), do: [{iterator, triple}]
 
   defp jump({nil, {key, _, _}}, key), do: []
   defp jump({nil, triple}, _), do: [{nil, triple}]
@@ -81,6 +90,7 @@ defmodule Goblin.Iterator do
   defp jump({iterator, {key, _, _}}, key) do
     case iterate(iterator) do
       :ok -> []
+      {{^key, _, _} = triple, iterator} -> jump({iterator, triple}, key)
       {next, iterator} -> [{iterator, next}]
     end
   end
