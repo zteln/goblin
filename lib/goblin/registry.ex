@@ -1,4 +1,4 @@
-defmodule Goblin.ProcessRegistry do
+defmodule Goblin.Registry do
   @moduledoc false
 
   @spec start_link(keyword()) :: {:ok, pid()} | {:error, term()}
