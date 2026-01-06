@@ -3,17 +3,16 @@ defmodule Goblin.Manifest do
   use GenServer
 
   @manifest_file "manifest.goblin"
-  # @tmp_suffix ".goblin.tmp"
   @manifest_max_size 1024 * 1024
 
-  @type version :: %{
-          ssts: [Goblin.db_file()],
+  @type snapshot :: %{
+          disk_tables: [Goblin.db_file()],
           wal_rotations: [Goblin.db_file()],
           wal: Goblin.db_file() | nil,
           count: non_neg_integer(),
-          seq: Goblin.seq_no()
+          seq: Goblin.seq_no(),
+          manifest: {String.t(), Path.t()}
         }
-  @typep manifest :: module() | {:via, Registry, {module(), module()}}
 
   defstruct [
     :name,
@@ -22,8 +21,6 @@ defmodule Goblin.Manifest do
     :max_size,
     :version,
     :waiting,
-    :task_mod,
-    :task_sup,
     size: 0
   ]
 
@@ -34,54 +31,51 @@ defmodule Goblin.Manifest do
     args = [
       local_name: opts[:local_name] || name,
       db_dir: opts[:db_dir],
-      manifest_max_size: opts[:manifest_max_size],
-      task_mod: opts[:task_mod],
-      task_sup: opts[:task_sup]
+      manifest_max_size: opts[:manifest_max_size]
     ]
 
     GenServer.start_link(__MODULE__, args, name: name)
   end
 
-  @spec log_wal(manifest(), Goblin.db_file()) :: :ok | {:error, term()}
+  @spec log_wal(Goblin.server(), Goblin.db_file()) :: :ok | {:error, term()}
   def log_wal(manifest, wal) do
     GenServer.call(manifest, {:log_edit, {:current_wal, trim_dir(wal)}})
   end
 
-  @spec log_rotation(manifest(), Goblin.db_file(), Goblin.db_file()) :: :ok | {:error, term()}
+  @spec log_rotation(Goblin.server(), Goblin.db_file(), Goblin.db_file()) ::
+          :ok | {:error, term()}
   def log_rotation(manifest, wal_rotation, wal_current) do
     edits = [{:wal_added, trim_dir(wal_rotation)}, {:current_wal, trim_dir(wal_current)}]
     GenServer.call(manifest, {:log_edit, edits})
   end
 
-  @spec log_flush(manifest(), [Goblin.db_file()], Goblin.db_file()) ::
+  @spec log_flush(Goblin.server(), [Goblin.db_file()], Goblin.db_file()) ::
           :ok | {:error, term()}
-  def log_flush(manifest, ssts, wal) do
-    added_edits = Enum.map(ssts, &{:sst_added, trim_dir(&1)})
+  def log_flush(manifest, disk_tables, wal) do
+    added_edits = Enum.map(disk_tables, &{:disk_table_added, trim_dir(&1)})
     removed_edit = {:wal_removed, trim_dir(wal)}
     GenServer.call(manifest, {:log_edit, [removed_edit | added_edits]})
   end
 
-  @spec log_sequence(manifest(), Goblin.seq_no()) :: :ok | {:error, term()}
+  @spec log_sequence(Goblin.server(), Goblin.seq_no()) :: :ok | {:error, term()}
   def log_sequence(manifest, seq) do
     GenServer.call(manifest, {:log_edit, {:seq, seq}})
   end
 
-  @spec log_compaction(manifest(), [Goblin.db_file()], [Goblin.db_file()]) ::
+  @spec log_compaction(Goblin.server(), [Goblin.db_file()], [Goblin.db_file()]) ::
           :ok | {:error, term()}
-  def log_compaction(manifest, removed_ssts, added_ssts) do
-    added_edits = Enum.map(added_ssts, &{:sst_added, trim_dir(&1)})
-    removed_edits = Enum.map(removed_ssts, &{:sst_removed, trim_dir(&1)})
+  def log_compaction(manifest, removed_disk_tables, added_disk_tables) do
+    added_edits = Enum.map(added_disk_tables, &{:disk_table_added, trim_dir(&1)})
+    removed_edits = Enum.map(removed_disk_tables, &{:disk_table_removed, trim_dir(&1)})
     GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
-  @spec get_version(manifest(), [:ssts | :wal_rotations | :wal | :count | :seq]) :: version()
-  def get_version(manifest, keys \\ []) do
-    GenServer.call(manifest, {:get_version, keys})
-  end
-
-  @spec export(manifest(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
-  def export(manifest, export_dir) do
-    GenServer.call(manifest, {:export, export_dir}, :infinity)
+  @spec snapshot(Goblin.server(), [
+          :disk_tables | :wal_rotations | :wal | :count | :seq | :manifest
+        ]) ::
+          snapshot()
+  def snapshot(manifest, keys \\ []) do
+    GenServer.call(manifest, {:snapshot, keys})
   end
 
   @impl GenServer
@@ -104,9 +98,7 @@ defmodule Goblin.Manifest do
          file: file,
          dir: db_dir,
          max_size: max_size,
-         version: version,
-         task_mod: args[:task_mod] || Task.Supervisor,
-         task_sup: args[:task_sup]
+         version: version
        }}
     else
       {:error, reason} -> {:stop, reason}
@@ -125,15 +117,25 @@ defmodule Goblin.Manifest do
     end
   end
 
-  def handle_call({:get_version, keys}, _from, state) do
+  def handle_call({:snapshot, keys}, _from, state) do
     %{dir: dir} = state
+
+    manifest_copy =
+      if :manifest in keys do
+        now = DateTime.utc_now(:second) |> DateTime.to_iso8601(:basic)
+        suffix = "#{now}.copy"
+        manifest_copy = "#{state.file}.#{suffix}"
+        File.cp!(state.file, manifest_copy)
+        {suffix, manifest_copy}
+      end
 
     version =
       state.version
+      |> Map.put(:manifest, manifest_copy)
       |> Map.take(keys)
       |> Map.replace_lazy(:wal, &(&1 && Path.join(dir, &1)))
-      |> Map.replace_lazy(:ssts, fn ssts ->
-        ssts
+      |> Map.replace_lazy(:disk_tables, fn disk_tables ->
+        disk_tables
         |> MapSet.to_list()
         |> Enum.map(&Path.join(dir, &1))
       end)
@@ -143,20 +145,6 @@ defmodule Goblin.Manifest do
       end)
 
     {:reply, version, state}
-  end
-
-  def handle_call({:export, dir}, from, %{waiting: nil} = state) do
-    case start_export(state, dir, from) do
-      {:ok, state} ->
-        {:noreply, state}
-
-      error ->
-        {:reply, error, state}
-    end
-  end
-
-  def handle_call({:export, _dir}, _from, state) do
-    {:reply, {:error, :already_exporting}, state}
   end
 
   @impl GenServer
@@ -172,34 +160,12 @@ defmodule Goblin.Manifest do
 
   def handle_continue(:rotate, state), do: {:noreply, state}
 
-  @impl GenServer
-  def handle_info({ref, {:ok, tar_name}}, %{waiting: {ref, from}} = state) do
-    GenServer.reply(from, {:ok, tar_name})
-    state = %{state | waiting: nil}
-    {:noreply, state}
-  end
-
-  def handle_info({ref, {:error, _reason} = error}, %{waiting: {ref, from}} = state) do
-    GenServer.reply(from, error)
-    state = %{state | waiting: nil}
-    {:noreply, state}
-  end
-
-  def handle_info({:DOWN, ref, _, _, reason}, %{waiting: {ref, from}} = state) do
-    GenServer.reply(from, {:error, reason})
-    state = %{state | waiting: nil}
-    {:noreply, state}
-  end
-
-  def handle_info(_msg, state), do: {:noreply, state}
-
   defp clean_up(dir, version) do
-    %{ssts: ssts, wal_rotations: wal_rotations, wal: wal} = version
+    %{disk_tables: disk_tables, wal_rotations: wal_rotations, wal: wal} = version
 
-    tracked_files = [wal | MapSet.to_list(ssts) ++ wal_rotations]
+    tracked_files = [wal | MapSet.to_list(disk_tables) ++ wal_rotations]
 
-    dir
-    |> File.ls!()
+    File.ls!(dir)
     |> Enum.reject(&(&1 == @manifest_file))
     |> Enum.reject(&(&1 in tracked_files))
     |> Enum.map(&Path.join(dir, &1))
@@ -279,14 +245,14 @@ defmodule Goblin.Manifest do
     |> apply_edit(edits)
   end
 
-  defp apply_edit(version, {:sst_added, sst}) do
-    ssts = MapSet.put(version.ssts, sst)
-    %{version | ssts: ssts, count: version.count + 1}
+  defp apply_edit(version, {:disk_table_added, disk_table}) do
+    disk_tables = MapSet.put(version.disk_tables, disk_table)
+    %{version | disk_tables: disk_tables, count: version.count + 1}
   end
 
-  defp apply_edit(version, {:sst_removed, sst}) do
-    ssts = MapSet.delete(version.ssts, sst)
-    %{version | ssts: ssts}
+  defp apply_edit(version, {:disk_table_removed, disk_table}) do
+    disk_tables = MapSet.delete(version.disk_tables, disk_table)
+    %{version | disk_tables: disk_tables}
   end
 
   defp apply_edit(version, {:wal_added, wal}) do
@@ -309,7 +275,7 @@ defmodule Goblin.Manifest do
 
   defp new_version,
     do: %{
-      ssts: MapSet.new(),
+      disk_tables: MapSet.new(),
       wal_rotations: [],
       wal: nil,
       count: 0,
@@ -317,82 +283,6 @@ defmodule Goblin.Manifest do
     }
 
   defp rotated_file(file), do: "#{file}.0"
-
-  defp start_export(state, dir, from) do
-    with {:ok, ref} <- export_snapshot(state, dir) do
-      waiting = {ref, from}
-      state = %{state | waiting: waiting}
-      {:ok, state}
-    end
-  end
-
-  defp export_snapshot(state, export_dir) do
-    %{
-      task_mod: task_mod,
-      task_sup: task_sup,
-      version: version,
-      file: file,
-      dir: db_dir
-    } = state
-
-    manifest_copy = "#{file}.copy"
-
-    with :ok <- File.cp(file, manifest_copy) do
-      %{ref: ref} =
-        task_mod.async(task_sup, fn ->
-          filelist = tar_filelist(db_dir, manifest_copy, version)
-          export_tar(export_dir, manifest_copy, filelist)
-        end)
-
-      {:ok, ref}
-    end
-  end
-
-  defp export_tar(dir, manifest, filelist) do
-    tar_name = tar_name(dir)
-
-    with :ok <- create_tar(tar_name, filelist) do
-      {:ok, tar_name}
-    else
-      error ->
-        rm_tar(tar_name)
-        error
-    end
-  after
-    File.rm!(manifest)
-  end
-
-  defp create_tar(name, filelist) do
-    :erl_tar.create(name, filelist, [:compressed])
-  end
-
-  defp tar_filelist(dir, manifest, version) do
-    manifest_archive_name =
-      manifest
-      |> Path.basename()
-      |> String.trim_trailing(".copy")
-
-    manifest =
-      {~c"#{manifest_archive_name}", ~c"#{manifest}"}
-
-    rest =
-      ([version.wal | version.wal_rotations] ++ MapSet.to_list(version.ssts))
-      |> Enum.map(fn file ->
-        {~c"#{file}", ~c"#{Path.join(dir, file)}"}
-      end)
-
-    [manifest | rest]
-  end
-
-  defp rm_tar(name) do
-    File.rm(name)
-  end
-
-  defp tar_name(dir) do
-    now = DateTime.utc_now(:second) |> DateTime.to_iso8601(:basic)
-    filename = "goblin_#{now}.tar.gz"
-    Path.join(dir, filename)
-  end
 
   defp trim_dir(name), do: Path.basename(name)
 end
