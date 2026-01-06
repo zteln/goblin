@@ -1,7 +1,16 @@
 # Changelog
 
+## v0.4.0 (2026-01-06)
+* Breaking changes
+    * Changed disk table encoding format (not compatible with previous versions)
+    * `Goblin.is_flushing/1`, `Goblin.is_compacting/1` is changed to `Goblin.is_flushing?/1`, `Goblin.is_compacting?/1`, respectively.
+    * `Goblin.transaction/3` is split into `Goblin.transaction/2` and `Goblin.read/2`.
+* Improvements
+    * A lot more focus on consistency guarantees for transaction operations.
+    * `Goblin.{put_multi/2, remove_multi/2, get_multi/2, select/2}` are now available.
+
 ## v0.3.2 (2025-12-04)
-* Enhancments
+* Enhancements
     * Flush and compaction are now triggered via byte sizes instead of amount of keys
 * Bug fixes
     * Add functionality for iterators to clean up after iteration ends
