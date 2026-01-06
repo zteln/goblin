@@ -10,9 +10,7 @@ defmodule Goblin do
 
       {:ok, db} = Goblin.start_link(
         name: MyApp.DB,
-        db_dir: "/path/to/db",
-        key_limit: 50_000,
-        level_limit: 128 * 1024 * 1024
+        db_dir: "/path/to/db"
       )
 
   ## Basic operations
@@ -44,32 +42,37 @@ defmodule Goblin do
         {:commit, tx, count + 1}
       end)
 
-      Goblin.transaction(db, fn tx ->
+      Goblin.read(db, fn tx ->
         key1 = Tx.get(tx, :start, 0)
         key2 = Tx.get(tx, key1)
         {key1, key2}
-      end, read_only: true)
+      end)
 
   ## Configuration
 
   - `name` - Registered name for the database supervisor (optional)
   - `db_dir` - Directory path for storing database files (required)
-  - `key_limit` - Maximum keys in MemTable before flushing (default: 50,000)
-  - `level_limit` - Size threshold in bytes for level 0 compaction (default: 128 MB)
+  - `flush_level_file_limit` - How many files in flush level before compaction is triggered (default: 4)
+  - `mem_limit` - How many bytes are stored in memory before flushing (default: 64 * 1024 * 1024)
+  - `level_base_size` - How many bytes are stored in level 1 before compaction is triggered (default: 256 * 1024 * 1024)
+  - `level_size_multiplier` - Which factor each level size is multiplied with (default: 10)
+  - `max_sst_size` - How large, in bytes, the SST portion of a disk table is allowed to be (default: level_base_size / level_size_multiplier)
+  - `bf_fpp` - Bloom filter false positive probability (default: 0.01)
 
   ## Architecture
 
   Goblin consists of several supervised components:
 
-  - **Writer** - Manages in-memory MemTable and coordinates writes
-  - **Reader** - Keeps track of active readers
-  - **Store** - Tracks SST files and provides read access
-  - **Compactor** - Merges SST files across levels
-  - **WAL** - Write-ahead log for durability
+  - **Broker** - Transactions management
+  - **MemTable** - Memory buffer server
+  - **DiskTables** - Disk table management
+  - **Compactor** - Compaction server
+  - **Cleaner** - Safe file removal server
+  - **WAL** - Write-ahead log server
   - **Manifest** - Tracks database state and file metadata
   """
   use Supervisor
-  import Goblin.ProcessRegistry, only: [via: 2]
+  import Goblin.Registry, only: [via: 2]
 
   @typedoc false
   @type db_level_key :: non_neg_integer()
@@ -85,102 +88,68 @@ defmodule Goblin do
   @type pair :: {Goblin.db_key(), Goblin.db_value()}
   @typedoc false
   @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
+  @typedoc false
+  @type server :: module() | {:via, Registry, {module(), module()}}
+  @typedoc false
+  @type table :: module()
+  @typedoc false
+  @type write_term :: {:put, seq_no(), db_key(), db_value()} | {:remove, seq_no(), db_key()}
 
   @type db_key :: term()
   @type db_value :: term()
-  @type db_server :: Supervisor.supervisor()
 
   @doc """
-  Executes a function within a database transaction.
+  Executes a function within a database transaction that allow writes.
 
-  There are two different kinds of transactions; read and write. 
-  Read transactions cannot write to the database and are executed concurrently.
-  Write transactions can write to the database and are executed serially.
-
-  Read transactions read a snapshot of the database from when it starts. 
-  A read transaction returns the last evaluation in the transaction function.
-  A read transaction that tries to write raises.
-  While there are active readers then no files will be cleaned up after compaction.
-
-  Write transactions are executed serially and have atomic commits. The function
-  receives a transaction struct and must return either `{:commit, tx, result}`
-  to commit changes or `:cancel` to abort.
+  Transactions are executed serially and are ACID-compliant.
+  The provided function, `f`, receives a transaction struct and must return either `{:commit, tx, reply}` in order to commit the transaction, or `:abort` to abort the transaction. 
+  Returning anything else results in a raise.
 
   ## Parameters
 
   - `db` - The database server (PID or registered name)
-  - `f` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
-  - `opts` - A keyword list with options to the transaction. Available options:
-    - `read_only` - A boolean indicating whether the transaction is read only or not
+  - `f` -A function that takes a `Goblin.Tx.t()` struct and returns a transaction result
 
   ## Returns
 
-  - `result` - The value returned from the transaction function on successful commit
-  - `:ok` - When the transaction is cancelled
-  - `{:error, :tx_not_found}` - If a transaction was not found for the current process
-  - `{:error, :already_in_tx}` - If the current process is already in a transaction
-  - `{:error, :not_tx_holder}` - If the process is not the current writer
-  - `{:error, term()}` - Other errors
+  - `reply` - The value returned from the transaction when successfully committed
+  - `{:error, :aborted}` - When the transaction is aborted
+  - `{:error, :already_in_tx}` - When attempting to create nested transactions
+  - `{:error, :not_writer}` - When attempting to commit by somebody other than the current writer
 
   ## Examples
 
-      # Write transactions:
-      Goblin.transaction(db, fn tx ->
+      # Update a value
+      Goblin.transaction(db, fn tx -> 
         count = Goblin.Tx.get(tx, :counter, 0)
-        tx = Goblin.Tx.put(tx, :counter, count + 1)
-        {:commit, tx, count + 1}
-      end)
-      # => 1
-
-      Goblin.transaction(db, fn _tx ->
-        :cancel
+        tx = Goblin.Tx.put(tx, :counter, counter + 1)
+        {:commit, tx, :ok}
       end)
       # => :ok
 
-      # Read transactions:
-      Goblin.put(db, key, value1)
-
-      Goblin.transaction(db, fn tx -> 
-        ^value1 = Goblin.Tx.get(tx, key)
-
-        # Concurrently, in another process
-        # Goblin.put(db, key, value2)
-
-        ^value1 = Goblin.Tx.get(tx, key)
-      end, read_only: true)
-      # => value1
-
-      ^value2 = Goblin.Tx.get(tx, key)
+      # Abort a transaction
+      Goblin.transaction(db, fn _tx -> 
+        :abort
+      end)
+      # => {:error, :aborted}
   """
-  @spec transaction(db_server(), (Goblin.Tx.t() -> Goblin.Tx.return()), keyword()) ::
-          term()
-          | :ok
-          | {:error, :not_tx_holder | :tx_not_found | :already_in_tx | term()}
-  def transaction(db, f, opts \\ []) do
-    if Keyword.get(opts, :read_only, false) do
-      registry = name(db, ProcessRegistry)
-      writer = name(db, Writer)
-      store = name(db, Store)
-      reader = name(db, Reader)
-      Goblin.Reader.transaction(writer, store, reader, via(registry, reader), f)
-    else
-      registry = name(db, ProcessRegistry)
-      writer = name(db, Writer)
-      Goblin.Writer.transaction(via(registry, writer), f)
-    end
+  @spec transaction(Supervisor.supervisor(), (Goblin.Tx.t() -> Goblin.Tx.return())) ::
+          any() | {:error, :aborted | :already_in_tx | :already_in_tx | :not_writer}
+  def transaction(db, f) do
+    namespace = namespace(db)
+    registry = child_name(namespace, Registry)
+    broker = via(registry, child_name(namespace, Broker))
+    Goblin.Broker.write_transaction(broker, f)
   end
 
   @doc """
   Writes a key-value pair to the database.
 
-  This operation is atomic and durable. The write is first recorded in the
-  write-ahead log, then added to the in-memory MemTable.
-
   ## Parameters
 
   - `db` - The database server (PID or registered name)
   - `key` - Any Elixir term to use as the key
-  - `value` - Any Elixir term to store (will be serialized)
+  - `value` - Any Elixir to associate with `key`
 
   ## Returns
 
@@ -190,23 +159,18 @@ defmodule Goblin do
 
       Goblin.put(db, :user_123, %{name: "Alice", age: 30})
       # => :ok
-
-      Goblin.put(db, "config:timeout", 5000)
-      # => :ok
   """
-  @spec put(db_server(), db_key(), db_value()) :: :ok
+  @spec put(Supervisor.supervisor(), db_key(), db_value()) :: :ok
   def put(db, key, value) do
-    Goblin.transaction(db, fn tx ->
-      tx = Goblin.Tx.put(tx, key, value)
-      {:commit, tx, :ok}
+    transaction(db, fn tx ->
+      {:commit, Goblin.Tx.put(tx, key, value), :ok}
     end)
   end
 
   @doc """
-  Writes multiple key-value pairs to the database in a single operation.
+  Writes multiple key-value pairs in a single operation.
 
-  This is more efficient than calling `put/3` multiple times as it batches
-  the writes together.
+  This is more efficient than calling `put/3` multiple times as it batches the writes together.
 
   ## Parameters
 
@@ -226,23 +190,18 @@ defmodule Goblin do
       ])
       # => :ok
   """
-  @spec put_multi(db_server(), [{db_key(), db_value()}]) :: :ok
+  @spec put_multi(Supervisor.supervisor(), [{db_key(), db_value()}]) :: :ok
   def put_multi(db, pairs) do
-    Goblin.transaction(db, fn tx ->
-      tx =
-        Enum.reduce(pairs, tx, fn {k, v}, acc ->
-          Goblin.Tx.put(acc, k, v)
-        end)
-
-      {:commit, tx, :ok}
+    transaction(db, fn tx ->
+      {:commit, Goblin.Tx.put_multi(tx, pairs), :ok}
     end)
   end
 
   @doc """
   Removes a key from the database.
 
-  This operation writes a tombstone marker for the key. The actual data
-  is removed during compaction.
+  This operation writes a tombstone marker for the key.
+  The actual data is eventually removed during compaction.
 
   ## Parameters
 
@@ -254,6 +213,8 @@ defmodule Goblin do
   - `:ok`
 
   ## Examples
+      Goblin.get(db, :user_123)
+      # => %{name: "Alice", age: 30}
 
       Goblin.remove(db, :user_123)
       # => :ok
@@ -261,19 +222,17 @@ defmodule Goblin do
       Goblin.get(db, :user_123)
       # => nil
   """
-  @spec remove(db_server(), db_key()) :: :ok
+  @spec remove(Supervisor.supervisor(), db_key()) :: :ok
   def remove(db, key) do
-    Goblin.transaction(db, fn tx ->
-      tx = Goblin.Tx.remove(tx, key)
-      {:commit, tx, :ok}
+    transaction(db, fn tx ->
+      {:commit, Goblin.Tx.remove(tx, key), :ok}
     end)
   end
 
   @doc """
   Removes multiple keys from the database in a single operation.
 
-  This is more efficient than calling `remove/2` multiple times as it batches
-  the removals together.
+  This is more efficient than calling `remove/2` multiple times as it batches the removals together.
 
   ## Parameters
 
@@ -284,34 +243,74 @@ defmodule Goblin do
 
   - `:ok`
 
+
   ## Examples
 
       Goblin.remove_multi(db, [:user_1, :user_2, :user_3])
       # => :ok
   """
-  @spec remove_multi(db_server(), [db_key()]) :: :ok
+  @spec remove_multi(Supervisor.supervisor(), [db_key()]) :: :ok
   def remove_multi(db, keys) do
-    Goblin.transaction(db, fn tx ->
-      tx =
-        Enum.reduce(keys, tx, fn key, acc ->
-          Goblin.Tx.remove(acc, key)
-        end)
-
-      {:commit, tx, :ok}
+    transaction(db, fn tx ->
+      {:commit, Goblin.Tx.remove_multi(tx, keys), :ok}
     end)
   end
 
   @doc """
-  Retrieves the value associated with a key from the database.
+  Performs a read transaction.
+  A snapshot is taken in order to provide consistent reads of the database.
+  This allows concurrent readers and will not block each other.
 
-  Searches the MemTable first, then SST files from newest to oldest.
-  Returns the default value if the key is not found.
+  Attempting to write to the database during this transactions results in a raise.
+
+  Any file deletion is prevented while there exists an ongoing read transaction.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `f` - A function that takes a `Goblin.Tx.t()` struct
+
+  ## Returns
+
+  - The evaluation of `f`
+
+  ## Examples
+
+      # Get two values within snapshot
+      Goblin.read(db, fn tx -> 
+        key1 = Goblin.Tx.get(tx, :start, 0)
+        key2 = Goblin.Tx.get(tx, key1)
+        {key1, key2}
+      end)
+      # => {key1, key2}
+
+      # Attempting to write will raise
+      Goblin.read(db, fn tx -> 
+        tx = Goblin.Tx.put(tx, :user_123, %{name: "Alice", age:30})
+        {:commit, tx, :ok}
+      end)
+      # => RuntimeError
+  """
+  @spec read(Supervisor.supervisor(), (Goblin.Tx.t() -> any())) :: any()
+  def read(db, f) do
+    namespace = namespace(db)
+    registry = child_name(namespace, Registry)
+    cleaner = child_name(namespace, Cleaner)
+    cleaner_server = via(registry, cleaner)
+    mem_table = child_name(namespace, MemTable)
+    disk_tables = child_name(namespace, DiskTables)
+    Goblin.Broker.read_transaction(cleaner, cleaner_server, mem_table, disk_tables, f)
+  end
+
+  @doc """
+  Retrieves the value associated with the provided key.
+  Returns the default value of the key was not found.
 
   ## Parameters
 
   - `db` - The database server (PID or registered name)
   - `key` - The key to look up
-  - `default` - Value to return if key is not found (default: `nil`)
+  - `default` - Value to return if `key` is not found (default: `nil`)
 
   ## Returns
 
@@ -319,32 +318,29 @@ defmodule Goblin do
 
   ## Examples
 
-      Goblin.put(db, :user_123, %{name: "Alice"})
       Goblin.get(db, :user_123)
-      # => %{name: "Alice"}
-
-      Goblin.get(db, :nonexistent)
       # => nil
 
-      Goblin.get(db, :nonexistent, :not_found)
-      # => :not_found
-  """
-  @spec get(db_server(), db_key(), db_value()) :: db_value()
-  def get(db, key, default \\ nil) do
-    writer = name(db, Writer)
-    store = name(db, Store)
+      Goblin.put(db, :user_123, %{name: "Alice", age: 30})
 
-    case Goblin.Reader.get(key, writer, store) do
-      :not_found -> default
-      {_seq, value} -> value
-    end
+      Goblin.get(db, :user_123)
+      # => %{name: "Alice", age: 30}
+
+      Goblin.get(db, :non_existant_key, :default_value)
+      # => :default_value
+  """
+  @spec get(Supervisor.supervisor(), db_key(), db_value() | nil) :: db_value() | nil
+  def get(db, key, default \\ nil) do
+    read(db, fn tx ->
+      Goblin.Tx.get(tx, key, default)
+    end)
   end
 
   @doc """
-  Retrieves values for multiple keys from the database in a single operation.
+  Retrieves values for multiple keys in a single operation.
+  If a key in the provided list of keys is not found then it is excluded from the resulting list of key-value pairs.
 
-  This is more efficient than calling `get/3` multiple times as it batches
-  the reads together. Only returns key-value pairs for keys that exist.
+  If a lot of keys are already flushed to disk, then this operation is more efficient than calling `get/3` multiple times.
 
   ## Parameters
 
@@ -353,7 +349,7 @@ defmodule Goblin do
 
   ## Returns
 
-  - A list of `{key, value}` tuples for found keys, sorted by key
+  - A list of `{key, value}` tuples for keys found, sorted by key
 
   ## Examples
 
@@ -362,29 +358,27 @@ defmodule Goblin do
         {:user_2, %{name: "Bob"}}
       ])
 
-      Goblin.get_multi(db, [:user_1, :user_2, :user_3])
-      # => [{:user_1, %{name: "Alice"}}, {:user_2, %{name: "Bob"}}]
+      Goblin.get_multi(db, [:user_1, :user_2])
+      # => [user_1: %{name: "Alice"}, user_2: %{name: "Bob"}]
 
-      Goblin.get_multi(db, [:nonexistent])
-      # => []
+      Goblin.get_multi(db, [:user_1, :user_2, :non_existing_user])
+      # => [user_1: %{name: "Alice"}, user_2: %{name: "Bob"}]
   """
-  @spec get_multi(db_server(), [db_key()]) :: [{db_key(), db_value()}]
-  def get_multi(db, keys) when is_list(keys) do
-    writer = name(db, Writer)
-    store = name(db, Store)
-
-    Goblin.Reader.get_multi(keys, writer, store)
-    |> Enum.map(fn {key, _seq, value} -> {key, value} end)
-    |> List.keysort(0)
+  @spec get_multi(Supervisor.supervisor(), [db_key()]) :: [{db_key(), db_value()}]
+  def get_multi(db, keys) do
+    read(db, fn tx ->
+      Goblin.Tx.get_multi(tx, keys)
+    end)
   end
 
   @doc """
-  Retrieves all key-value pairs within a specified range from the database.
+  Retrieves all key-value pairs within a specified range in the form of a stream.
 
-  Returns entries sorted by key in ascending order. Both `min` and `max` are
-  inclusive. If neither bound is specified, then all entries in the database are returned.
-  Specifying only `min` returns all entries from `min` (inclusive) and onwards.
-  Specifying only `max` returns all entries from the smallest key until `max` (inclusive).
+  Entries in the stream are sorted by key in ascending order.
+  Both `min` and `max` are inclusive.
+  If neither bound is specified, then all key-value pairs are retrieved.
+  Specifying only `min` returns all key-value pairs from `min` and onwards.
+  Specifying only `max` returns all key-value pairs until `max`.
 
   ## Parameters
 
@@ -395,7 +389,7 @@ defmodule Goblin do
 
   ## Returns
 
-  - A stream over the key-value pairs in the range
+  - A stream over the key-value pairs in the provided range
 
   ## Examples
 
@@ -419,15 +413,46 @@ defmodule Goblin do
       Goblin.select(db) |> Enum.to_list()
       # => [{1, "one"}, {2, "two"}, {3, "three"}, {4, "four"}, {5, "five"}]
   """
-  @spec select(db_server(), keyword()) :: Enumerable.t(Goblin.pair())
+  @spec select(Supervisor.supervisor(), keyword()) :: Enumerable.t({db_key(), db_value()})
   def select(db, opts \\ []) do
-    min = opts[:min]
-    max = opts[:max]
-    writer = name(db, Writer)
-    store = name(db, Store)
+    read(db, fn tx ->
+      Goblin.Tx.select(tx, Keyword.take(opts, [:min, :max]))
+    end)
+  end
 
-    Goblin.Reader.select(min, max, writer, store)
-    |> Stream.map(fn {key, _seq, value} -> {key, value} end)
+  @doc """
+  Exports the database files to the provided dir, `export_dir`.
+  `export` can be used to create back-ups of the database.
+  A copy of the manifest is created and the currently tracked files along with the manifest copy is archived in a .tar.gz file in `export_dir`.
+
+  > #### Note {: .warning}
+  > 
+  > The export runs in a `read/2`, thus preventing deletion of files.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `export_dir` - Path to the directory to place the exported .tar.gz
+
+  ## Returns
+
+  - `{:ok, export_path}` - Path of the exported .tar.gz file
+  - `{:error, reason}` - If an error occurred
+
+  ## Examples
+
+      Goblin.export(db, "path/to/back_ups")
+      # => {:ok, "path/to/back_ups/goblin_20260106T102414Z.tar.g"}
+  """
+  @spec export(Supervisor.supervisor(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
+  def export(db, export_dir) do
+    namespace = namespace(db)
+    registry = child_name(namespace, Registry)
+    manifest_server = via(registry, child_name(namespace, Manifest))
+
+    read(db, fn _tx ->
+      Goblin.Export.export(export_dir, manifest_server)
+    end)
   end
 
   @doc """
@@ -441,11 +466,12 @@ defmodule Goblin do
 
   - A boolean indicating whether the database is compacting or not
   """
-  @spec is_compacting(db_server()) :: boolean()
-  def is_compacting(db) do
-    registry = name(db, ProcessRegistry)
-    compactor = name(db, Compactor)
-    Goblin.Compactor.is_compacting(via(registry, compactor))
+  @spec is_compacting?(Supervisor.supervisor()) :: boolean()
+  def is_compacting?(db) do
+    namespace = namespace(db)
+    registry = child_name(namespace, Registry)
+    compactor = via(registry, child_name(namespace, Compactor))
+    Goblin.Compactor.is_compacting?(compactor)
   end
 
   @doc """
@@ -459,31 +485,12 @@ defmodule Goblin do
 
   - A boolean indicating whether the database is flushing or not
   """
-  @spec is_flushing(db_server()) :: boolean()
-  def is_flushing(db) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
-    Goblin.Writer.is_flushing(via(registry, writer))
-  end
-
-  @doc """
-  Force a flush, producing at least one SST file.
-  If the database is currently flushing, then this operation is queued and will be eventually executed.
-
-  ## Parameters
-
-  - `db` - The database server (PID or registered name)
-
-  ## Returns
-
-  - `:ok` - The flush was or will be executed
-  - `{:error, reason}` - A flush could not be executed
-  """
-  @spec flush_now(db_server()) :: :ok | {:error, term()}
-  def flush_now(db) do
-    registry = name(db, ProcessRegistry)
-    writer = name(db, Writer)
-    Goblin.Writer.flush_now(via(registry, writer))
+  @spec is_flushing?(Supervisor.supervisor()) :: boolean()
+  def is_flushing?(db) do
+    namespace = namespace(db)
+    registry = child_name(namespace, Registry)
+    mem_table_server = via(registry, child_name(namespace, MemTable))
+    Goblin.MemTable.is_flushing?(mem_table_server)
   end
 
   @doc """
@@ -514,9 +521,10 @@ defmodule Goblin do
       flush()
       # => {:remove, :user_1}
   """
-  @spec subscribe(db_server()) :: :ok | {:error, term()}
+  @spec subscribe(Supervisor.supervisor()) :: :ok | {:error, term()}
   def subscribe(db) do
-    pub_sub = name(db, PubSub)
+    namespace = namespace(db)
+    pub_sub = child_name(namespace, PubSub)
 
     with {:ok, _} <- Goblin.PubSub.subscribe(pub_sub) do
       :ok
@@ -534,51 +542,11 @@ defmodule Goblin do
 
   - `:ok`
   """
-  @spec unsubscribe(db_server()) :: :ok | {:error, term()}
+  @spec unsubscribe(Supervisor.supervisor()) :: :ok | {:error, term()}
   def unsubscribe(db) do
-    pub_sub = name(db, PubSub)
+    namespace = namespace(db)
+    pub_sub = child_name(namespace, PubSub)
     Goblin.PubSub.unsubscribe(pub_sub)
-  end
-
-  @doc """
-  Exports a `.tar.gz` snapshot of the database to the provided `dir`.
-  The export will have the following filename format: `goblin_<datetime>.tar.gz`.
-  The resulting `.tar.gz` can be unpacked at a later time acting as a backup of the database.
-
-  > #### Note {: .warning}
-  > 
-  > The export runs in a read-only transaction, thus preventing deletion of files.
-
-  ## Parameters
-
-  - `db` - The database server (pid or registered name)
-  - `dir` - The directory to export into
-
-  ## Returns
-
-  - `:ok` - If the export was successful
-  - `{:error, term}` - If the export was unsuccessful
-
-
-  ## Examples
-
-      Goblin.export(db, "/path/to/backups")
-      # => {:ok, "/path/to/backups/goblin_20251120T203250Z.tar.gz"}
-  """
-  @spec export(db_server(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
-  def export(db, dir) do
-    File.exists?(dir) || raise "#{dir} does not exist. Cannot export into non-existing directory."
-
-    registry = name(db, ProcessRegistry)
-    manifest = name(db, Manifest)
-
-    transaction(
-      db,
-      fn _tx ->
-        Goblin.Manifest.export(via(registry, manifest), dir)
-      end,
-      read_only: true
-    )
   end
 
   @doc """
@@ -595,7 +563,8 @@ defmodule Goblin do
   - `:mem_limit` - How many bytes are stored in memory before flushing (default: 64 * 1024 * 1024)
   - `:level_base_size` - How many bytes are stored in level 1 before compaction is triggered (default: 256 * 1024 * 1024)
   - `:level_size_multiplier` - Which factor each level size is multiplied with (default: 10)
-  - `:bf_fpp` - Bloom filter false positive probability (default: 0.05)
+  - `:max_sst_size` - How large, in bytes, the SST portion of a disk table is allowed to be (default: level_base_size / level_size_multiplier)
+  - `:bf_fpp` - Bloom filter false positive probability (default: 0.01)
 
   ## Returns
 
@@ -635,44 +604,27 @@ defmodule Goblin do
 
   - `:ok`
   """
-  @spec stop(db_server(), term(), non_neg_integer | :infinity) :: :ok
+  @spec stop(Supervisor.supervisor(), term(), non_neg_integer | :infinity) :: :ok
   def stop(db, reason \\ :normal, timeout \\ :infinity) do
     Supervisor.stop(db, reason, timeout)
   end
 
   @impl true
   def init(args) do
-    name = args[:name] || __MODULE__
-    registry = name(name, ProcessRegistry)
-    proc_sup = name(name, ProcessSupervisor)
-    pub_sub = name(name, PubSub)
-    writer = name(name, Writer)
-    store = name(name, Store)
-    compactor = name(name, Compactor)
-    reader = name(name, Reader)
-    manifest = name(name, Manifest)
-    wal = name(name, WAL)
-    task_sup = name(name, TaskSupervisor)
-
-    names = %{
-      writer: {writer, via(registry, writer)},
-      store: {store, via(registry, store)},
-      compactor: {compactor, via(registry, compactor)},
-      reader: {reader, via(registry, reader)},
-      manifest: {manifest, via(registry, manifest)},
-      wal: {wal, via(registry, wal)},
-      task_sup: {task_sup, via(registry, task_sup)}
-    }
+    namespace = args[:name] || __MODULE__
+    registry = child_name(namespace, Registry)
+    sup = child_name(namespace, Supervisor)
+    pub_sub = child_name(namespace, PubSub)
 
     children =
       [
         {Goblin.PubSub, name: pub_sub},
-        {Goblin.ProcessRegistry, name: registry},
-        {Goblin.ProcessSupervisor,
+        {Goblin.Registry, name: registry},
+        {Goblin.Supervisor,
          Keyword.merge(
            args,
-           name: via(registry, proc_sup),
-           names: names,
+           name: sup,
+           namespace: namespace,
            registry: registry,
            pub_sub: pub_sub
          )}
@@ -681,16 +633,14 @@ defmodule Goblin do
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
-  defp name(pid, suffix) when is_pid(pid) do
-    case Process.info(pid, :registered_name) do
-      {:registered_name, []} ->
-        name(__MODULE__, suffix)
+  def child_name(namespace, suffix), do: Module.concat(namespace, suffix)
 
-      {:registered_name, registered_name} ->
-        name(registered_name, suffix)
+  defp namespace(pid) when is_pid(pid) do
+    case Process.info(pid, :registered_name) do
+      {:registered_name, []} -> __MODULE__
+      {:registered_name, namespace} -> namespace
     end
   end
 
-  defp name(nil, suffix), do: name(__MODULE__, suffix)
-  defp name(name, suffix), do: Module.concat(name, suffix)
+  defp namespace(namespace), do: namespace
 end

@@ -1,10 +1,11 @@
 defmodule GoblinTest do
   use ExUnit.Case, async: true
   use TestHelper
-
-  @moduletag :tmp_dir
+  import ExUnit.CaptureLog
 
   describe "start_link/1" do
+    @describetag :tmp_dir
+
     test "can start multiple independent databases simultaneously", c do
       dir1 = Path.join(c.tmp_dir, "dir1")
       dir2 = Path.join(c.tmp_dir, "dir2")
@@ -26,6 +27,8 @@ defmodule GoblinTest do
   end
 
   describe "stop/3" do
+    @describetag :tmp_dir
+
     test "stops started database", c do
       {:ok, db} = Goblin.start_link(db_dir: c.tmp_dir)
       assert :ok == Goblin.stop(db)
@@ -33,19 +36,28 @@ defmodule GoblinTest do
     end
   end
 
-  describe "transaction/2" do
-    setup_db(key_limit: 10, level_limit: 512)
+  describe "atomicity" do
+    setup_db()
 
-    test "is atomic", c do
+    test "writes are only visible after commit", c do
       parent = self()
 
-      assert nil == Goblin.get(c.db, :k)
+      assert nil == Goblin.get(c.db, :key1)
+      assert nil == Goblin.get(c.db, :key2)
+      assert nil == Goblin.get(c.db, :key3)
+      assert [] == Goblin.get_multi(c.db, [:key1, :key2, :key3])
+      assert [] == Goblin.select(c.db) |> Enum.to_list()
 
-      pid =
+      writer =
         spawn(fn ->
           assert :ok ==
                    Goblin.transaction(c.db, fn tx ->
-                     tx = Goblin.Tx.put(tx, :k, :v)
+                     tx =
+                       tx
+                       |> Goblin.Tx.put(:key1, :val1)
+                       |> Goblin.Tx.put_multi([{:key2, :val2}, {:key3, :val3}])
+                       |> Goblin.Tx.remove(:key3)
+
                      send(parent, :ready)
 
                      receive do
@@ -58,97 +70,242 @@ defmodule GoblinTest do
           send(parent, :done)
         end)
 
-      receive do
-        :ready -> :ok
-      end
+      assert_receive :ready
 
-      assert nil == Goblin.get(c.db, :k)
+      assert nil == Goblin.get(c.db, :key1)
+      assert nil == Goblin.get(c.db, :key2)
+      assert nil == Goblin.get(c.db, :key3)
+      assert [] == Goblin.get_multi(c.db, [:key1, :key2, :key3])
+      assert [] == Goblin.select(c.db) |> Enum.to_list()
 
-      send(pid, :cont)
+      send(writer, :cont)
 
       assert_receive :done
-      assert :v == Goblin.get(c.db, :k)
+
+      assert :val1 == Goblin.get(c.db, :key1)
+      assert :val2 == Goblin.get(c.db, :key2)
+      assert nil == Goblin.get(c.db, :key3)
+      assert [{:key1, :val1}, {:key2, :val2}] == Goblin.get_multi(c.db, [:key1, :key2, :key3])
+      assert [{:key1, :val1}, {:key2, :val2}] == Goblin.select(c.db) |> Enum.to_list()
     end
 
-    test "is consistent", c do
+    test "aborted commits cannot be read", c do
+      parent = self()
+
+      spawn(fn ->
+        assert {:error, :aborted} ==
+                 Goblin.transaction(c.db, fn tx ->
+                   Goblin.Tx.put(tx, :key, :val)
+                   :abort
+                 end)
+
+        send(parent, :done)
+      end)
+
+      assert_receive :done
+
+      refute :val == Goblin.get(c.db, :key)
+    end
+
+    test "concurrent reads cannot read from writing transaction", c do
+      parent = self()
+
+      writer =
+        spawn(fn ->
+          Goblin.transaction(c.db, fn tx ->
+            tx = Goblin.Tx.put(tx, :key, :val)
+
+            send(parent, :ready)
+
+            receive do
+              :cont -> :ok
+            end
+
+            tx = Goblin.Tx.put(tx, :key, :another_val)
+            {:commit, tx, :ok}
+          end)
+
+          send(parent, :done)
+        end)
+
+      assert_receive :ready
+
+      reader =
+        spawn(fn ->
+          Goblin.read(c.db, fn tx ->
+            send(parent, :ready)
+
+            assert nil == Goblin.Tx.get(tx, :key)
+
+            receive do
+              :cont -> :ok
+            end
+
+            assert nil == Goblin.Tx.get(tx, :key)
+          end)
+
+          send(parent, :done)
+        end)
+
+      assert_receive :ready
+
+      send(writer, :cont)
+      assert_receive :done
+
+      send(reader, :cont)
+      assert_receive :done
+    end
+  end
+
+  describe "consistency" do
+    setup_db()
+
+    test "can maintain a business rule", c do
       Goblin.put(c.db, :counter, 10)
 
-      for _n <- 1..20 do
-        Task.async(fn ->
-          assert :ok ==
-                   Goblin.transaction(c.db, fn tx ->
-                     counter = Goblin.Tx.get(tx, :counter, 0)
+      results =
+        for _n <- 1..20 do
+          Task.async(fn ->
+            Goblin.transaction(c.db, fn tx ->
+              counter = Goblin.Tx.get(tx, :counter, 0)
 
-                     if counter > 0 do
-                       tx = Goblin.Tx.put(tx, :counter, counter - 1)
-                       {:commit, tx, :ok}
-                     else
-                       :cancel
-                     end
-                   end)
-        end)
-      end
-      |> Task.await_many()
+              if counter > 0 do
+                tx = Goblin.Tx.put(tx, :counter, counter - 1)
+                {:commit, tx, :ok}
+              else
+                :abort
+              end
+            end)
+          end)
+        end
+        |> Task.await_many()
 
-      counter = Goblin.get(c.db, :counter)
-      assert counter >= 0
+      assert 10 == length(Enum.filter(results, &match?(:ok, &1)))
+      assert 10 == length(Enum.filter(results, &match?({:error, :aborted}, &1)))
+      assert 0 == Goblin.get(c.db, :counter)
     end
+  end
 
-    test "is isolated", c do
+  describe "isolated" do
+    setup_db()
+
+    test "transaction wait upon each other (truly serializable)", c do
       parent = self()
-      Goblin.put(c.db, :k1, 0)
-      Goblin.put(c.db, :k2, 0)
-
-      pid1 =
-        spawn(fn ->
-          assert :ok ==
-                   Goblin.transaction(c.db, fn tx ->
-                     send(parent, :ready)
-
-                     tx = Goblin.Tx.put(tx, :k1, 100)
-
-                     receive do
-                       :cont -> :ok
-                     end
-
-                     tx = Goblin.Tx.put(tx, :k2, 100)
-                     x1 = Goblin.Tx.get(tx, :k1)
-                     x2 = Goblin.Tx.get(tx, :k2)
-                     send(parent, {:keys, x1, x2})
-                     {:commit, tx, :ok}
-                   end)
-
-          send(parent, :done1)
-        end)
-
-      receive do
-        :ready -> :ok
-      end
 
       spawn(fn ->
         assert :ok ==
                  Goblin.transaction(c.db, fn tx ->
+                   send(parent, :tx1_started)
+
+                   Process.sleep(100)
+
                    tx =
                      tx
-                     |> Goblin.Tx.put(:k1, 50)
-                     |> Goblin.Tx.put(:k2, 50)
+                     |> Goblin.Tx.put(:key1, 100)
+                     |> Goblin.Tx.put(:key2, 100)
+
+                   send(parent, {:tx1_done, System.monotonic_time()})
+                   {:commit, tx, :ok}
+                 end)
+      end)
+
+      assert_receive :tx1_started
+
+      spawn(fn ->
+        send(parent, :tx2_waiting)
+
+        assert :ok ==
+                 Goblin.transaction(c.db, fn tx ->
+                   send(parent, {:tx2_started, System.monotonic_time()})
+
+                   tx =
+                     tx
+                     |> Goblin.Tx.put(:key1, 50)
+                     |> Goblin.Tx.put(:key2, 50)
 
                    {:commit, tx, :ok}
                  end)
 
-        send(parent, :done2)
+        send(parent, :tx2_done)
       end)
 
-      send(pid1, :cont)
+      assert_receive :tx2_waiting
 
-      assert_receive {:keys, 100, 100}
-      assert_receive :done1
-      assert_receive :done2
-      assert 50 == Goblin.get(c.db, :k1)
-      assert 50 == Goblin.get(c.db, :k2)
+      tx2_started =
+        receive do
+          {:tx2_started, tx2_started} -> tx2_started
+        end
+
+      tx1_done =
+        receive do
+          {:tx1_done, tx1_done} -> tx1_done
+        end
+
+      assert_receive :tx2_done
+
+      assert tx1_done < tx2_started
+
+      assert 50 == Goblin.get(c.db, :key1)
+      assert 50 == Goblin.get(c.db, :key2)
     end
 
-    test "is durable", c do
+    test "final state matches serial execution", c do
+      for n <- 1..20 do
+        Task.async(fn ->
+          Process.sleep(Enum.random(1..100))
+
+          Goblin.transaction(c.db, fn tx ->
+            tx =
+              tx
+              |> Goblin.Tx.put(:key1, n)
+              |> Goblin.Tx.put(:key2, n)
+
+            {:commit, tx, :ok}
+          end)
+        end)
+      end
+      |> Task.await_many()
+
+      assert Goblin.get_multi(c.db, [:key1, :key2]) in for(
+               n <- 1..20,
+               do: [{:key1, n}, {:key2, n}]
+             )
+    end
+
+    test "readers read from a snapshot", c do
+      parent = self()
+
+      Goblin.put(c.db, :key, :val)
+
+      reader =
+        spawn(fn ->
+          Goblin.read(c.db, fn tx ->
+            send(parent, :ready)
+
+            receive do
+              :cont -> :ok
+            end
+
+            assert :val == Goblin.Tx.get(tx, :key)
+          end)
+
+          send(parent, :done)
+        end)
+
+      assert_receive :ready
+
+      Goblin.put(c.db, :key, :another_val)
+
+      send(reader, :cont)
+
+      assert_receive :done
+    end
+  end
+
+  describe "durable" do
+    setup_db()
+
+    test "can get same values on restart", c do
       assert :ok ==
                Goblin.transaction(c.db, fn tx ->
                  tx =
@@ -171,7 +328,7 @@ defmodule GoblinTest do
   end
 
   describe "export/2" do
-    setup_db(key_limit: 10, level_limit: 512)
+    setup_db()
 
     setup c do
       export_dir = Path.join(c.tmp_dir, "exports")
@@ -191,7 +348,11 @@ defmodule GoblinTest do
 
       Goblin.remove(c.db, :k2)
 
-      assert {:ok, backup_db} = Goblin.start_link(name: Goblin.Backup, db_dir: c.unpack_dir)
+      {backup_db, _log} =
+        with_log(fn ->
+          assert {:ok, backup_db} = Goblin.start_link(name: Goblin.Backup, db_dir: c.unpack_dir)
+          backup_db
+        end)
 
       assert :v1 == Goblin.get(backup_db, :k1)
       assert :v2 == Goblin.get(backup_db, :k2)
@@ -205,13 +366,13 @@ defmodule GoblinTest do
     setup_db()
 
     setup c do
-      db_dir1 = Path.join(c.tmp_dir, "other")
-      File.mkdir!(db_dir1)
-      %{db_dir1: db_dir1}
+      other_db_dir = Path.join(c.tmp_dir, "other")
+      File.mkdir!(other_db_dir)
+      %{other_db_dir: other_db_dir}
     end
 
     test "subscribes only to specific database instance", c do
-      assert {:ok, db1} = Goblin.start_link(name: Goblin1, db_dir: c.db_dir1)
+      assert {:ok, db1} = Goblin.start_link(name: Goblin1, db_dir: c.other_db_dir)
 
       assert :ok == Goblin.subscribe(c.db)
 
