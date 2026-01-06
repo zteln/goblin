@@ -134,7 +134,7 @@ defmodule Goblin do
       # => {:error, :aborted}
   """
   @spec transaction(Supervisor.supervisor(), (Goblin.Tx.t() -> Goblin.Tx.return())) ::
-          any() | {:error, :aborted | :already_in_tx | :already_in_tx | :not_writer}
+          any() | {:error, :aborted | :already_in_tx | :not_writer}
   def transaction(db, f) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
