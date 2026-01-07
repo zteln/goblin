@@ -28,7 +28,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     {:ok, [disk_table]} =
       Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
 
-    %{disk_table: disk_table}
+    %{disk_table: disk_table, next_file_f: next_file_f}
   end
 
   test "is iterable", c do
@@ -41,6 +41,45 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     assert {{1, 0, "v-1"}, iterator} = Goblin.Iterable.next(iterator)
     assert {{5, 4, "v-5"}, iterator} = Goblin.Iterable.next(iterator)
     assert {{25, 24, "v-25"}, iterator} = Goblin.Iterable.next(iterator)
+    assert :ok == Goblin.Iterable.next(iterator)
+    assert :ok == Goblin.Iterable.close(iterator)
+  end
+
+  test "can search in SST block spanning many blocks", c do
+    opts = [
+      level_key: 0,
+      compress?: false,
+      max_sst_size: 100 * 512,
+      bf_fpp: 0.01
+    ]
+
+    triple1 = {1, 0, :crypto.strong_rand_bytes(1024)}
+    triple2 = {2, 1, :crypto.strong_rand_bytes(1024)}
+
+    data = [triple1, triple2]
+
+    {:ok, [disk_table]} =
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+
+    assert disk_table.no_blocks > 2
+
+    assert %Goblin.DiskTables.BinarySearchIterator{} =
+             iterator =
+             Goblin.DiskTables.BinarySearchIterator.new(disk_table, [1], 2)
+
+    assert iterator = Goblin.Iterable.init(iterator)
+
+    assert {^triple1, iterator} = Goblin.Iterable.next(iterator)
+    assert :ok == Goblin.Iterable.next(iterator)
+    assert :ok == Goblin.Iterable.close(iterator)
+
+    assert %Goblin.DiskTables.BinarySearchIterator{} =
+             iterator =
+             Goblin.DiskTables.BinarySearchIterator.new(disk_table, [2], 2)
+
+    assert iterator = Goblin.Iterable.init(iterator)
+
+    assert {^triple2, iterator} = Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.close(iterator)
   end
