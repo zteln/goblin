@@ -137,7 +137,7 @@ defmodule Goblin.DiskTables.BinarySearchIterator do
         Encoder.decode_sst_block(sst_block)
       else
         {:error, :invalid_sst_header} ->
-          read_block(handler, position - Encoder.sst_block_unit_size())
+          read_block(handler, block_no - 1)
 
         error ->
           error
