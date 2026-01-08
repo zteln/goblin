@@ -16,7 +16,7 @@ defmodule Goblin.ExportTest do
       trigger_flush(c.db)
 
       assert_eventually do
-        refute Goblin.is_flushing?(c.db)
+        refute Goblin.flushing?(c.db)
       end
 
       assert {:ok, tar_name} = Goblin.Export.export(c.export_dir, c.manifest)

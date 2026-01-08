@@ -13,10 +13,10 @@ defmodule Goblin.BloomFilterTest do
     assert %BloomFilter{} = bloom_filter
 
     for n <- 1..100 do
-      assert BloomFilter.is_member(bloom_filter, n)
+      assert BloomFilter.member?(bloom_filter, n)
     end
 
-    refute BloomFilter.is_member(bloom_filter, 101)
+    refute BloomFilter.member?(bloom_filter, 101)
   end
 
   test "Bloom filter can be generated with different false positive probabilities" do

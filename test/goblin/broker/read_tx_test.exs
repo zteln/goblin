@@ -65,7 +65,7 @@ defmodule Goblin.Broker.ReadTxTest do
       data = trigger_flush(c.db)
 
       assert_eventually do
-        refute Goblin.is_flushing?(c.db)
+        refute Goblin.flushing?(c.db)
       end
 
       keys = Enum.map(data, fn {key, _value} -> key end)
@@ -152,7 +152,7 @@ defmodule Goblin.Broker.ReadTxTest do
       trigger_flush(c.db)
 
       assert_eventually do
-        refute Goblin.is_flushing?(c.db)
+        refute Goblin.flushing?(c.db)
       end
 
       assert nil == Goblin.Tx.get(tx, :key)

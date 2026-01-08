@@ -466,12 +466,12 @@ defmodule Goblin do
 
   - A boolean indicating whether the database is compacting or not
   """
-  @spec is_compacting?(Supervisor.supervisor()) :: boolean()
-  def is_compacting?(db) do
+  @spec compacting?(Supervisor.supervisor()) :: boolean()
+  def compacting?(db) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
     compactor = via(registry, child_name(namespace, Compactor))
-    Goblin.Compactor.is_compacting?(compactor)
+    Goblin.Compactor.compacting?(compactor)
   end
 
   @doc """
@@ -485,12 +485,12 @@ defmodule Goblin do
 
   - A boolean indicating whether the database is flushing or not
   """
-  @spec is_flushing?(Supervisor.supervisor()) :: boolean()
-  def is_flushing?(db) do
+  @spec flushing?(Supervisor.supervisor()) :: boolean()
+  def flushing?(db) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
     mem_table_server = via(registry, child_name(namespace, MemTable))
-    Goblin.MemTable.is_flushing?(mem_table_server)
+    Goblin.MemTable.flushing?(mem_table_server)
   end
 
   @doc """

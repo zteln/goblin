@@ -26,8 +26,8 @@ defmodule Goblin.BloomFilter do
     end
   end
 
-  @spec is_member(t(), term()) :: boolean()
-  def is_member(bf, key) do
+  @spec member?(t(), term()) :: boolean()
+  def member?(bf, key) do
     Enum.all?(bf.hashes, fn hash ->
       hash = calc_hash(hash, key)
       1 == :array.get(hash, bf.array)

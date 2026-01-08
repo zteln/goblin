@@ -65,7 +65,7 @@ defmodule Goblin.MemTableTest do
     {max_key, _} = Enum.max_by(data, &elem(&1, 0))
 
     assert_eventually do
-      refute Goblin.MemTable.is_flushing?(c.mem_table)
+      refute Goblin.MemTable.flushing?(c.mem_table)
     end
 
     assert data ==

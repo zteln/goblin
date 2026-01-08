@@ -118,9 +118,9 @@ defmodule Goblin.MemTable do
     get_commit_seq(table)
   end
 
-  @spec is_flushing?(Goblin.server()) :: boolean()
-  def is_flushing?(server) do
-    GenServer.call(server, :is_flushing?)
+  @spec flushing?(Goblin.server()) :: boolean()
+  def flushing?(server) do
+    GenServer.call(server, :flushing?)
   end
 
   @impl GenServer
@@ -150,7 +150,7 @@ defmodule Goblin.MemTable do
     end
   end
 
-  def handle_call(:is_flushing?, _from, state) do
+  def handle_call(:flushing?, _from, state) do
     {:reply, state.flushing != nil, state}
   end
 

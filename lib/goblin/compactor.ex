@@ -46,9 +46,9 @@ defmodule Goblin.Compactor do
     GenServer.call(server, {:put, level_key, file, priority, size, key_range})
   end
 
-  @spec is_compacting?(Goblin.server()) :: boolean()
-  def is_compacting?(server) do
-    GenServer.call(server, :is_compacting?)
+  @spec compacting?(Goblin.server()) :: boolean()
+  def compacting?(server) do
+    GenServer.call(server, :compacting?)
   end
 
   @impl GenServer
@@ -79,7 +79,7 @@ defmodule Goblin.Compactor do
     {:reply, :ok, state, {:continue, :maybe_compact}}
   end
 
-  def handle_call(:is_compacting?, _from, state) do
+  def handle_call(:compacting?, _from, state) do
     {:reply, state.compacting != nil, state}
   end
 

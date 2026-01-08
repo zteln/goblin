@@ -93,7 +93,7 @@ defmodule Goblin.Broker.WriteTxTest do
     keys = Enum.map(data, &elem(&1, 0))
 
     assert_eventually do
-      refute Goblin.is_flushing?(c.db)
+      refute Goblin.flushing?(c.db)
     end
 
     Enum.each(keys, fn key ->

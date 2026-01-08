@@ -70,7 +70,7 @@ defmodule Goblin.DiskTables do
 
       :ets.select(ets, ms)
       |> Enum.filter(fn disk_table ->
-        BloomFilter.is_member(disk_table.bloom_filter, key)
+        BloomFilter.member?(disk_table.bloom_filter, key)
       end)
       |> Enum.reduce(acc, fn disk_table, acc ->
         Map.update(acc, disk_table, [key], &[key | &1])

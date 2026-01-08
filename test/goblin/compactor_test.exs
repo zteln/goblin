@@ -92,7 +92,7 @@ defmodule Goblin.CompactorTest do
     assert :ok == Goblin.Compactor.put(c.compactor, disk_table2)
 
     assert_eventually do
-      refute Goblin.is_compacting?(c.db)
+      refute Goblin.compacting?(c.db)
     end
 
     assert Path.basename(disk_table1.file) in File.ls!(c.tmp_dir)

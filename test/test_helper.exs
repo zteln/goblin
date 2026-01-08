@@ -74,7 +74,7 @@ defmodule TestHelper do
     |> Stream.map(&{&1, "#{Keyword.get(opts, :key_prefix, "v")}-#{&1}"})
     |> Stream.chunk_every(1000)
     |> Stream.transform(nil, fn chunk, acc ->
-      if Goblin.is_flushing?(db) do
+      if Goblin.flushing?(db) do
         {:halt, acc}
       else
         Goblin.put_multi(db, chunk)
