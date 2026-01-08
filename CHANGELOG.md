@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.1 (2026-01-08)
+* Bug fixes
+    * Fix recursion bug in binary search iterator algorithm for disk tables.
+
 ## v0.4.0 (2026-01-06)
 * Breaking changes
     * Changed disk table encoding format (not compatible with previous versions)
