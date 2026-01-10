@@ -52,7 +52,7 @@ defmodule Goblin.DiskTables.Encoder do
   def decode_sst_block(_), do: {:error, :invalid_sst_block}
 
   @spec encode_footer_block(
-          Goblin.db_level_key(),
+          Goblin.level_key(),
           Goblin.BloomFilter.t(),
           {Goblin.db_key(), Goblin.db_key()},
           {Goblin.seq_no(), Goblin.seq_no()},
@@ -119,7 +119,7 @@ defmodule Goblin.DiskTables.Encoder do
 
   @spec decode_metadata_block(binary()) ::
           {:ok,
-           {Goblin.db_level_key(), {pos_integer(), non_neg_integer()},
+           {Goblin.level_key(), {pos_integer(), non_neg_integer()},
             {pos_integer(), non_neg_integer()}, {pos_integer(), non_neg_integer()}, pos_integer()}}
           | {:error, :invalid_metadata_block}
   def decode_metadata_block(<<

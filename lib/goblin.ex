@@ -75,13 +75,9 @@ defmodule Goblin do
   import Goblin.Registry, only: [via: 2]
 
   @typedoc false
-  @type db_level_key :: non_neg_integer()
+  @type level_key :: non_neg_integer()
   @typedoc false
   @type seq_no :: non_neg_integer()
-  @typedoc false
-  @type db_key_limit :: non_neg_integer()
-  @typedoc false
-  @type db_level_limit :: non_neg_integer()
   @typedoc false
   @type pair :: {Goblin.db_key(), Goblin.db_value()}
   @typedoc false
