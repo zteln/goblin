@@ -56,10 +56,11 @@ defmodule Goblin.MemTable.Store do
     |> Enum.max_by(fn {_key, seq, _value} -> seq end, fn -> :not_found end)
   end
 
-  @spec delete_range(t(), Goblin.seq_no()) :: non_neg_integer()
+  @spec delete_range(t(), Goblin.seq_no()) :: :ok
   def delete_range(store, seq) do
     ms = [{{{:_, :"$1"}, :_}, [{:<, {:abs, :"$1"}, seq}], [true]}]
     :ets.select_delete(store, ms)
+    :ok
   end
 
   @spec iterate(t()) ::
