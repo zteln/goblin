@@ -1,6 +1,7 @@
 defmodule Goblin.MemTable do
   @moduledoc false
   use GenServer
+  alias Goblin.MemTable.{Store, Iterator}
   alias Goblin.WAL
   alias Goblin.Manifest
   alias Goblin.DiskTables
@@ -8,7 +9,7 @@ defmodule Goblin.MemTable do
   @flush_level_key 0
 
   defstruct [
-    :mem_table,
+    :store,
     :mem_limit,
     :wal_server,
     :manifest_server,
@@ -18,47 +19,10 @@ defmodule Goblin.MemTable do
     flush_queue: :queue.new()
   ]
 
-  defmodule Iterator do
-    @moduledoc false
-    defstruct [
-      :idx,
-      :mem_table,
-      :max_seq
-    ]
-
-    defimpl Goblin.Iterable do
-      def init(iterator), do: iterator
-
-      def next(%{idx: nil} = iterator) do
-        idx = :ets.first(iterator.mem_table)
-        handle_iteration(iterator, idx)
-      end
-
-      def next(iterator) do
-        idx = :ets.next(iterator.mem_table, iterator.idx)
-        handle_iteration(iterator, idx)
-      end
-
-      def close(_iterator), do: :ok
-
-      defp handle_iteration(_iterator, :"$end_of_table"), do: :ok
-
-      defp handle_iteration(%{max_seq: max_seq} = iterator, {key, seq} = idx)
-           when abs(seq) < max_seq do
-        [{{_key, _seq}, value}] = :ets.lookup(iterator.mem_table, idx)
-        {{key, abs(seq), value}, %{iterator | idx: idx}}
-      end
-
-      defp handle_iteration(iterator, idx) do
-        next(%{iterator | idx: idx})
-      end
-    end
-  end
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     name = opts[:name]
-    table_name = opts[:local_name] || name
+    store_name = opts[:local_name] || name
 
     args =
       opts
@@ -68,7 +32,7 @@ defmodule Goblin.MemTable do
         :manifest_server,
         :disk_tables_server
       ])
-      |> Keyword.merge(table_name: table_name)
+      |> Keyword.merge(store_name: store_name)
 
     GenServer.start_link(__MODULE__, args, name: name)
   end
@@ -79,43 +43,43 @@ defmodule Goblin.MemTable do
     GenServer.call(server, {:insert, writes, seq})
   end
 
-  @spec get(Goblin.table(), Goblin.db_key(), Goblin.seq_no()) ::
+  @spec get(Store.t(), Goblin.db_key(), Goblin.seq_no()) ::
           {:value, Goblin.triple()} | :not_found
-  def get(table, key, seq) do
-    wait_until_ready(table)
+  def get(store, key, seq) do
+    Store.wait_until_ready(store)
 
-    case get_by_key(table, key, seq) do
-      {{key, seq}, value} -> {:value, {key, seq, value}}
+    case Store.get_by_key(store, key, seq) do
+      {key, seq, value} -> {:value, {key, seq, value}}
       _ -> :not_found
     end
   end
 
-  @spec get_multi(Goblin.table(), [Goblin.db_key()], Goblin.seq_no()) :: [
+  @spec get_multi(Store.t(), [Goblin.db_key()], Goblin.seq_no()) :: [
           {:value, Goblin.triple()} | {:not_found, Goblin.db_key()}
         ]
-  def get_multi(table, keys, seq) do
-    wait_until_ready(table)
+  def get_multi(store, keys, seq) do
+    Store.wait_until_ready(store)
 
     Enum.map(keys, fn key ->
-      case get_by_key(table, key, seq) do
-        {{key, seq}, value} -> {:value, {key, seq, value}}
+      case Store.get_by_key(store, key, seq) do
+        {key, seq, value} -> {:value, {key, seq, value}}
         _ -> {:not_found, key}
       end
     end)
   end
 
-  @spec iterator(Goblin.table(), Goblin.seq_no()) :: Goblin.Iterable.t()
-  def iterator(table, seq) do
+  @spec iterator(Store.t(), Goblin.seq_no()) :: Goblin.Iterable.t()
+  def iterator(store, seq) do
     %Iterator{
-      mem_table: table,
+      store: store,
       max_seq: seq
     }
   end
 
-  @spec commit_seq(Goblin.table()) :: Goblin.seq_no()
-  def commit_seq(table) do
-    wait_until_ready(table)
-    get_commit_seq(table)
+  @spec commit_seq(Store.t()) :: Goblin.seq_no()
+  def commit_seq(store) do
+    Store.wait_until_ready(store)
+    Store.get_commit_seq(store)
   end
 
   @spec flushing?(Goblin.server()) :: boolean()
@@ -125,11 +89,11 @@ defmodule Goblin.MemTable do
 
   @impl GenServer
   def init(args) do
-    table = :ets.new(args[:table_name], [:named_table, :ordered_set])
+    store = Store.new(args[:store_name])
 
     {:ok,
      %__MODULE__{
-       mem_table: table,
+       store: store,
        mem_limit: args[:mem_limit],
        wal_server: args[:wal_server],
        manifest_server: args[:manifest_server],
@@ -141,8 +105,8 @@ defmodule Goblin.MemTable do
   def handle_call({:insert, writes, new_seq}, _from, state) do
     case WAL.append(state.wal_server, writes) do
       :ok ->
-        Enum.each(writes, &apply_write(state.mem_table, &1))
-        put_commit_seq(state.mem_table, new_seq)
+        Enum.each(writes, &apply_write(state.store, &1))
+        Store.insert_commit_seq(state.store, new_seq)
         {:reply, :ok, %{state | seq: new_seq}, {:continue, :maybe_flush}}
 
       {:error, reason} = error ->
@@ -156,7 +120,7 @@ defmodule Goblin.MemTable do
 
   @impl GenServer
   def handle_continue(:maybe_flush, %{flushing: nil} = state) do
-    if size(state.mem_table) >= state.mem_limit do
+    if Store.size(state.store) >= state.mem_limit do
       case coordinate_wal_rotation(state.wal_server, state.manifest_server) do
         {:ok, rotated_wal} ->
           state = enqueue_flush(state, rotated_wal, state.seq)
@@ -193,7 +157,7 @@ defmodule Goblin.MemTable do
   @impl GenServer
   def handle_info({ref, {:ok, :flushed}}, %{flushing: {ref, _, _}} = state) do
     {_ref, flushed_seq, _rotated_wal} = state.flushing
-    delete_range(state.mem_table, flushed_seq)
+    Store.delete_range(state.store, flushed_seq)
     {:noreply, %{state | flushing: nil}, {:continue, :dequeue_flush}}
   end
 
@@ -225,7 +189,7 @@ defmodule Goblin.MemTable do
 
   defp flush(state, rotated_wal, seq) do
     %{
-      mem_table: mem_table,
+      store: store,
       disk_tables_server: disk_tables_server,
       manifest_server: manifest_server,
       wal_server: wal_server
@@ -238,7 +202,7 @@ defmodule Goblin.MemTable do
           compress?: false
         ]
 
-        stream = Goblin.Iterator.linear_stream(iterator(mem_table, seq))
+        stream = Goblin.Iterator.linear_stream(iterator(store, seq))
 
         with {:ok, disk_tables} <- DiskTables.new(disk_tables_server, stream, opts),
              :ok <- Manifest.log_flush(manifest_server, disk_tables, rotated_wal),
@@ -255,8 +219,8 @@ defmodule Goblin.MemTable do
     %{seq: flushed_seq} = Manifest.snapshot(state.manifest_server, [:seq])
     logs = WAL.get_log_streams(state.wal_server)
     state = handle_logs(%{state | seq: flushed_seq}, logs)
-    put_commit_seq(state.mem_table, state.seq)
-    ready(state.mem_table)
+    Store.insert_commit_seq(state.store, state.seq)
+    Store.set_ready(state.store)
     state
   end
 
@@ -274,67 +238,15 @@ defmodule Goblin.MemTable do
   end
 
   defp replay_logs(state, log_stream) do
-    Enum.each(log_stream, &apply_write(state.mem_table, &1))
+    Enum.each(log_stream, &apply_write(state.store, &1))
     %{state | seq: state.seq + Enum.count(log_stream)}
   end
 
-  defp apply_write(mem_table, {:put, seq, key, value}) do
-    :ets.insert(mem_table, {{key, -seq}, value})
+  defp apply_write(store, {:put, seq, key, value}) do
+    Store.insert(store, key, seq, value)
   end
 
-  defp apply_write(mem_table, {:remove, seq, key}) do
-    :ets.insert(mem_table, {{key, -seq}, :"$goblin_tombstone"})
-  end
-
-  defp put_commit_seq(mem_table, seq) do
-    :ets.insert(mem_table, {:commit_seq, seq})
-  end
-
-  defp get_commit_seq(mem_table) do
-    case :ets.lookup(mem_table, :commit_seq) do
-      [] -> 0
-      [{_, seq}] -> seq
-    end
-  end
-
-  defp delete_range(mem_table, seq) do
-    ms = [{{{:_, :"$1"}, :_}, [{:<, {:abs, :"$1"}, seq}], [true]}]
-    :ets.select_delete(mem_table, ms)
-  end
-
-  defp get_by_key(mem_table, key, seq) do
-    ms = [
-      {
-        {{:"$1", :"$2"}, :_},
-        [{:andalso, {:"=:=", :"$1", key}, {:<, {:abs, :"$2"}, seq}}],
-        [:"$_"]
-      }
-    ]
-
-    :ets.select(mem_table, ms)
-    |> Enum.map(fn {{key, seq}, value} -> {{key, abs(seq)}, value} end)
-    |> Enum.max_by(fn {{_key, seq}, _value} -> seq end, fn -> :not_found end)
-  end
-
-  defp wait_until_ready(mem_table, timeout \\ 5000)
-
-  defp wait_until_ready(_mem_table, timeout) when timeout <= 0,
-    do: raise("MemTable failed to get ready within timeout")
-
-  defp wait_until_ready(mem_table, timeout) do
-    if :ets.member(mem_table, :ready) do
-      :ok
-    else
-      Process.sleep(50)
-      wait_until_ready(mem_table, timeout - 50)
-    end
-  end
-
-  defp ready(mem_table) do
-    :ets.insert(mem_table, {:ready})
-  end
-
-  defp size(mem_table) do
-    :ets.info(mem_table, :memory) * :erlang.system_info(:wordsize)
+  defp apply_write(store, {:remove, seq, key}) do
+    Store.remove(store, key, seq)
   end
 end
