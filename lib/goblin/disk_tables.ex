@@ -1,8 +1,7 @@
 defmodule Goblin.DiskTables do
   @moduledoc false
   use GenServer
-  alias Goblin.DiskTables.{DiskTable, BinarySearchIterator, StreamIterator}
-  alias Goblin.BloomFilter
+  alias Goblin.DiskTables.{Store, DiskTable, BinarySearchIterator, StreamIterator}
   alias Goblin.Manifest
   alias Goblin.Compactor
 
@@ -10,7 +9,7 @@ defmodule Goblin.DiskTables do
 
   defstruct [
     :dir,
-    :table,
+    :store,
     :manifest_server,
     :compactor_server,
     :opts,
@@ -57,21 +56,14 @@ defmodule Goblin.DiskTables do
     GenServer.call(server, {:remove, file})
   end
 
-  @spec search_iterators(Goblin.table(), [Goblin.db_key()], Goblin.seq_no()) :: [
+  @spec search_iterators(Store.t(), [Goblin.db_key()], Goblin.seq_no()) :: [
           Goblin.Iterable.t()
         ]
-  def search_iterators(ets, keys, seq) do
+  def search_iterators(store, keys, seq) do
+    Store.wait_until_ready(store)
+
     Enum.reduce(keys, %{}, fn key, acc ->
-      guard = [
-        {:andalso, {:"=<", :"$1", key}, {:"=<", key, :"$2"}}
-      ]
-
-      ms = [{{:_, {:"$1", :"$2"}, :"$3"}, guard, [:"$3"]}]
-
-      :ets.select(ets, ms)
-      |> Enum.filter(fn disk_table ->
-        BloomFilter.member?(disk_table.bloom_filter, key)
-      end)
+      Store.select_within_key_range(store, key)
       |> Enum.reduce(acc, fn disk_table, acc ->
         Map.update(acc, disk_table, [key], &[key | &1])
       end)
@@ -81,21 +73,13 @@ defmodule Goblin.DiskTables do
     end)
   end
 
-  @spec stream_iterators(Goblin.table(), Goblin.db_key(), Goblin.db_key(), Goblin.seq_no()) :: [
+  @spec stream_iterators(Store.t(), Goblin.db_key(), Goblin.db_key(), Goblin.seq_no()) :: [
           Goblin.Iterable.t()
         ]
-  def stream_iterators(ets, min, max, seq) do
-    guard =
-      cond do
-        is_nil(min) and is_nil(max) -> []
-        is_nil(min) -> [{:"=<", :"$2", max}]
-        is_nil(max) -> [{:"=<", min, :"$3"}]
-        true -> [{:andalso, {:"=<", :"$2", max}, {:"=<", min, :"$3"}}]
-      end
+  def stream_iterators(store, min, max, seq) do
+    Store.wait_until_ready(store)
 
-    ms = [{{:"$1", {:"$2", :"$3"}, :_}, guard, [:"$1"]}]
-
-    :ets.select(ets, ms)
+    Store.select_within_bounds(store, min, max)
     |> Enum.map(&StreamIterator.new(&1, seq))
   end
 
@@ -111,12 +95,12 @@ defmodule Goblin.DiskTables do
 
   @impl GenServer
   def init(args) do
-    table = :ets.new(args[:local_name], [:named_table])
+    store = Store.new(args[:local_name])
 
     {:ok,
      %__MODULE__{
        dir: args[:db_dir],
-       table: table,
+       store: store,
        manifest_server: args[:manifest_server],
        compactor_server: args[:compactor_server],
        opts: [bf_fpp: args[:bf_fpp], max_sst_size: args[:max_sst_size]]
@@ -126,11 +110,7 @@ defmodule Goblin.DiskTables do
   @impl GenServer
   def handle_call({:put, disk_tables}, _from, state) do
     Enum.each(disk_tables, fn disk_table ->
-      :ets.insert(
-        state.table,
-        {disk_table.file, disk_table.key_range, disk_table}
-      )
-
+      Store.insert(state.store, disk_table)
       Compactor.put(state.compactor_server, disk_table)
     end)
 
@@ -138,7 +118,7 @@ defmodule Goblin.DiskTables do
   end
 
   def handle_call({:remove, file}, _from, state) do
-    :ets.delete(state.table, file)
+    Store.remove(state.store, file)
     {:reply, :ok, state}
   end
 
@@ -159,15 +139,11 @@ defmodule Goblin.DiskTables do
     case recover_disk_tables(disk_table_names) do
       {:ok, disk_tables} ->
         Enum.each(disk_tables, fn disk_table ->
-          :ets.insert(
-            state.table,
-            {disk_table.file, disk_table.key_range, disk_table}
-          )
-
+          Store.insert(state.store, disk_table)
           Compactor.put(state.compactor_server, disk_table)
         end)
 
-        :ets.insert(state.table, {:ready})
+        Store.set_ready(state.store)
         {:noreply, %{state | file_number: count}}
 
       {:error, reason} ->
