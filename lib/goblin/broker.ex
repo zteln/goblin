@@ -8,9 +8,9 @@ defmodule Goblin.Broker do
 
   defstruct [
     :writer,
-    :mem_table_server,
     :mem_table,
-    :disk_tables,
+    :mem_table_store,
+    :disk_tables_store,
     :cleaner_table,
     :cleaner_server,
     :pub_sub,
@@ -22,9 +22,9 @@ defmodule Goblin.Broker do
     name = opts[:name]
 
     args = [
-      mem_table_server: opts[:mem_table_server],
       mem_table: opts[:mem_table],
-      disk_tables: opts[:disk_tables],
+      mem_table_store: opts[:mem_table_store],
+      disk_tables_store: opts[:disk_tables_store],
       cleaner_table: opts[:cleaner_table],
       cleaner_server: opts[:cleaner_server],
       pub_sub: opts[:pub_sub]
@@ -50,9 +50,9 @@ defmodule Goblin.Broker do
           Goblin.DiskTables.Store.t(),
           (Goblin.Tx.t() -> any())
         ) :: any()
-  def read_transaction(cleaner_table, cleaner_server, mem_table, disk_tables, f) do
+  def read_transaction(cleaner_table, cleaner_server, mem_table_store, disk_tables_store, f) do
     Cleaner.inc(cleaner_table)
-    tx = ReadTx.new(mem_table, disk_tables)
+    tx = ReadTx.new(mem_table_store, disk_tables_store)
     f.(tx)
   after
     Cleaner.deinc(cleaner_table, cleaner_server)
@@ -62,9 +62,9 @@ defmodule Goblin.Broker do
   def init(args) do
     {:ok,
      %__MODULE__{
-       mem_table_server: args[:mem_table_server],
        mem_table: args[:mem_table],
-       disk_tables: args[:disk_tables],
+       mem_table_store: args[:mem_table_store],
+       disk_tables_store: args[:disk_tables_store],
        cleaner_table: args[:cleaner_table],
        cleaner_server: args[:cleaner_server],
        pub_sub: args[:pub_sub]
@@ -75,7 +75,7 @@ defmodule Goblin.Broker do
   def handle_call(:start_transaction, {pid, _ref}, %{writer: nil} = state) do
     monitor_ref = Process.monitor(pid)
     Cleaner.inc(state.cleaner_table)
-    tx = WriteTx.new(state.mem_table, state.disk_tables)
+    tx = WriteTx.new(state.mem_table_store, state.disk_tables_store)
     {:reply, {:ok, tx}, %{state | writer: {pid, monitor_ref}}}
   end
 
@@ -93,9 +93,9 @@ defmodule Goblin.Broker do
     Process.demonitor(monitor_ref)
 
     %{writes: writes, seq: seq} = tx
-    %{pub_sub: pub_sub, mem_table_server: mem_table_server} = state
+    %{pub_sub: pub_sub, mem_table: mem_table} = state
 
-    case MemTable.insert(mem_table_server, writes, seq) do
+    case MemTable.insert(mem_table, writes, seq) do
       :ok ->
         publish_commit(pub_sub, writes)
         {:reply, :ok, %{state | writer: nil}, {:continue, :dequeue_writer}}
@@ -127,7 +127,7 @@ defmodule Goblin.Broker do
       {{:value, {pid, _ref} = from}, write_queue} ->
         monitor_ref = Process.monitor(pid)
         Cleaner.inc(state.cleaner_table)
-        tx = WriteTx.new(state.mem_table, state.disk_tables)
+        tx = WriteTx.new(state.mem_table_store, state.disk_tables_store)
         GenServer.reply(from, {:ok, tx})
         {:noreply, %{state | write_queue: write_queue, writer: {pid, monitor_ref}}}
     end

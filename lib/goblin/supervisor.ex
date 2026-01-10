@@ -93,9 +93,9 @@ defmodule Goblin.Supervisor do
       {Goblin.Broker,
        Keyword.merge(args,
          name: via(registry, broker_name),
-         mem_table_server: via(registry, mem_table_name),
-         mem_table: mem_table_name,
-         disk_tables: disk_tables_name,
+         mem_table: via(registry, mem_table_name),
+         mem_table_store: mem_table_name,
+         disk_tables_store: disk_tables_name,
          cleaner_table: cleaner_name,
          cleaner_server: via(registry, cleaner_name),
          pub_sub: pub_sub
