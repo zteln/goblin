@@ -65,8 +65,8 @@ defmodule Goblin.Manifest do
   @spec log_compaction(Goblin.server(), [Goblin.db_file()], [Goblin.db_file()]) ::
           :ok | {:error, term()}
   def log_compaction(manifest, removed_disk_tables, added_disk_tables) do
-    added_edits = Enum.map(added_disk_tables, &{:disk_table_added, trim_dir(&1)})
     removed_edits = Enum.map(removed_disk_tables, &{:disk_table_removed, trim_dir(&1)})
+    added_edits = Enum.map(added_disk_tables, &{:disk_table_added, trim_dir(&1)})
     GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
   end
 
@@ -150,11 +150,8 @@ defmodule Goblin.Manifest do
   @impl GenServer
   def handle_continue(:rotate, %{size: size, max_size: max_size} = state) when size >= max_size do
     case rotate(state) do
-      {:ok, state} ->
-        {:noreply, state}
-
-      error ->
-        {:stop, error, state}
+      {:ok, state} -> {:noreply, state}
+      {:error, reason} -> {:stop, reason, state}
     end
   end
 
@@ -193,11 +190,9 @@ defmodule Goblin.Manifest do
   end
 
   defp append_to_manifest(name, edits) when is_list(edits) do
-    edits = Enum.map(edits, &:erlang.term_to_binary/1)
-
-    with :ok <- :disk_log.blog_terms(name, edits),
+    with :ok <- :disk_log.log_terms(name, edits),
          :ok <- :disk_log.sync(name) do
-      {:ok, Enum.reduce(edits, 0, &(&2 + byte_size(&1)))}
+      {:ok, Enum.reduce(edits, 0, &(&2 + :erlang.external_size(&1)))}
     end
   end
 
