@@ -79,8 +79,6 @@ defmodule Goblin do
   @typedoc false
   @type seq_no :: non_neg_integer()
   @typedoc false
-  @type pair :: {Goblin.db_key(), Goblin.db_value()}
-  @typedoc false
   @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
   @typedoc false
   @type server :: module() | {:via, Registry, {module(), module()}}
