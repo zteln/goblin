@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.2 (2026-01-10)
+* Changes
+    * Rename `is_*?` function names to `*?` only
+    * Refactorings of some modules
+
 ## v0.4.1 (2026-01-08)
 * Bug fixes
     * Fix recursion bug in binary search iterator algorithm for disk tables.
