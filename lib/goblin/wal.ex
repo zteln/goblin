@@ -37,17 +37,17 @@ defmodule Goblin.WAL do
     GenServer.call(wal, {:append, logs})
   end
 
-  @spec rotate(Goblin.server()) :: {:ok, Goblin.db_file(), Goblin.db_file()}
+  @spec rotate(Goblin.server()) :: {:ok, Path.t(), Path.t()}
   def rotate(wal) do
     GenServer.call(wal, :rotate)
   end
 
-  @spec clean(Goblin.server(), Goblin.db_file()) :: :ok | {:error, term()}
+  @spec clean(Goblin.server(), Path.t()) :: :ok | {:error, term()}
   def clean(wal, rotation) do
     GenServer.call(wal, {:clean, rotation})
   end
 
-  @spec get_log_streams(Goblin.server()) :: [{Goblin.db_file(), Enumerable.t()}]
+  @spec get_log_streams(Goblin.server()) :: [{Path.t(), Enumerable.t()}]
   def get_log_streams(wal) do
     GenServer.call(wal, :get_log_streams)
   end

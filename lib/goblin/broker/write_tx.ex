@@ -32,7 +32,7 @@ defmodule Goblin.Broker.WriteTx do
     end
   end
 
-  @spec new(Goblin.table(), Goblin.table()) :: Goblin.Tx.t()
+  @spec new(Goblin.MemTable.Store.t(), Goblin.DiskTables.Store.t()) :: Goblin.Tx.t()
   def new(mem_table, disk_tables) do
     seq = MemTable.commit_seq(mem_table)
     %__MODULE__{seq: seq, mem_table: mem_table, disk_tables: disk_tables}

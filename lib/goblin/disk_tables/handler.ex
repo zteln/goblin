@@ -8,7 +8,7 @@ defmodule Goblin.DiskTables.Handler do
 
   @type t :: %__MODULE__{}
 
-  @spec open!(Goblin.db_file(), keyword()) :: t()
+  @spec open!(Path.t(), keyword()) :: t()
   def open!(file, opts \\ []) do
     case open(file, opts) do
       {:ok, handler} -> handler
@@ -16,7 +16,7 @@ defmodule Goblin.DiskTables.Handler do
     end
   end
 
-  @spec open(Goblin.db_file(), keyword()) :: {:ok, t()} | {:error, term()}
+  @spec open(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def open(file, opts \\ []) do
     position = if opts[:start?], do: 0, else: :eof
     opts = [:binary, :read, :raw | List.wrap(opts[:write?] && :append)]

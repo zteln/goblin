@@ -3,6 +3,8 @@ defmodule Goblin.Cleaner do
   use GenServer
   alias Goblin.DiskTables
 
+  @type table :: :ets.table()
+
   defstruct [
     :table,
     :disk_tables_server,
@@ -26,25 +28,25 @@ defmodule Goblin.Cleaner do
     GenServer.call(server, {:clean, files, disk_table?})
   end
 
-  @spec inc(Goblin.table()) :: :ok
-  def inc(ets) do
-    case :ets.lookup(ets, :transactions) do
-      [] -> :ets.insert(ets, {:transactions, 1})
-      [{_, n}] -> :ets.insert(ets, {:transactions, n + 1})
+  @spec inc(table()) :: :ok
+  def inc(table) do
+    case :ets.lookup(table, :transactions) do
+      [] -> :ets.insert(table, {:transactions, 1})
+      [{_, n}] -> :ets.insert(table, {:transactions, n + 1})
     end
 
     :ok
   end
 
-  @spec deinc(Goblin.table(), Goblin.server()) :: :ok
-  def deinc(ets, server) do
-    case :ets.lookup(ets, :transactions) do
+  @spec deinc(table(), Goblin.server()) :: :ok
+  def deinc(table, server) do
+    case :ets.lookup(table, :transactions) do
       [{_, 1}] ->
-        :ets.delete(ets, :transactions)
+        :ets.delete(table, :transactions)
         GenServer.cast(server, :clean_up)
 
       [{_, n}] ->
-        :ets.insert(ets, {:transactions, n - 1})
+        :ets.insert(table, {:transactions, n - 1})
     end
 
     :ok

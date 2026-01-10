@@ -2,7 +2,7 @@ defmodule Goblin.DiskTables.Store do
   @moduledoc false
   alias Goblin.BloomFilter
 
-  @type t :: :ets.tid()
+  @type t :: :ets.table()
 
   @spec new(atom()) :: t()
   def new(name) do

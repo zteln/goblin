@@ -6,9 +6,9 @@ defmodule Goblin.Manifest do
   @manifest_max_size 1024 * 1024
 
   @type snapshot :: %{
-          disk_tables: [Goblin.db_file()],
-          wal_rotations: [Goblin.db_file()],
-          wal: Goblin.db_file() | nil,
+          disk_tables: [Path.t()],
+          wal_rotations: [Path.t()],
+          wal: Path.t() | nil,
           count: non_neg_integer(),
           seq: Goblin.seq_no(),
           manifest: {String.t(), Path.t()}
@@ -37,19 +37,19 @@ defmodule Goblin.Manifest do
     GenServer.start_link(__MODULE__, args, name: name)
   end
 
-  @spec log_wal(Goblin.server(), Goblin.db_file()) :: :ok | {:error, term()}
+  @spec log_wal(Goblin.server(), Path.t()) :: :ok | {:error, term()}
   def log_wal(manifest, wal) do
     GenServer.call(manifest, {:log_edit, {:current_wal, trim_dir(wal)}})
   end
 
-  @spec log_rotation(Goblin.server(), Goblin.db_file(), Goblin.db_file()) ::
+  @spec log_rotation(Goblin.server(), Path.t(), Path.t()) ::
           :ok | {:error, term()}
   def log_rotation(manifest, wal_rotation, wal_current) do
     edits = [{:wal_added, trim_dir(wal_rotation)}, {:current_wal, trim_dir(wal_current)}]
     GenServer.call(manifest, {:log_edit, edits})
   end
 
-  @spec log_flush(Goblin.server(), [Goblin.db_file()], Goblin.db_file()) ::
+  @spec log_flush(Goblin.server(), [Path.t()], Path.t()) ::
           :ok | {:error, term()}
   def log_flush(manifest, disk_tables, wal) do
     added_edits = Enum.map(disk_tables, &{:disk_table_added, trim_dir(&1)})
@@ -62,7 +62,7 @@ defmodule Goblin.Manifest do
     GenServer.call(manifest, {:log_edit, {:seq, seq}})
   end
 
-  @spec log_compaction(Goblin.server(), [Goblin.db_file()], [Goblin.db_file()]) ::
+  @spec log_compaction(Goblin.server(), [Path.t()], [Path.t()]) ::
           :ok | {:error, term()}
   def log_compaction(manifest, removed_disk_tables, added_disk_tables) do
     removed_edits = Enum.map(removed_disk_tables, &{:disk_table_removed, trim_dir(&1)})

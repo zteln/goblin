@@ -79,8 +79,6 @@ defmodule Goblin do
   @typedoc false
   @type seq_no :: non_neg_integer()
   @typedoc false
-  @type db_file :: Path.t()
-  @typedoc false
   @type db_key_limit :: non_neg_integer()
   @typedoc false
   @type db_level_limit :: non_neg_integer()
@@ -90,8 +88,6 @@ defmodule Goblin do
   @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
   @typedoc false
   @type server :: module() | {:via, Registry, {module(), module()}}
-  @typedoc false
-  @type table :: module()
   @typedoc false
   @type write_term :: {:put, seq_no(), db_key(), db_value()} | {:remove, seq_no(), db_key()}
 

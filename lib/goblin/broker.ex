@@ -44,10 +44,10 @@ defmodule Goblin.Broker do
   end
 
   @spec read_transaction(
-          Goblin.table(),
+          Goblin.Cleaner.table(),
           Goblin.server(),
-          Goblin.table(),
-          Goblin.table(),
+          Goblin.MemTable.Store.t(),
+          Goblin.DiskTables.Store.t(),
           (Goblin.Tx.t() -> any())
         ) :: any()
   def read_transaction(cleaner_table, cleaner_server, mem_table, disk_tables, f) do

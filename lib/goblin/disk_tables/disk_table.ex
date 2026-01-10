@@ -18,7 +18,7 @@ defmodule Goblin.DiskTables.DiskTable do
 
   @spec write_new(
           Enumerable.t(Goblin.triple()),
-          (-> {Goblin.db_file(), Goblin.db_file()}),
+          (-> {Path.t(), Path.t()}),
           keyword()
         ) :: {:ok, [t()]} | {:error, term()}
   def write_new(data_stream, next_file_f, opts) do
@@ -72,7 +72,7 @@ defmodule Goblin.DiskTables.DiskTable do
     end)
   end
 
-  @spec parse(Goblin.db_file()) :: {:ok, t()} | {:error, term()}
+  @spec parse(Path.t()) :: {:ok, t()} | {:error, term()}
   def parse(file) do
     with {:ok, handler} <- Handler.open(file),
          :ok <- verify_magic(handler),

@@ -1,6 +1,6 @@
 defmodule Goblin.MemTable.Store do
   @moduledoc false
-  @type t :: :ets.tid()
+  @type t :: :ets.table()
 
   @spec new(atom()) :: t()
   def new(name) do

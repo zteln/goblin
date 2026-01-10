@@ -36,7 +36,7 @@ defmodule Goblin.DiskTables do
   end
 
   @spec new(Goblin.server(), Enumerable.t(Goblin.triple()), keyword()) ::
-          {:ok, [Goblin.db_file()]} | {:error, term()}
+          {:ok, [Path.t()]} | {:error, term()}
   def new(server, stream, opts) do
     next_file_f = fn ->
       file = new_file(server)
@@ -51,7 +51,7 @@ defmodule Goblin.DiskTables do
     end
   end
 
-  @spec remove(Goblin.server(), Goblin.db_file()) :: :ok | {:error, term()}
+  @spec remove(Goblin.server(), Path.t()) :: :ok | {:error, term()}
   def remove(server, file) do
     GenServer.call(server, {:remove, file})
   end
@@ -83,12 +83,12 @@ defmodule Goblin.DiskTables do
     |> Enum.map(&StreamIterator.new(&1, seq))
   end
 
-  @spec iterator(Goblin.db_file()) :: Goblin.Iterable.t()
+  @spec iterator(Path.t()) :: Goblin.Iterable.t()
   def iterator(file) do
     StreamIterator.new(file)
   end
 
-  @spec new_file(Goblin.server()) :: {Goblin.db_file(), Goblin.db_file()}
+  @spec new_file(Goblin.server()) :: {Path.t(), Path.t()}
   def new_file(server) do
     GenServer.call(server, :new_file)
   end
