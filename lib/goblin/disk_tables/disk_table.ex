@@ -6,7 +6,7 @@ defmodule Goblin.DiskTables.DiskTable do
   defstruct [
     :file,
     :level_key,
-    bloom_filter: BloomFilter.new(),
+    :bloom_filter,
     key_range: {nil, nil},
     seq_range: {nil, 0},
     size: 0,
@@ -26,11 +26,17 @@ defmodule Goblin.DiskTables.DiskTable do
     compress? = opts[:compress?]
     max_sst_size = opts[:max_sst_size]
     bf_fpp = opts[:bf_fpp]
+    bf_bit_array_size = opts[:bf_bit_array_size]
 
     Enum.reduce_while(data_stream, {nil, nil, [], []}, fn
       triple, {nil, nil, files, disk_tables} ->
         {tmp_file, file} = new_files = next_file_f.()
-        disk_table = %__MODULE__{file: file, level_key: level_key}
+
+        disk_table = %__MODULE__{
+          file: file,
+          level_key: level_key,
+          bloom_filter: BloomFilter.new(bit_array_size: bf_bit_array_size, fpp: bf_fpp)
+        }
 
         with {:ok, handler} <- Handler.open(tmp_file, write?: true),
              {:ok, disk_table, handler} <-
@@ -43,7 +49,7 @@ defmodule Goblin.DiskTables.DiskTable do
       triple, {disk_table, handler, files, disk_tables} ->
         case append_sst_block(disk_table, handler, triple, compress?) do
           {:ok, %{size: size} = disk_table, handler} when size >= max_sst_size ->
-            case append_footer_and_close(disk_table, handler, bf_fpp, compress?) do
+            case append_footer_and_close(disk_table, handler, compress?) do
               {:ok, disk_table} -> {:cont, {nil, nil, files, [disk_table | disk_tables]}}
               error -> {:halt, error}
             end
@@ -65,7 +71,7 @@ defmodule Goblin.DiskTables.DiskTable do
         end
 
       {disk_table, handler, files, disk_tables} ->
-        with {:ok, disk_table} <- append_footer_and_close(disk_table, handler, bf_fpp, compress?),
+        with {:ok, disk_table} <- append_footer_and_close(disk_table, handler, compress?),
              :ok <- mv_files(files) do
           {:ok, Enum.reverse([disk_table | disk_tables])}
         end
@@ -122,13 +128,11 @@ defmodule Goblin.DiskTables.DiskTable do
     end
   end
 
-  defp append_footer(disk_table, handler, bf_fpp, compress?) do
-    bloom_filter = BloomFilter.generate(disk_table.bloom_filter, bf_fpp)
-
+  defp append_footer(disk_table, handler, compress?) do
     {footer_block, size, crc} =
       Encoder.encode_footer_block(
         disk_table.level_key,
-        bloom_filter,
+        disk_table.bloom_filter,
         disk_table.key_range,
         disk_table.seq_range,
         handler.file_offset,
@@ -141,7 +145,7 @@ defmodule Goblin.DiskTables.DiskTable do
     with {:ok, handler} <- Handler.write(handler, footer_block) do
       disk_table =
         disk_table
-        |> set_bloom_filter(bloom_filter)
+        |> set_bloom_filter(disk_table.bloom_filter)
         |> set_size(size)
         |> update_crc(crc)
 
@@ -149,8 +153,8 @@ defmodule Goblin.DiskTables.DiskTable do
     end
   end
 
-  defp append_footer_and_close(disk_table, handler, bf_fpp, compress?) do
-    with {:ok, disk_table, handler} <- append_footer(disk_table, handler, bf_fpp, compress?),
+  defp append_footer_and_close(disk_table, handler, compress?) do
+    with {:ok, disk_table, handler} <- append_footer(disk_table, handler, compress?),
          :ok <- Handler.sync(handler),
          :ok <- Handler.close(handler) do
       {:ok, disk_table}

@@ -28,6 +28,7 @@ defmodule Goblin.DiskTables do
         :manifest_server,
         :compactor_server,
         :bf_fpp,
+        :bf_bit_array_size,
         :max_sst_size
       ])
       |> Keyword.put(:local_name, local_name)
@@ -108,7 +109,11 @@ defmodule Goblin.DiskTables do
        store: store,
        manifest_server: args[:manifest_server],
        compactor_server: args[:compactor_server],
-       opts: [bf_fpp: args[:bf_fpp], max_sst_size: args[:max_sst_size]]
+       opts: [
+         bf_fpp: args[:bf_fpp],
+         bf_bit_array_size: args[:bf_bit_array_size],
+         max_sst_size: args[:max_sst_size]
+       ]
      }, {:continue, :recover_state}}
   end
 
