@@ -11,7 +11,8 @@ defmodule Goblin.Manifest do
           wal: Path.t() | nil,
           count: non_neg_integer(),
           seq: Goblin.seq_no(),
-          manifest: {String.t(), Path.t()}
+          manifest: {String.t(), Path.t()},
+          trash: [Path.t()]
         }
 
   defstruct [
@@ -19,7 +20,7 @@ defmodule Goblin.Manifest do
     :file,
     :dir,
     :max_size,
-    :version,
+    :snapshot,
     :waiting,
     size: 0
   ]
@@ -90,15 +91,16 @@ defmodule Goblin.Manifest do
     end
 
     with :ok <- open_manifest(name, file),
-         {:ok, version} <- fetch_version(name),
-         :ok <- clean_up(db_dir, version) do
+         {:ok, snapshot} <- fetch_snapshot(name),
+         :ok <- clean_up(db_dir, clean_snapshot_trash(snapshot, db_dir)) do
       {:ok,
        %__MODULE__{
          name: name,
          file: file,
          dir: db_dir,
          max_size: max_size,
-         version: version
+         snapshot: snapshot,
+         size: Map.get(File.stat!(file), :size)
        }}
     else
       {:error, reason} -> {:stop, reason}
@@ -109,11 +111,12 @@ defmodule Goblin.Manifest do
   def handle_call({:log_edit, edit}, _from, state) do
     case append_to_manifest(state.name, edit) do
       {:ok, size} ->
-        version = apply_edit(state.version, edit)
-        {:reply, :ok, %{state | size: state.size + size, version: version}, {:continue, :rotate}}
+        snapshot = apply_edit(state.snapshot, edit)
+        state = %{state | size: state.size + size, snapshot: snapshot}
+        {:reply, :ok, state, {:continue, :maybe_rotate}}
 
-      {:error, _reason} = error ->
-        {:reply, error, state}
+      {:error, reason} = error ->
+        {:stop, reason, error, state}
     end
   end
 
@@ -129,8 +132,8 @@ defmodule Goblin.Manifest do
         {suffix, manifest_copy}
       end
 
-    version =
-      state.version
+    snapshot =
+      state.snapshot
       |> Map.put(:manifest, manifest_copy)
       |> Map.take(keys)
       |> Map.replace_lazy(:wal, &(&1 && Path.join(dir, &1)))
@@ -144,27 +147,32 @@ defmodule Goblin.Manifest do
         |> Enum.map(&Path.join(dir, &1))
       end)
 
-    {:reply, version, state}
+    {:reply, snapshot, state}
   end
 
   @impl GenServer
-  def handle_continue(:rotate, %{size: size, max_size: max_size} = state) when size >= max_size do
+  def handle_continue(:maybe_rotate, %{size: size, max_size: max_size} = state)
+      when size >= max_size do
     case rotate(state) do
       {:ok, state} -> {:noreply, state}
       {:error, reason} -> {:stop, reason, state}
     end
   end
 
-  def handle_continue(:rotate, state), do: {:noreply, state}
+  def handle_continue(:maybe_rotate, state), do: {:noreply, state}
 
-  defp clean_up(dir, version) do
-    %{disk_tables: disk_tables, wal_rotations: wal_rotations, wal: wal} = version
-
-    tracked_files = [wal | MapSet.to_list(disk_tables) ++ wal_rotations]
+  defp clean_up(dir, snapshot) do
+    tracked_files =
+      List.flatten([
+        snapshot.wal,
+        MapSet.to_list(snapshot.disk_tables),
+        snapshot.wal_rotations
+      ])
 
     File.ls!(dir)
     |> Enum.reject(&(&1 == @manifest_file))
     |> Enum.reject(&(&1 in tracked_files))
+    |> Enum.filter(&(&1 in snapshot.trash))
     |> Enum.map(&Path.join(dir, &1))
     |> Enum.each(&File.rm!/1)
   end
@@ -173,9 +181,11 @@ defmodule Goblin.Manifest do
     with :ok <- close_manifest(state.name),
          :ok <- File.rename(state.file, rotated_file(state.file)),
          :ok <- open_manifest(state.name, state.file),
-         {:ok, size} <- append_to_manifest(state.name, {:snapshot, state.version}),
+         snapshot <- clean_snapshot_trash(state.snapshot, state.dir),
+         {:ok, size} <- append_to_manifest(state.name, {:snapshot, snapshot}),
          :ok <- File.rm(rotated_file(state.file)) do
-      {:ok, %{state | size: size}}
+      size = Map.get(File.stat!(state.file), :size) + size
+      {:ok, %{state | size: size, snapshot: snapshot}}
     end
   end
 
@@ -206,75 +216,85 @@ defmodule Goblin.Manifest do
     File.rename(rotated_file(file), file)
   end
 
-  defp fetch_version(name) do
+  defp fetch_snapshot(name) do
     case :disk_log.chunk(name, :start, 1) do
       {:error, _reason} = error ->
         error
 
       :eof ->
-        version = new_version()
-        append_to_manifest(name, {:snapshot, version})
-        {:ok, version}
+        snapshot = new_snapshot()
 
-      {continuation, [{:snapshot, version}]} ->
-        update_version(name, continuation, version)
+        with {:ok, _size} <- append_to_manifest(name, {:snapshot, snapshot}) do
+          {:ok, snapshot}
+        end
+
+      {continuation, [{:snapshot, snapshot}]} ->
+        update_snapshot(name, continuation, snapshot)
     end
   end
 
-  defp update_version(name, continuation, version) do
+  defp update_snapshot(name, continuation, snapshot) do
     case :disk_log.chunk(name, continuation, 1) do
       :eof ->
-        {:ok, version}
+        {:ok, snapshot}
 
       {continuation, [edit]} ->
-        version = apply_edit(version, edit)
-        update_version(name, continuation, version)
+        snapshot = apply_edit(snapshot, edit)
+        update_snapshot(name, continuation, snapshot)
     end
   end
 
-  defp apply_edit(version, []), do: version
+  defp clean_snapshot_trash(snapshot, dir) do
+    trash = Enum.filter(snapshot.trash, &File.exists?(Path.join(dir, &1)))
+    %{snapshot | trash: trash}
+  end
 
-  defp apply_edit(version, [edit | edits]) do
-    version
+  defp apply_edit(snapshot, []), do: snapshot
+
+  defp apply_edit(snapshot, [edit | edits]) do
+    snapshot
     |> apply_edit(edit)
     |> apply_edit(edits)
   end
 
-  defp apply_edit(version, {:disk_table_added, disk_table}) do
-    disk_tables = MapSet.put(version.disk_tables, disk_table)
-    %{version | disk_tables: disk_tables, count: version.count + 1}
+  defp apply_edit(snapshot, {:disk_table_added, disk_table}) do
+    disk_tables = MapSet.put(snapshot.disk_tables, disk_table)
+    %{snapshot | disk_tables: disk_tables, count: snapshot.count + 1}
   end
 
-  defp apply_edit(version, {:disk_table_removed, disk_table}) do
-    disk_tables = MapSet.delete(version.disk_tables, disk_table)
-    %{version | disk_tables: disk_tables}
+  defp apply_edit(snapshot, {:disk_table_removed, disk_table}) do
+    disk_tables = MapSet.delete(snapshot.disk_tables, disk_table)
+    trash = [disk_table | snapshot.trash]
+    %{snapshot | disk_tables: disk_tables, trash: trash}
   end
 
-  defp apply_edit(version, {:wal_added, wal}) do
-    wal_rotations = [wal | version.wal_rotations]
-    %{version | wal_rotations: wal_rotations}
+  defp apply_edit(snapshot, {:wal_added, wal}) do
+    wal_rotations = [wal | snapshot.wal_rotations]
+    %{snapshot | wal_rotations: wal_rotations}
   end
 
-  defp apply_edit(version, {:wal_removed, wal}) do
-    wal_rotations = Enum.reject(version.wal_rotations, &(&1 == wal))
-    %{version | wal_rotations: wal_rotations}
+  defp apply_edit(snapshot, {:wal_removed, wal}) do
+    wal_rotations = Enum.reject(snapshot.wal_rotations, &(&1 == wal))
+    trash = [wal | snapshot.trash]
+    %{snapshot | wal_rotations: wal_rotations, trash: trash}
   end
 
-  defp apply_edit(version, {:current_wal, wal}) do
-    %{version | wal: wal}
+  defp apply_edit(snapshot, {:current_wal, wal}) do
+    %{snapshot | wal: wal}
   end
 
-  defp apply_edit(version, {:seq, seq}) do
-    %{version | seq: seq}
+  defp apply_edit(snapshot, {:seq, seq}) do
+    %{snapshot | seq: seq}
   end
 
-  defp new_version,
+  defp new_snapshot,
     do: %{
       disk_tables: MapSet.new(),
       wal_rotations: [],
       wal: nil,
       count: 0,
-      seq: 0
+      seq: 0,
+      trash: []
     }
 
   defp rotated_file(file), do: "#{file}.0"

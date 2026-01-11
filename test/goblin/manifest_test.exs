@@ -77,17 +77,21 @@ defmodule Goblin.ManifestTest do
     assert %{seq: 0} == Goblin.Manifest.snapshot(manifest, [:seq])
   end
 
-  test "cleans up files on start", c do
-    untracked_file = Path.join(c.tmp_dir, "foo")
-    File.touch!(untracked_file)
+  test "only cleans up Goblin generated files on start", c do
+    other_file = Path.join(c.tmp_dir, "foo")
+    File.touch!(other_file)
 
-    assert File.exists?(untracked_file)
+    goblin_file = Path.join(c.tmp_dir, "bar")
+    File.touch!(goblin_file)
+
+    Goblin.Manifest.log_compaction(c.manifest, [goblin_file], [])
 
     stop_db(__MODULE__)
     start_db(c.tmp_dir, name: __MODULE__)
 
     assert_eventually do
-      refute File.exists?(untracked_file)
+      assert File.exists?(other_file)
+      refute File.exists?(goblin_file)
     end
   end
 end
