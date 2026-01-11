@@ -12,7 +12,7 @@ defmodule Goblin.BloomFilter do
   @default_fpp 0.01
   @type t :: %__MODULE__{}
 
-  @spec new(number()) :: t()
+  @spec new(keyword()) :: t()
   def new(opts) do
     fpp = opts[:fpp] || @default_fpp
     bit_array_size = opts[:bit_array_size] || @default_bit_array_size
