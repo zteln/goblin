@@ -3,13 +3,11 @@ defmodule Goblin.Supervisor do
   use Supervisor
 
   import Goblin.Registry, only: [via: 2]
-  # import Goblin, only: [child_name: 2]
 
   @default_flush_level_file_limit 4
   @default_mem_limit 64 * 1024 * 1024
   @default_level_base_size 256 * 1024 * 1024
   @default_level_size_multiplier 10
-  @default_bf_fpp 0.01
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
@@ -25,7 +23,6 @@ defmodule Goblin.Supervisor do
     mem_limit = args[:mem_limit] || @default_mem_limit
     level_base_size = args[:level_base_size] || @default_level_base_size
     level_size_multiplier = args[:level_size_multiplier] || @default_level_size_multiplier
-    bf_fpp = args[:bf_fpp] || @default_bf_fpp
     max_sst_size = args[:max_sst_size] || div(level_base_size, level_size_multiplier)
     pub_sub = args[:pub_sub]
 
@@ -78,7 +75,7 @@ defmodule Goblin.Supervisor do
          db_dir: db_dir,
          manifest_server: via(registry, manifest_name),
          compactor_server: via(registry, compactor_name),
-         bf_fpp: bf_fpp,
+         bf_fpp: args[:bf_fpp],
          max_sst_size: max_sst_size
        )},
       {Goblin.MemTable,
