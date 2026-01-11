@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0 (2026-01-11)
+- Breaking changes
+    - The Bloom filter struct has changed (incompatible with previous versions)
+- Improvements
+    - The manifest can only delete previously tracked files upon start
+    - If a `.tmp` file already exists when trying to write a new, then the previous version is removed before continuing to write
+    - The Bloom filter implementation was refactored into a scalable Bloom filter implementation
+- Bug fixes
+    - Fixes a bug where the arguments to a function call were in the wrong order
+
 ## v0.4.2 (2026-01-10)
 * Changes
     * Rename `is_*?` function names to `*?` only
