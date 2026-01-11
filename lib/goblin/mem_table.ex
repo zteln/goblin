@@ -232,7 +232,7 @@ defmodule Goblin.MemTable do
     state
     |> replay_logs(log_stream)
     |> then(fn state ->
-      enqueue_flush(state, state.seq, rotated_wal)
+      enqueue_flush(state, rotated_wal, state.seq)
     end)
     |> handle_logs(logs)
   end
