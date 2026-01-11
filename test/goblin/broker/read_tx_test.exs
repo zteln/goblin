@@ -2,7 +2,10 @@ defmodule Goblin.Broker.ReadTxTest do
   use ExUnit.Case, async: true
   use TestHelper
 
-  setup_db()
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
 
   @mem_table __MODULE__.MemTable
   @disk_tables __MODULE__.DiskTables
@@ -60,7 +63,6 @@ defmodule Goblin.Broker.ReadTxTest do
       assert [] == Goblin.DiskTables.search_iterators(@disk_tables, [:key1, :key2, :key3], 3)
     end
 
-    @tag db_opts: [mem_limit: 2 * 1024]
     test "can get values associated with keys from disk tables", c do
       data = trigger_flush(c.db)
 
@@ -82,7 +84,6 @@ defmodule Goblin.Broker.ReadTxTest do
                Goblin.MemTable.get_multi(@mem_table, keys, length(data))
     end
 
-    @tag db_opts: [mem_limit: 2 * 1024]
     test "results from both tables are merged", c do
       data = trigger_flush(c.db)
       Goblin.put(c.db, :key, :val)
@@ -141,7 +142,6 @@ defmodule Goblin.Broker.ReadTxTest do
       assert [{:key1, :val1}] == Goblin.Tx.select(tx, []) |> Enum.to_list()
     end
 
-    @tag db_opts: [mem_limit: 2 * 1024]
     test "filters tombstones", c do
       Goblin.put(c.db, :key, :val)
       Goblin.remove(c.db, :key)

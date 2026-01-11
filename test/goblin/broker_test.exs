@@ -4,7 +4,10 @@ defmodule Goblin.BrokerTest do
   use Mimic
   import ExUnit.CaptureLog
 
-  setup_db()
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
 
   @mem_table __MODULE__.MemTable
   @disk_tables __MODULE__.DiskTables

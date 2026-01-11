@@ -1,7 +1,12 @@
 defmodule Goblin.DiskTablesTest do
   use ExUnit.Case, async: true
   use TestHelper
-  setup_db()
+
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
+
   @disk_tables __MODULE__.DiskTables
 
   test "can put, remove and get disk tables", c do

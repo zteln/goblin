@@ -22,7 +22,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         level_key: 0,
         compress?: false,
         max_sst_size: 100 * 512,
-        bf_fpp: 0.01
+        bf_fpp: 0.01,
+        bf_bit_array_size: 100
       ]
 
       data =
@@ -39,7 +40,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         level_key: 0,
         compress?: false,
         max_sst_size: 50 * 512,
-        bf_fpp: 0.01
+        bf_fpp: 0.01,
+        bf_bit_array_size: 100
       ]
 
       data =
@@ -56,7 +58,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         level_key: 0,
         compress?: false,
         max_sst_size: 50 * 512,
-        bf_fpp: 0.01
+        bf_fpp: 0.01,
+        bf_bit_array_size: 100
       ]
 
       assert {:ok, []} = Goblin.DiskTables.DiskTable.write_new([], c.next_file_f, opts)
@@ -72,7 +75,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         level_key: 0,
         compress?: false,
         max_sst_size: 50 * 512,
-        bf_fpp: 0.01
+        bf_fpp: 0.01,
+        bf_bit_array_size: 100
       ]
 
       data =
@@ -91,7 +95,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         level_key: 0,
         compress?: false,
         max_sst_size: 100 * 512,
-        bf_fpp: 0.01
+        bf_fpp: 0.01,
+        bf_bit_array_size: 100
       ]
 
       data =

@@ -2,7 +2,10 @@ defmodule Goblin.Broker.WriteTxTest do
   use ExUnit.Case, async: true
   use TestHelper
 
-  setup_db()
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
 
   @mem_table __MODULE__.MemTable
   @disk_tables __MODULE__.DiskTables
@@ -87,7 +90,6 @@ defmodule Goblin.Broker.WriteTxTest do
     assert [{:key, :val}] == Goblin.Tx.select(tx) |> Enum.to_list()
   end
 
-  @tag db_opts: [mem_limit: 2 * 1024]
   test "reads fallback to disk tables if not in transaction writes", c do
     data = trigger_flush(c.db)
     keys = Enum.map(data, &elem(&1, 0))

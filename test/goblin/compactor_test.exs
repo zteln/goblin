@@ -4,7 +4,10 @@ defmodule Goblin.CompactorTest do
   use Mimic
   import ExUnit.CaptureLog
 
-  setup_db()
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
 
   @tag db_opts: [flush_level_file_limit: 2]
   test "compacts when flush_level_file_limit is exceeded", c do

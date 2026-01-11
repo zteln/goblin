@@ -17,7 +17,8 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       level_key: 0,
       compress?: false,
       max_sst_size: 100 * 512,
-      bf_fpp: 0.01
+      bf_fpp: 0.01,
+      bf_bit_array_size: 100
     ]
 
     data =
@@ -50,7 +51,8 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       level_key: 0,
       compress?: false,
       max_sst_size: 100 * 512,
-      bf_fpp: 0.01
+      bf_fpp: 0.01,
+      bf_bit_array_size: 100
     ]
 
     triple1 = {1, 0, :crypto.strong_rand_bytes(1024)}

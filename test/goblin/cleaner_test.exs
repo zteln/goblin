@@ -6,7 +6,10 @@ defmodule Goblin.CleanerTest do
   @cleaner_table __MODULE__.Cleaner
   @disk_tables __MODULE__.DiskTables
 
-  setup_db()
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
 
   test "only removes files when there are no transactions", c do
     file = Path.join(c.tmp_dir, "foo")

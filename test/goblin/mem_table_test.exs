@@ -5,7 +5,10 @@ defmodule Goblin.MemTableTest do
   import ExUnit.CaptureLog
   @mem_table __MODULE__.MemTable
   @disk_tables __MODULE__.DiskTables
-  setup_db()
+  setup_db(
+    mem_limit: 2 * 1024,
+    bf_bit_array_size: 1000
+  )
 
   test "can read and write data", c do
     assert :not_found == Goblin.MemTable.get(@mem_table, :key, 0)
@@ -58,7 +61,6 @@ defmodule Goblin.MemTableTest do
     assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
   end
 
-  @tag db_opts: [mem_limit: 2 * 1024]
   test "memory is flushed to disk when exceeding memory limit", c do
     data = trigger_flush(c.db)
     {min_key, _} = Enum.min_by(data, &elem(&1, 0))
@@ -79,7 +81,6 @@ defmodule Goblin.MemTableTest do
              |> Enum.map(fn {k, _s, v} -> {k, v} end)
   end
 
-  @tag db_opts: [mem_limit: 2 * 1024]
   test "all versions of keys are flushed", c do
     Goblin.put(c.db, :key1, :val1_1)
     Goblin.put(c.db, :key1, :val1_2)
@@ -115,7 +116,6 @@ defmodule Goblin.MemTableTest do
     end
   end
 
-  @tag db_opts: [mem_limit: 2 * 1024]
   test "server is stopped if flush fails", %{mem_table: mem_table} = c do
     Process.monitor(mem_table)
     Process.flag(:trap_exit, true)
