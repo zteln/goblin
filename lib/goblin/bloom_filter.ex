@@ -1,73 +1,43 @@
 defmodule Goblin.BloomFilter do
   @moduledoc false
+  alias Goblin.BloomFilter.BitArray
 
-  @derive {Inspect, except: [:array]}
   defstruct [
-    :hashes,
-    :array,
-    set: MapSet.new()
+    :fpp,
+    :bit_array_size,
+    :bit_arrays
   ]
 
+  @default_bit_array_size 10_000
+  @default_fpp 0.01
   @type t :: %__MODULE__{}
 
-  @spec new() :: t()
-  def new, do: %__MODULE__{}
+  @spec new(number()) :: t()
+  def new(opts) do
+    fpp = opts[:fpp] || @default_fpp
+    bit_array_size = opts[:bit_array_size] || @default_bit_array_size
+    bit_array = BitArray.new(bit_array_size, fpp)
+    %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
+  end
 
-  @spec put(t(), term()) :: t()
-  def put(bf, key), do: %{bf | set: MapSet.put(bf.set, key)}
+  @spec put(t(), Goblin.db_key()) :: t()
+  def put(bf, key) do
+    [current_bit_array | bit_arrays] = bf.bit_arrays
 
-  @spec generate(t(), number()) :: t()
-  def generate(bf, fpp) do
-    size = MapSet.size(bf.set)
+    case BitArray.add_key(current_bit_array, key) do
+      {:ok, bit_array} ->
+        %{bf | bit_arrays: [bit_array | bit_arrays]}
 
-    for key <- MapSet.to_list(bf.set), reduce: init(size, fpp) do
-      acc ->
-        update(acc, key)
+      {:error, :full} ->
+        bit_array = BitArray.new(bf.bit_array_size, bf.fpp)
+
+        %{bf | bit_arrays: [bit_array | bf.bit_arrays]}
+        |> put(key)
     end
   end
 
   @spec member?(t(), term()) :: boolean()
   def member?(bf, key) do
-    Enum.all?(bf.hashes, fn hash ->
-      hash = calc_hash(hash, key)
-      1 == :array.get(hash, bf.array)
-    end)
-  end
-
-  defp init(size, fpp) do
-    no_bits = no_bits(size, fpp)
-    no_hashes = no_hashes(size, no_bits)
-    hashes = hashes(no_hashes, no_bits)
-    array = :array.new(no_bits, default: 0)
-    %__MODULE__{hashes: hashes, array: array}
-  end
-
-  defp update(bf, key) do
-    for hash <- bf.hashes, reduce: bf do
-      acc ->
-        hash = calc_hash(hash, key)
-        array = :array.set(hash, 1, acc.array)
-        %{acc | array: array}
-    end
-  end
-
-  defp no_bits(size, fpp) do
-    floor(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
-  end
-
-  defp no_hashes(size, no_bits) do
-    round(no_bits / size * :math.log(2))
-  end
-
-  defp hashes(salt, range, hashes \\ [])
-  defp hashes(0, _range, hashes), do: hashes
-
-  defp hashes(salt, range, hashes) do
-    hash = {salt, range}
-    hashes(salt - 1, range, [hash | hashes])
-  end
-
-  defp calc_hash({salt, range}, key) do
-    :erlang.phash2({key, salt}, range)
+    Enum.any?(bf.bit_arrays, &BitArray.member?(&1, key))
   end
 end
