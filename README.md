@@ -247,6 +247,10 @@ Data is compressed for levels larger than 1.
 
 ## Disk table format
 
+> #### Note {: .warning}
+>
+> The disk table format can (and most likely will) change between versions. Disk tables will be automatically migrated to newer versions once a more stable format is released. In the meantime, one should migrate the files oneself.
+
 SST files use the `<no>.goblin` format and follow this binary structure:
 
 | SST | SEPARATOR | FOOTER |
