@@ -40,7 +40,12 @@ defmodule Goblin.DiskTables do
   def new(server, stream, opts) do
     next_file_f = fn ->
       file = new_file(server)
-      {tmp_file(file), file}
+      tmp_file = tmp_file(file)
+
+      if File.exists?(tmp_file),
+        do: File.rm!(tmp_file)
+
+      {tmp_file, file}
     end
 
     opts = Keyword.merge(opts, GenServer.call(server, :get_opts))
@@ -88,7 +93,7 @@ defmodule Goblin.DiskTables do
     StreamIterator.new(file)
   end
 
-  @spec new_file(Goblin.server()) :: {Path.t(), Path.t()}
+  @spec new_file(Goblin.server()) :: Path.t()
   def new_file(server) do
     GenServer.call(server, :new_file)
   end
