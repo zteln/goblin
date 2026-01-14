@@ -145,8 +145,14 @@ defmodule Goblin.Broker.WriteTx do
 
           {:put, _seq, key, value}, {found, keys} = acc ->
             case Enum.split_with(keys, &(&1 == key)) do
-              {[], _keys} -> {:cont, acc}
-              {_, keys} -> {:cont, {[{key, value} | found], keys}}
+              {[], _keys} ->
+                {:cont, acc}
+
+              {_, keys} ->
+                case key do
+                  {:"$goblin_tag", _tag, key} -> {:cont, {[{key, value} | found], keys}}
+                  key -> {:cont, {[{key, value} | found], keys}}
+                end
             end
 
           {:remove, _seq, key}, {found, keys} = acc ->
