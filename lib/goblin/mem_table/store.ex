@@ -43,6 +43,8 @@ defmodule Goblin.MemTable.Store do
 
   @spec get_by_key(t(), Goblin.db_key(), Goblin.seq_no()) :: Goblin.triple() | :not_found
   def get_by_key(store, key, seq) do
+    key = if is_tuple(key), do: {:const, key}, else: key
+
     ms = [
       {
         {{:"$1", :"$2"}, :_},
