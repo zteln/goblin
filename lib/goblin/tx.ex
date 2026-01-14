@@ -43,8 +43,8 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.put(tx, :user, %{name: "Alice"})
   """
-  @spec put(t(), Goblin.db_key(), Goblin.db_value()) :: t()
-  def put(tx, key, value)
+  @spec put(t(), Goblin.db_key(), Goblin.db_value(), keyword()) :: t()
+  def put(tx, key, value, opts \\ [])
 
   @doc """
   Writes key-value pairs within a transaction.
@@ -63,7 +63,7 @@ defprotocol Goblin.Tx do
       tx = Goblin.Tx.put_multi(tx, [user1: %{name: "Alice"}, user2: %{name: "Bob"}])
   """
   @spec put_multi(t(), [{Goblin.db_key(), Goblin.db_value()}]) :: t()
-  def put_multi(tx, pairs)
+  def put_multi(tx, pairs, opts \\ [])
 
   @doc """
   Removes a key within a transaction.
@@ -81,8 +81,8 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.remove(tx, :user)
   """
-  @spec remove(t(), Goblin.db_key()) :: t()
-  def remove(tx, key)
+  @spec remove(t(), Goblin.db_key(), keyword()) :: t()
+  def remove(tx, key, opts \\ [])
 
   @doc """
   Removes keys within a transaction.
@@ -100,8 +100,8 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.remove_multi(tx, [:user1, :user2])
   """
-  @spec remove_multi(t(), [Goblin.db_key()]) :: t()
-  def remove_multi(tx, keys)
+  @spec remove_multi(t(), [Goblin.db_key()], keyword()) :: t()
+  def remove_multi(tx, keys, opts \\ [])
 
   @doc """
   Retrieves a value within a transaction.
@@ -110,7 +110,7 @@ defprotocol Goblin.Tx do
 
   - `tx` - The transaction struct
   - `key` - The key to look up
-  - `default` - A default value if the key is not found, defaults to `nil`
+  - `opts` - A default value if the key is not found, defaults to `nil`
 
   ## Returns
 
@@ -118,10 +118,10 @@ defprotocol Goblin.Tx do
 
   ## Examples
 
-      counter = Goblin.Tx.get(tx, :counter, 0)
+      counter = Goblin.Tx.get(tx, :counter, default: 0)
   """
-  @spec get(t(), Goblin.db_key(), term()) :: Goblin.db_value()
-  def get(tx, key, default \\ nil)
+  @spec get(t(), Goblin.db_key(), keyword()) :: Goblin.db_value()
+  def get(tx, key, opts \\ [])
 
   @doc """
   Retrieves key-value pairs associated with the provided list of keys.
@@ -139,8 +139,8 @@ defprotocol Goblin.Tx do
 
       [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.get_multi(tx, [:user1, :user2])
   """
-  @spec get_multi(t(), [Goblin.db_key()]) :: [{Goblin.db_key(), Goblin.db_value()}]
-  def get_multi(tx, keys)
+  @spec get_multi(t(), [Goblin.db_key()], keyword()) :: [{Goblin.db_key(), Goblin.db_value()}]
+  def get_multi(tx, keys, opts \\ [])
 
   @doc """
   Retrieves a stream over key-value pairs sorted in ascending order by key.

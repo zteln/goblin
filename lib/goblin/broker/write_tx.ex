@@ -52,31 +52,65 @@ defmodule Goblin.Broker.WriteTx do
   end
 
   defimpl Goblin.Tx do
-    def put(tx, key, value) do
+    def put(tx, key, value, opts) do
+      key =
+        case opts[:tag] do
+          nil -> key
+          :all -> raise "The tag `:all` is reserved."
+          tag -> {:"$goblin_tag", tag, key}
+        end
+
       write = {:put, tx.seq, key, value}
       %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
     end
 
-    def put_multi(tx, pairs) do
+    def put_multi(tx, pairs, opts) do
+      tagger =
+        case opts[:tag] do
+          nil -> fn key -> key end
+          :all -> raise "The tag `:all` is reserved."
+          tag -> fn key -> {:"$goblin_tag", tag, key} end
+        end
+
       Enum.reduce(pairs, tx, fn {key, value}, acc ->
-        write = {:put, acc.seq, key, value}
+        write = {:put, acc.seq, tagger.(key), value}
         %{acc | seq: acc.seq + 1, writes: [write | acc.writes]}
       end)
     end
 
-    def remove(tx, key) do
+    def remove(tx, key, opts) do
+      key =
+        case opts[:tag] do
+          nil -> key
+          :all -> raise "The tag `:all` is reserved."
+          tag -> {:"$goblin_tag", tag, key}
+        end
+
       write = {:remove, tx.seq, key}
       %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
     end
 
-    def remove_multi(tx, keys) do
+    def remove_multi(tx, keys, opts) do
+      tagger =
+        case opts[:tag] do
+          nil -> fn key -> key end
+          :all -> raise "The tag `:all` is reserved."
+          tag -> fn key -> {:"$goblin_tag", tag, key} end
+        end
+
       Enum.reduce(keys, tx, fn key, acc ->
-        write = {:remove, acc.seq, key}
+        write = {:remove, acc.seq, tagger.(key)}
         %{acc | seq: acc.seq + 1, writes: [write | acc.writes]}
       end)
     end
 
-    def get(tx, key, default) do
+    def get(tx, key, opts) do
+      key =
+        case opts[:tag] do
+          nil -> key
+          tag -> {:"$goblin_tag", tag, key}
+        end
+
       case Enum.find(tx.writes, fn
              {:put, _seq, ^key, _value} -> true
              {:remove, _seq, ^key} -> true
@@ -84,8 +118,8 @@ defmodule Goblin.Broker.WriteTx do
            end) do
         nil ->
           case Broker.ReadTx.get(tx.mem_table, tx.disk_tables, tx.seq, key) do
-            :not_found -> default
-            {_key, _seq, :"$goblin_tombstone"} -> default
+            :not_found -> opts[:default]
+            {_key, _seq, :"$goblin_tombstone"} -> opts[:default]
             {_key, _seq, value} -> value
           end
 
@@ -93,11 +127,17 @@ defmodule Goblin.Broker.WriteTx do
           value
 
         {:remove, _seq, _key} ->
-          default
+          opts[:default]
       end
     end
 
-    def get_multi(tx, keys) do
+    def get_multi(tx, keys, opts) do
+      keys =
+        case opts[:tag] do
+          nil -> keys
+          tag -> Enum.map(keys, &{:"$goblin_tag", tag, &1})
+        end
+
       {found, keys} =
         Enum.reduce_while(tx.writes, {[], keys}, fn
           _, {_, []} = acc ->
@@ -119,8 +159,9 @@ defmodule Goblin.Broker.WriteTx do
       rest =
         Broker.ReadTx.get_multi(tx.mem_table, tx.disk_tables, tx.seq, keys)
         |> Enum.flat_map(fn
-          {_k, _s, :"$goblin_tombstone"} -> []
-          {k, _s, v} -> [{k, v}]
+          {_key, _seq, :"$goblin_tombstone"} -> []
+          {{:"$goblin_tag", tag, key}, _seq, val} -> [{tag, key, val}]
+          {key, _seq, val} -> [{key, val}]
         end)
 
       (found ++ rest)
@@ -130,14 +171,14 @@ defmodule Goblin.Broker.WriteTx do
     def select(tx, opts) do
       min = opts[:min]
       max = opts[:max]
+      tag = opts[:tag]
 
       [
         Broker.WriteTx.iterator(tx.writes),
         MemTable.iterator(tx.mem_table, tx.seq)
         | DiskTables.stream_iterators(tx.disk_tables, min, max, tx.seq)
       ]
-      |> Goblin.Iterator.k_merge_stream(min: min, max: max)
-      |> Stream.map(fn {k, _s, v} -> {k, v} end)
+      |> Broker.ReadTx.select(min, max, tag)
     end
   end
 end

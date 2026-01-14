@@ -1,5 +1,6 @@
 defmodule Goblin.Broker.ReadTx do
   @moduledoc false
+  alias Goblin.Broker
   alias Goblin.MemTable
   alias Goblin.DiskTables
   alias Goblin.Iterator
@@ -59,6 +60,27 @@ defmodule Goblin.Broker.ReadTx do
     end)
   end
 
+  def select(iterators, min, max, tag) do
+    iterators
+    |> Goblin.Iterator.k_merge_stream(min: min, max: max)
+    |> Stream.flat_map(fn
+      {{:"$goblin_tag", ^tag, key}, _seq, value} ->
+        [{tag, key, value}]
+
+      {{:"$goblin_tag", stored_tag, key}, _seq, value} when tag == :all ->
+        [{stored_tag, key, value}]
+
+      {{:"$goblin_tag", _tag, _key}, _seq, _value} when is_nil(tag) ->
+        []
+
+      {key, _seq, value} when is_nil(tag) or tag == :all ->
+        [{key, value}]
+
+      _ ->
+        []
+    end)
+  end
+
   defp multi_search_mem_table(mem_table, keys, seq),
     do: MemTable.get_multi(mem_table, keys, seq)
 
@@ -72,35 +94,48 @@ defmodule Goblin.Broker.ReadTx do
   end
 
   defimpl Goblin.Tx do
-    def put(_tx, _key, _value) do
+    def put(_tx, _key, _value, _opts) do
       raise "Operation not allowed during read"
     end
 
-    def put_multi(_tx, _pairs) do
+    def put_multi(_tx, _pairs, _opts) do
       raise "Operation not allowed during read"
     end
 
-    def remove(_tx, _key) do
+    def remove(_tx, _key, _opts) do
       raise "Operation not allowed during read"
     end
 
-    def remove_multi(_tx, _keys) do
+    def remove_multi(_tx, _keys, _opts) do
       raise "Operation not allowed during read"
     end
 
-    def get(tx, key, default) do
-      case Goblin.Broker.ReadTx.get(tx.mem_table, tx.disk_tables, tx.seq, key) do
-        :not_found -> default
-        {_key, _seq, :"$goblin_tombstone"} -> default
+    def get(tx, key, opts) do
+      key =
+        case opts[:tag] do
+          nil -> key
+          tag -> {:"$goblin_tag", tag, key}
+        end
+
+      case Broker.ReadTx.get(tx.mem_table, tx.disk_tables, tx.seq, key) do
+        :not_found -> opts[:default]
+        {_key, _seq, :"$goblin_tombstone"} -> opts[:default]
         {_key, _seq, value} -> value
       end
     end
 
-    def get_multi(tx, keys) do
-      Goblin.Broker.ReadTx.get_multi(tx.mem_table, tx.disk_tables, tx.seq, keys)
+    def get_multi(tx, keys, opts) do
+      keys =
+        case opts[:tag] do
+          nil -> keys
+          tag -> Enum.map(keys, &{:"$goblin_tag", tag, &1})
+        end
+
+      Broker.ReadTx.get_multi(tx.mem_table, tx.disk_tables, tx.seq, keys)
       |> Enum.flat_map(fn
-        {_k, _s, :"$goblin_tombstone"} -> []
-        {k, _s, v} -> [{k, v}]
+        {_key, _seq, :"$goblin_tombstone"} -> []
+        {{:"$goblin_tag", tag, key}, _seq, val} -> [{tag, key, val}]
+        {key, _seq, val} -> [{key, val}]
       end)
       |> List.keysort(0)
     end
@@ -108,13 +143,13 @@ defmodule Goblin.Broker.ReadTx do
     def select(tx, opts) do
       min = opts[:min]
       max = opts[:max]
+      tag = opts[:tag]
 
       [
         MemTable.iterator(tx.mem_table, tx.seq)
         | DiskTables.stream_iterators(tx.disk_tables, min, max, tx.seq)
       ]
-      |> Goblin.Iterator.k_merge_stream(min: min, max: max)
-      |> Stream.map(fn {k, _s, v} -> {k, v} end)
+      |> Broker.ReadTx.select(min, max, tag)
     end
   end
 end

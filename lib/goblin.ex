@@ -151,9 +151,9 @@ defmodule Goblin do
       # => :ok
   """
   @spec put(Supervisor.supervisor(), db_key(), db_value()) :: :ok
-  def put(db, key, value) do
+  def put(db, key, value, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.put(tx, key, value), :ok}
+      {:commit, Goblin.Tx.put(tx, key, value, opts), :ok}
     end)
   end
 
@@ -181,9 +181,9 @@ defmodule Goblin do
       # => :ok
   """
   @spec put_multi(Supervisor.supervisor(), [{db_key(), db_value()}]) :: :ok
-  def put_multi(db, pairs) do
+  def put_multi(db, pairs, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.put_multi(tx, pairs), :ok}
+      {:commit, Goblin.Tx.put_multi(tx, pairs, opts), :ok}
     end)
   end
 
@@ -213,9 +213,9 @@ defmodule Goblin do
       # => nil
   """
   @spec remove(Supervisor.supervisor(), db_key()) :: :ok
-  def remove(db, key) do
+  def remove(db, key, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.remove(tx, key), :ok}
+      {:commit, Goblin.Tx.remove(tx, key, opts), :ok}
     end)
   end
 
@@ -240,9 +240,9 @@ defmodule Goblin do
       # => :ok
   """
   @spec remove_multi(Supervisor.supervisor(), [db_key()]) :: :ok
-  def remove_multi(db, keys) do
+  def remove_multi(db, keys, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.remove_multi(tx, keys), :ok}
+      {:commit, Goblin.Tx.remove_multi(tx, keys, opts), :ok}
     end)
   end
 
@@ -320,9 +320,9 @@ defmodule Goblin do
       # => :default_value
   """
   @spec get(Supervisor.supervisor(), db_key(), db_value() | nil) :: db_value() | nil
-  def get(db, key, default \\ nil) do
+  def get(db, key, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.get(tx, key, default)
+      Goblin.Tx.get(tx, key, opts)
     end)
   end
 
@@ -355,9 +355,9 @@ defmodule Goblin do
       # => [user_1: %{name: "Alice"}, user_2: %{name: "Bob"}]
   """
   @spec get_multi(Supervisor.supervisor(), [db_key()]) :: [{db_key(), db_value()}]
-  def get_multi(db, keys) do
+  def get_multi(db, keys, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.get_multi(tx, keys)
+      Goblin.Tx.get_multi(tx, keys, opts)
     end)
   end
 
@@ -406,7 +406,7 @@ defmodule Goblin do
   @spec select(Supervisor.supervisor(), keyword()) :: Enumerable.t({db_key(), db_value()})
   def select(db, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.select(tx, Keyword.take(opts, [:min, :max]))
+      Goblin.Tx.select(tx, Keyword.take(opts, [:min, :max, :tag]))
     end)
   end
 
