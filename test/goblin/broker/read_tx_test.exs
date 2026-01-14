@@ -131,13 +131,13 @@ defmodule Goblin.Broker.ReadTxTest do
     test "cannot read writes committed after transaction start", c do
       Goblin.put(c.db, :key1, :val1)
       tx = Goblin.Broker.ReadTx.new(@mem_table, @disk_tables)
-      assert :val1 == Goblin.Tx.get(tx, :key1, nil)
-      assert nil == Goblin.Tx.get(tx, :key2, nil)
+      assert :val1 == Goblin.Tx.get(tx, :key1)
+      assert nil == Goblin.Tx.get(tx, :key2)
       assert [{:key1, :val1}] == Goblin.Tx.get_multi(tx, [:key1, :key2])
       assert [{:key1, :val1}] == Goblin.Tx.select(tx, []) |> Enum.to_list()
       Goblin.put(c.db, :key2, :val2)
-      assert :val1 == Goblin.Tx.get(tx, :key1, nil)
-      assert nil == Goblin.Tx.get(tx, :key2, nil)
+      assert :val1 == Goblin.Tx.get(tx, :key1)
+      assert nil == Goblin.Tx.get(tx, :key2)
       assert [{:key1, :val1}] == Goblin.Tx.get_multi(tx, [:key1, :key2])
       assert [{:key1, :val1}] == Goblin.Tx.select(tx, []) |> Enum.to_list()
     end
@@ -156,6 +156,30 @@ defmodule Goblin.Broker.ReadTxTest do
       end
 
       assert nil == Goblin.Tx.get(tx, :key)
+    end
+
+    test "can read tagged keys", c do
+      tx = Goblin.Broker.ReadTx.new(@mem_table, @disk_tables)
+
+      assert nil == Goblin.Tx.get(tx, :key)
+      assert nil == Goblin.Tx.get(tx, :key, tag: :a_tag)
+
+      Goblin.put(c.db, :key, :val, tag: :a_tag)
+
+      tx = Goblin.Broker.ReadTx.new(@mem_table, @disk_tables)
+
+      assert nil == Goblin.Tx.get(tx, :key)
+      assert :val == Goblin.Tx.get(tx, :key, tag: :a_tag)
+      assert nil == Goblin.Tx.get(tx, :key, tag: :another_tag)
+
+      assert [] == Goblin.Tx.get_multi(tx, [:key])
+      assert [{:a_tag, :key, :val}] == Goblin.Tx.get_multi(tx, [:key], tag: :a_tag)
+      assert [] == Goblin.Tx.get_multi(tx, [:key], tag: :another_tag)
+
+      assert [] == Goblin.Tx.select(tx) |> Enum.to_list()
+      assert [{:a_tag, :key, :val}] == Goblin.Tx.select(tx, tag: :a_tag) |> Enum.to_list()
+      assert [{:a_tag, :key, :val}] == Goblin.Tx.select(tx, tag: :all) |> Enum.to_list()
+      assert [] == Goblin.Tx.select(tx, tag: :another_tag) |> Enum.to_list()
     end
   end
 end

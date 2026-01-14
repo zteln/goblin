@@ -113,4 +113,22 @@ defmodule Goblin.Broker.WriteTxTest do
     assert data == Goblin.Tx.get_multi(tx, keys)
     assert data == Goblin.Tx.select(tx) |> Enum.to_list()
   end
+
+  test "can write tagged keys" do
+    tx = Goblin.Broker.WriteTx.new(@mem_table, @disk_tables)
+    tx = Goblin.Tx.put(tx, :key, :val, tag: :a_tag)
+
+    assert nil == Goblin.Tx.get(tx, :key)
+    assert :val == Goblin.Tx.get(tx, :key, tag: :a_tag)
+    assert nil == Goblin.Tx.get(tx, :key, tag: :another_tag)
+
+    assert [] == Goblin.Tx.get_multi(tx, [:key])
+    assert [{:key, :val}] == Goblin.Tx.get_multi(tx, [:key], tag: :a_tag)
+    assert [] == Goblin.Tx.get_multi(tx, [:key], tag: :another_tag)
+
+    assert [] == Goblin.Tx.select(tx) |> Enum.to_list()
+    assert [{:a_tag, :key, :val}] == Goblin.Tx.select(tx, tag: :a_tag) |> Enum.to_list()
+    assert [] == Goblin.Tx.select(tx, tag: :another_tag) |> Enum.to_list()
+    assert [{:a_tag, :key, :val}] == Goblin.Tx.select(tx, tag: :all) |> Enum.to_list()
+  end
 end

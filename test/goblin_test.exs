@@ -167,7 +167,7 @@ defmodule GoblinTest do
         for _n <- 1..20 do
           Task.async(fn ->
             Goblin.transaction(c.db, fn tx ->
-              counter = Goblin.Tx.get(tx, :counter, 0)
+              counter = Goblin.Tx.get(tx, :counter, default: 0)
 
               if counter > 0 do
                 tx = Goblin.Tx.put(tx, :counter, counter - 1)
