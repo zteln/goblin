@@ -15,7 +15,8 @@ defmodule Goblin.DiskTables.Encoder do
                          0::integer-64,
                          0::integer-64,
                          0::integer-64,
-                         0::integer-64
+                         0::integer-64,
+                         0::integer-8
                        >>)
 
   @crc_block_size byte_size(<<0::integer-32>>)
@@ -85,6 +86,8 @@ defmodule Goblin.DiskTables.Encoder do
     seq_range_block_pos = key_range_block_pos + key_range_block_size
     seq_range_block_size = byte_size(seq_range_block)
 
+    compressed? = if compress?, do: 1, else: 0
+
     metadata_block = <<
       level_key::integer-8,
       bf_block_pos::integer-64,
@@ -93,7 +96,8 @@ defmodule Goblin.DiskTables.Encoder do
       key_range_block_size::integer-64,
       seq_range_block_pos::integer-64,
       seq_range_block_size::integer-64,
-      no_blocks::integer-64
+      no_blocks::integer-64,
+      compressed?::integer-8
     >>
 
     blocks = <<
@@ -120,7 +124,8 @@ defmodule Goblin.DiskTables.Encoder do
   @spec decode_metadata_block(binary()) ::
           {:ok,
            {Goblin.level_key(), {pos_integer(), non_neg_integer()},
-            {pos_integer(), non_neg_integer()}, {pos_integer(), non_neg_integer()}, pos_integer()}}
+            {pos_integer(), non_neg_integer()}, {pos_integer(), non_neg_integer()}, pos_integer(),
+            boolean()}}
           | {:error, :invalid_metadata_block}
   def decode_metadata_block(<<
         level_key::integer-8,
@@ -130,7 +135,8 @@ defmodule Goblin.DiskTables.Encoder do
         key_range_block_size::integer-64,
         seq_range_block_pos::integer-64,
         seq_range_block_size::integer-64,
-        no_blocks::integer-64
+        no_blocks::integer-64,
+        compressed?::integer-8
       >>) do
     {:ok,
      {
@@ -138,7 +144,8 @@ defmodule Goblin.DiskTables.Encoder do
        {bf_block_pos, bf_block_size},
        {key_range_block_pos, key_range_block_size},
        {seq_range_block_pos, seq_range_block_size},
-       no_blocks
+       no_blocks,
+       compressed? == 1
      }}
   end
 

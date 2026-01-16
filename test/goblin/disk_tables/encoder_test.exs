@@ -98,7 +98,7 @@ defmodule Goblin.DiskTables.EncoderTest do
 
       assert {:ok,
               {0, {bf_block_pos, bf_block_size}, {key_range_block_pos, key_range_block_size},
-               {seq_range_block_pos, seq_range_block_size}, 1}} =
+               {seq_range_block_pos, seq_range_block_size}, 1, false}} =
                Goblin.DiskTables.Encoder.decode_metadata_block(metadata_block)
 
       bf_block = :binary.part(blocks, bf_block_pos, bf_block_size)
