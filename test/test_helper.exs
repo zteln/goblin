@@ -21,7 +21,9 @@ defmodule TestHelper do
             [name: __MODULE__] ++ Map.get(c, :db_opts, [])
           )
 
-        start_db(c.tmp_dir, opts)
+        if Map.get(c, :start_db?, true),
+          do: start_db(c.tmp_dir, opts),
+          else: :ok
       end
     end
   end
@@ -130,6 +132,8 @@ defmodule TestHelper do
 end
 
 Mimic.copy(Goblin.DiskTables)
+Mimic.copy(Goblin.DiskTables.DiskTable)
 Mimic.copy(Goblin.DiskTables.Handler)
+Mimic.copy(Goblin.DiskTables.Legacy.Encoder)
 Mimic.copy(Goblin.MemTable)
 ExUnit.start()
