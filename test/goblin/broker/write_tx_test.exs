@@ -114,7 +114,9 @@ defmodule Goblin.Broker.WriteTxTest do
     assert data == Goblin.Tx.select(tx) |> Enum.to_list()
   end
 
-  test "can write tagged keys" do
+  test "can write tagged keys", c do
+    Goblin.put(c.db, :key1, :val1, tag: :a_separate_tag)
+
     tx = Goblin.Broker.WriteTx.new(@mem_table, @disk_tables)
     tx = Goblin.Tx.put(tx, :key, :val, tag: :a_tag)
 
@@ -124,11 +126,14 @@ defmodule Goblin.Broker.WriteTxTest do
 
     assert [] == Goblin.Tx.get_multi(tx, [:key])
     assert [{:key, :val}] == Goblin.Tx.get_multi(tx, [:key], tag: :a_tag)
+    assert [{:key1, :val1}] == Goblin.Tx.get_multi(tx, [:key, :key1], tag: :a_separate_tag)
     assert [] == Goblin.Tx.get_multi(tx, [:key], tag: :another_tag)
 
     assert [] == Goblin.Tx.select(tx) |> Enum.to_list()
     assert [{:a_tag, :key, :val}] == Goblin.Tx.select(tx, tag: :a_tag) |> Enum.to_list()
     assert [] == Goblin.Tx.select(tx, tag: :another_tag) |> Enum.to_list()
-    assert [{:a_tag, :key, :val}] == Goblin.Tx.select(tx, tag: :all) |> Enum.to_list()
+
+    assert [{:a_tag, :key, :val}, {:a_separate_tag, :key1, :val1}] |> Enum.sort_by(&elem(&1, 1)) ==
+             Goblin.Tx.select(tx, tag: :all) |> Enum.to_list() |> Enum.sort_by(&elem(&1, 1))
   end
 end

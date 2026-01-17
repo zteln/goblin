@@ -173,7 +173,7 @@ defmodule Goblin.Broker.ReadTxTest do
       assert nil == Goblin.Tx.get(tx, :key, tag: :another_tag)
 
       assert [] == Goblin.Tx.get_multi(tx, [:key])
-      assert [{:a_tag, :key, :val}] == Goblin.Tx.get_multi(tx, [:key], tag: :a_tag)
+      assert [{:key, :val}] == Goblin.Tx.get_multi(tx, [:key], tag: :a_tag)
       assert [] == Goblin.Tx.get_multi(tx, [:key], tag: :another_tag)
 
       assert [] == Goblin.Tx.select(tx) |> Enum.to_list()

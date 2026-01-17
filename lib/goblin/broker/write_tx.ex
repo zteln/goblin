@@ -166,7 +166,7 @@ defmodule Goblin.Broker.WriteTx do
         Broker.ReadTx.get_multi(tx.mem_table, tx.disk_tables, tx.seq, keys)
         |> Enum.flat_map(fn
           {_key, _seq, :"$goblin_tombstone"} -> []
-          {{:"$goblin_tag", tag, key}, _seq, val} -> [{tag, key, val}]
+          {{:"$goblin_tag", _tag, key}, _seq, val} -> [{key, val}]
           {key, _seq, val} -> [{key, val}]
         end)
 
