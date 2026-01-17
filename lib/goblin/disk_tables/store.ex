@@ -29,10 +29,8 @@ defmodule Goblin.DiskTables.Store do
 
   @spec select_within_key_range(t(), Goblin.db_key()) :: [Path.t()]
   def select_within_key_range(store, key) do
-    key = if is_tuple(key), do: {:const, key}, else: key
-
     guard = [
-      {:andalso, {:"=<", :"$1", key}, {:"=<", key, :"$2"}}
+      {:andalso, {:"=<", :"$1", {:const, key}}, {:"=<", {:const, key}, :"$2"}}
     ]
 
     ms = [{{:_, {:"$1", :"$2"}, :"$3"}, guard, [:"$3"]}]

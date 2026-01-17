@@ -399,4 +399,32 @@ defmodule GoblinTest do
       refute_receive {:put, :k, :w}
     end
   end
+
+  describe "property test" do
+    setup_db(
+      mem_limit: 2 * 1024,
+      bf_bit_array_size: 1000
+    )
+
+    test "can write and read any term as key or value", c do
+      len = 100
+      keys = StreamData.term() |> Enum.take(len) |> Enum.uniq()
+      values = StreamData.term() |> Enum.take(length(keys))
+      pairs = Enum.zip(keys, values)
+
+      assert :ok == Goblin.put_multi(c.db, pairs)
+
+      assert Enum.sort_by(pairs, &elem(&1, 0)) ==
+               Goblin.get_multi(c.db, keys)
+
+      trigger_flush(c.db)
+
+      assert_eventually do
+        refute Goblin.flushing?(c.db)
+      end
+
+      assert Enum.sort_by(pairs, &elem(&1, 0)) ==
+               Goblin.get_multi(c.db, keys)
+    end
+  end
 end
