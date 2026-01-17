@@ -48,7 +48,8 @@ defmodule Goblin.DiskTables.DiskTable do
 
       triple, {disk_table, handler, files, disk_tables} ->
         case append_sst_block(disk_table, handler, triple, compress?) do
-          {:ok, %{size: size} = disk_table, handler} when size >= max_sst_size ->
+          {:ok, %{size: size} = disk_table, handler}
+          when max_sst_size != :infinity and size >= max_sst_size ->
             case append_footer_and_close(disk_table, handler, compress?) do
               {:ok, disk_table} -> {:cont, {nil, nil, files, [disk_table | disk_tables]}}
               error -> {:halt, error}
@@ -91,7 +92,8 @@ defmodule Goblin.DiskTables.DiskTable do
             bf_block_info,
             key_range_block_info,
             seq_range_block_info,
-            no_blocks
+            no_blocks,
+            _compressed?
           }} <- parse_metadata(handler),
          {:ok, bloom_filter} <- parse_bloom_filter(handler, bf_block_info),
          {:ok, key_range} <- parse_key_range(handler, key_range_block_info),

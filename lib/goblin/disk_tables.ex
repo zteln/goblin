@@ -1,7 +1,15 @@
 defmodule Goblin.DiskTables do
   @moduledoc false
   use GenServer
-  alias Goblin.DiskTables.{Store, DiskTable, BinarySearchIterator, StreamIterator}
+
+  alias Goblin.DiskTables.{
+    Store,
+    DiskTable,
+    BinarySearchIterator,
+    StreamIterator,
+    Legacy
+  }
+
   alias Goblin.Manifest
   alias Goblin.Compactor
 
@@ -146,7 +154,7 @@ defmodule Goblin.DiskTables do
     %{disk_tables: disk_table_names, count: count} =
       Manifest.snapshot(state.manifest_server, [:disk_tables, :count])
 
-    case recover_disk_tables(disk_table_names) do
+    case recover_disk_tables(disk_table_names, state.opts) do
       {:ok, disk_tables} ->
         Enum.each(disk_tables, fn disk_table ->
           Store.insert(state.store, disk_table)
@@ -161,12 +169,46 @@ defmodule Goblin.DiskTables do
     end
   end
 
-  defp recover_disk_tables(disk_table_names, acc \\ [])
-  defp recover_disk_tables([], acc), do: {:ok, acc}
+  defp recover_disk_tables(disk_table_names, opts, acc \\ [])
+  defp recover_disk_tables([], _opts, acc), do: {:ok, acc}
 
-  defp recover_disk_tables([disk_table_name | disk_table_names], acc) do
-    with {:ok, disk_table} <- DiskTable.parse(disk_table_name) do
-      recover_disk_tables(disk_table_names, [disk_table | acc])
+  defp recover_disk_tables([disk_table_name | disk_table_names], opts, acc) do
+    case DiskTable.parse(disk_table_name) do
+      {:ok, disk_table} ->
+        recover_disk_tables(disk_table_names, opts, [disk_table | acc])
+
+      {:error, :invalid_magic} ->
+        case migrate(disk_table_name, opts) do
+          {:ok, disk_table} ->
+            recover_disk_tables(disk_table_names, opts, [disk_table | acc])
+
+          error ->
+            error
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp migrate(name, opts) do
+    next_file_f = fn -> {tmp_file(name), name} end
+
+    IO.puts("#{IO.ANSI.yellow()}Migrating #{name} to newer version#{IO.ANSI.reset()}")
+
+    with {:ok, level_key, compressed?, iterator} <- Legacy.Iterator.new(name),
+         {:ok, [disk_table]} <-
+           DiskTable.write_new(
+             Goblin.Iterator.linear_stream(iterator),
+             next_file_f,
+             Keyword.merge(opts,
+               level_key: level_key,
+               compress?: compressed?,
+               max_sst_size: :infinity
+             )
+           ) do
+      IO.puts("#{IO.ANSI.green()}Migrated #{name} to newer version#{IO.ANSI.reset()}")
+      {:ok, disk_table}
     end
   end
 

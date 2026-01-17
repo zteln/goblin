@@ -1,6 +1,13 @@
 defmodule Goblin.DiskTablesTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case
   use TestHelper
+  use Mimic
+  import ExUnit.CaptureIO
+
+  setup :set_mimic_global
+  setup :verify_on_exit!
+
+  @one_file_repo "#{File.cwd!()}/test/support/fixtures/one_file_repo"
 
   setup_db(
     mem_limit: 2 * 1024,
@@ -63,5 +70,30 @@ defmodule Goblin.DiskTablesTest do
              Goblin.DiskTables.new(c.disk_tables, data, level_key: 0, compress?: false)
 
     assert %{levels: %{0 => [%{id: ^disk_table_filename}]}} = :sys.get_state(c.compactor)
+  end
+
+  @tag start_db?: false
+  test "automatically migrates on version mismatch", c do
+    Goblin.DiskTables.DiskTable
+    |> stub(:parse, fn _ ->
+      {:error, :invalid_magic}
+    end)
+
+    File.cp_r!(@one_file_repo, c.tmp_dir)
+
+    {disk_table_name, output} =
+      with_io(fn ->
+        %{manifest: manifest} = start_db(c.tmp_dir, name: __MODULE__)
+
+        assert_eventually do
+          assert [_] = Goblin.DiskTables.search_iterators(__MODULE__.DiskTables, [1], 100_000)
+        end
+
+        %{disk_tables: [disk_table_name]} = Goblin.Manifest.snapshot(manifest, [:disk_tables])
+        disk_table_name
+      end)
+
+    assert output =~ "Migrating #{disk_table_name} to newer version"
+    assert output =~ "Migrated #{disk_table_name} to newer version"
   end
 end
