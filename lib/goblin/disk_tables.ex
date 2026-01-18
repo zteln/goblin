@@ -1,6 +1,7 @@
 defmodule Goblin.DiskTables do
   @moduledoc false
   use GenServer
+  require Logger
 
   alias Goblin.DiskTables.{
     Store,
@@ -194,7 +195,7 @@ defmodule Goblin.DiskTables do
   defp migrate(name, opts) do
     next_file_f = fn -> {tmp_file(name), name} end
 
-    IO.puts("#{IO.ANSI.yellow()}Migrating #{name} to newer version#{IO.ANSI.reset()}")
+    Logger.info(fn -> "Migrating #{name} to newer version" end)
 
     with {:ok, level_key, compressed?, iterator} <- Legacy.Iterator.new(name),
          {:ok, [disk_table]} <-
@@ -207,7 +208,7 @@ defmodule Goblin.DiskTables do
                max_sst_size: :infinity
              )
            ) do
-      IO.puts("#{IO.ANSI.green()}Migrated #{name} to newer version#{IO.ANSI.reset()}")
+      Logger.info(fn -> "Migrated #{name} to newer version" end)
       {:ok, disk_table}
     end
   end

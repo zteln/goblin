@@ -2,7 +2,7 @@ defmodule Goblin.DiskTablesTest do
   use ExUnit.Case
   use TestHelper
   use Mimic
-  import ExUnit.CaptureIO
+  import ExUnit.CaptureLog
 
   setup :set_mimic_global
   setup :verify_on_exit!
@@ -82,7 +82,7 @@ defmodule Goblin.DiskTablesTest do
     File.cp_r!(@one_file_repo, c.tmp_dir)
 
     {disk_table_name, output} =
-      with_io(fn ->
+      with_log(fn ->
         %{manifest: manifest} = start_db(c.tmp_dir, name: __MODULE__)
 
         assert_eventually do
