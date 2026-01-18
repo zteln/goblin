@@ -70,7 +70,7 @@ defmodule Goblin.DiskTables.Legacy.Iterator do
       end
     end
 
-    def close(iterator) do
+    def deinit(iterator) do
       Handler.close(iterator.handler)
     end
 

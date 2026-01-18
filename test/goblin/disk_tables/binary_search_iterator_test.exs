@@ -43,7 +43,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     assert {{5, 4, "v-5"}, iterator} = Goblin.Iterable.next(iterator)
     assert {{25, 24, "v-25"}, iterator} = Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.next(iterator)
-    assert :ok == Goblin.Iterable.close(iterator)
+    assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
   test "can search in SST block spanning many blocks", c do
@@ -73,7 +73,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
 
     assert {^triple1, iterator} = Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.next(iterator)
-    assert :ok == Goblin.Iterable.close(iterator)
+    assert :ok == Goblin.Iterable.deinit(iterator)
 
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
@@ -83,7 +83,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
 
     assert {^triple2, iterator} = Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.next(iterator)
-    assert :ok == Goblin.Iterable.close(iterator)
+    assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
   test "does not iterate higher than provided sequence number", c do
@@ -96,7 +96,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     assert {{1, 0, "v-1"}, iterator} = Goblin.Iterable.next(iterator)
     assert {{5, 4, "v-5"}, iterator} = Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.next(iterator)
-    assert :ok == Goblin.Iterable.close(iterator)
+    assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
   test "closes file handle when error occurs", c do

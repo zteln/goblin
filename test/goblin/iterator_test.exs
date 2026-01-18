@@ -9,16 +9,16 @@ defmodule Goblin.IteratorTest do
     defimpl Goblin.Iterable do
       def init(iterator), do: iterator
 
+      def deinit(_iterator) do
+        send(self(), :closed)
+        :ok
+      end
+
       def next(%{data: []}), do: :ok
 
       def next(iterator) do
         [next | data] = iterator.data
         {next, %{iterator | data: data}}
-      end
-
-      def close(_iterator) do
-        send(self(), :closed)
-        :ok
       end
     end
   end

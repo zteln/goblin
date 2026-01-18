@@ -21,7 +21,7 @@ defmodule Goblin.MemTable.Iterator do
       handle_iteration(iterator, idx)
     end
 
-    def close(_iterator), do: :ok
+    def deinit(_iterator), do: :ok
 
     defp handle_iteration(_iterator, :end_of_iteration), do: :ok
 

@@ -20,6 +20,7 @@ defmodule Goblin.Broker.WriteTx do
 
     defimpl Goblin.Iterable do
       def init(iterator), do: iterator
+      def deinit(_iterator), do: :ok
 
       def next(%{writes: []}), do: :ok
 
@@ -27,8 +28,6 @@ defmodule Goblin.Broker.WriteTx do
         [next | writes] = iterator.writes
         {next, %{iterator | writes: writes}}
       end
-
-      def close(_iterator), do: :ok
     end
   end
 

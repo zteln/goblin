@@ -42,7 +42,7 @@ defmodule Goblin.DiskTables.StreamIterator do
       end
     end
 
-    def close(iterator), do: Handler.close(iterator.handler)
+    def deinit(iterator), do: Handler.close(iterator.handler)
 
     defp read_next_sst_block(handler) do
       with {:ok, sst_header_block} <- Handler.read(handler, Encoder.sst_header_size()),

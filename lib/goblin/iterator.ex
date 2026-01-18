@@ -5,11 +5,11 @@ defprotocol Goblin.Iterable do
   @spec init(t()) :: t()
   def init(iter)
 
+  @spec deinit(t()) :: :ok
+  def deinit(iter)
+
   @spec next(t()) :: t() | :ok
   def next(iter)
-
-  @spec close(t()) :: :ok
-  def close(iter)
 end
 
 defmodule Goblin.Iterator do
@@ -68,7 +68,7 @@ defmodule Goblin.Iterator do
 
   defp iterate(iterator) do
     case Goblin.Iterable.next(iterator) do
-      :ok -> Goblin.Iterable.close(iterator)
+      :ok -> Goblin.Iterable.deinit(iterator)
       {out, iterator} -> {out, iterator}
     end
   end
@@ -98,6 +98,6 @@ defmodule Goblin.Iterator do
   defp jump(cursor, _key), do: [cursor]
 
   defp k_merge_close({nil, _}), do: :ok
-  defp k_merge_close({iterator, _}), do: Goblin.Iterable.close(iterator)
+  defp k_merge_close({iterator, _}), do: Goblin.Iterable.deinit(iterator)
   defp k_merge_close(_), do: :ok
 end

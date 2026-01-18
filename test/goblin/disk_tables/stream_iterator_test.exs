@@ -49,7 +49,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
       end
 
     assert :ok == Goblin.Iterable.next(iterator)
-    assert :ok == Goblin.Iterable.close(iterator)
+    assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
   test "does not iterate past provided sequence number", c do
@@ -70,7 +70,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
       end
 
     assert :ok == Goblin.Iterable.next(iterator)
-    assert :ok == Goblin.Iterable.close(iterator)
+    assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
   test "closes handler upom error", c do

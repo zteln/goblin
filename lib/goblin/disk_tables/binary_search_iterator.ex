@@ -61,7 +61,7 @@ defmodule Goblin.DiskTables.BinarySearchIterator do
       end
     end
 
-    def close(iterator) do
+    def deinit(iterator) do
       Handler.close(iterator.handler)
     end
 
