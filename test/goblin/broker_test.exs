@@ -60,7 +60,10 @@ defmodule Goblin.BrokerTest do
 
   test "readers can only read from their snapshot", c do
     parent = self()
-    Goblin.put(c.db, :key, :val1)
+    [key] = StreamData.term() |> Enum.take(1)
+    [val1, val2] = StreamData.term() |> Enum.take(2)
+
+    Goblin.put(c.db, key, val1)
 
     reader =
       spawn(fn ->
@@ -76,14 +79,14 @@ defmodule Goblin.BrokerTest do
               :read_key -> :ok
             end
 
-            assert :val1 == Goblin.Tx.get(tx, :key)
+            assert val1 == Goblin.Tx.get(tx, key)
             send(parent, :done)
           end
         )
       end)
 
     assert_receive :ready
-    Goblin.put(c.db, :key, :val2)
+    Goblin.put(c.db, key, val2)
     send(reader, :read_key)
     assert_receive :done
   end
@@ -131,13 +134,16 @@ defmodule Goblin.BrokerTest do
   end
 
   test "writes are inserted into memtable", c do
+    [key] = StreamData.term() |> Enum.take(1)
+    [val] = StreamData.term() |> Enum.take(1)
+
     assert :ok ==
              Goblin.Broker.write_transaction(c.broker, fn tx ->
-               tx = Goblin.Tx.put(tx, :key, :val)
+               tx = Goblin.Tx.put(tx, key, val)
                {:commit, tx, :ok}
              end)
 
-    assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
+    assert {:value, {key, 0, val}} == Goblin.MemTable.get(@mem_table, key, 1)
   end
 
   test "failed writers are cleaned up", c do
@@ -173,35 +179,44 @@ defmodule Goblin.BrokerTest do
   end
 
   test "aborted transactions are not committed", c do
+    [key] = StreamData.term() |> Enum.take(1)
+    [val] = StreamData.term() |> Enum.take(1)
+
     assert {:error, :aborted} ==
              Goblin.Broker.write_transaction(c.broker, fn tx ->
-               Goblin.Tx.put(tx, :key, :val)
+               Goblin.Tx.put(tx, key, val)
                :abort
              end)
 
-    refute :val == Goblin.get(c.db, :key)
+    refute val == Goblin.get(c.db, key)
   end
 
   test "commits are broadcasted", c do
+    [key1, key2] = StreamData.term() |> Enum.take(2)
+    [val] = StreamData.term() |> Enum.take(1)
+
     Goblin.subscribe(c.db)
 
     assert :ok ==
              Goblin.Broker.write_transaction(c.broker, fn tx ->
                tx =
                  tx
-                 |> Goblin.Tx.put(:key1, :val1)
-                 |> Goblin.Tx.remove(:key2)
+                 |> Goblin.Tx.put(key1, val)
+                 |> Goblin.Tx.remove(key2)
 
                {:commit, tx, :ok}
              end)
 
-    assert_receive {:put, :key1, :val1}
-    assert_receive {:remove, :key2}
+    assert_receive {:put, ^key1, ^val}
+    assert_receive {:remove, ^key2}
   end
 
   test "broker server stops if MemTable is unable to insert writes", %{broker: broker} do
     Process.monitor(broker)
     Process.flag(:trap_exit, true)
+
+    [key] = StreamData.term() |> Enum.take(1)
+    [val] = StreamData.term() |> Enum.take(1)
 
     Goblin.MemTable
     |> expect(:insert, fn _mem_table_server, _writes, _seq ->
@@ -214,7 +229,7 @@ defmodule Goblin.BrokerTest do
     {_result, _log} =
       with_log(fn ->
         Goblin.Broker.write_transaction(broker, fn tx ->
-          tx = Goblin.Tx.put(tx, :key1, :val1)
+          tx = Goblin.Tx.put(tx, key, val)
           {:commit, tx, :ok}
         end)
 
