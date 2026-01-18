@@ -426,5 +426,63 @@ defmodule GoblinTest do
       assert Enum.sort_by(pairs, &elem(&1, 0)) ==
                Goblin.get_multi(c.db, keys)
     end
+
+    test "tags can be any term", c do
+      len = 100
+      keys = StreamData.term() |> Enum.take(len) |> Enum.uniq()
+      values = StreamData.term() |> Enum.take(length(keys))
+
+      tags =
+        StreamData.term()
+        |> Enum.take(10)
+        |> Enum.reject(&(&1 == :all))
+        |> Enum.uniq()
+
+      data =
+        Enum.zip(keys, values)
+        |> Enum.map(fn {key, value} -> {Enum.random(tags), key, value} end)
+
+      assert :ok ==
+               Goblin.transaction(c.db, fn tx ->
+                 tx =
+                   Enum.reduce(data, tx, fn {tag, key, value}, acc ->
+                     Goblin.Tx.put(acc, key, value, tag: tag)
+                   end)
+
+                 {:commit, tx, :ok}
+               end)
+
+      for tag <- tags do
+        tag_data =
+          data
+          |> Enum.filter(&(elem(&1, 0) == tag))
+          |> Enum.map(fn {_tag, key, value} -> {key, value} end)
+          |> Enum.sort_by(&elem(&1, 0))
+
+        assert tag_data == Goblin.get_multi(c.db, Enum.map(tag_data, &elem(&1, 0)), tag: tag)
+
+        assert Enum.filter(data, &(elem(&1, 0) == tag)) |> Enum.sort_by(&elem(&1, 1)) ==
+                 Goblin.select(c.db, tag: tag) |> Enum.to_list()
+      end
+
+      trigger_flush(c.db)
+
+      assert_eventually do
+        refute Goblin.flushing?(c.db)
+      end
+
+      for tag <- tags do
+        tag_data =
+          data
+          |> Enum.filter(&(elem(&1, 0) == tag))
+          |> Enum.map(fn {_tag, key, value} -> {key, value} end)
+          |> Enum.sort_by(&elem(&1, 0))
+
+        assert tag_data == Goblin.get_multi(c.db, Enum.map(tag_data, &elem(&1, 0)), tag: tag)
+
+        assert Enum.filter(data, &(elem(&1, 0) == tag)) |> Enum.sort_by(&elem(&1, 1)) ==
+                 Goblin.select(c.db, tag: tag) |> Enum.to_list()
+      end
+    end
   end
 end
