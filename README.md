@@ -27,7 +27,7 @@ Install by adding `:goblin` as a dependency:
 ```elixir
 def deps do
   [
-    {:goblin, "~> 0.4.0"}
+    {:goblin, "~> 0.6.0"}
   ]
 end
 ```
@@ -73,7 +73,7 @@ Goblin.get(db, :user_123)
 Goblin.get(db, :nonexistent)
 # => nil
 
-Goblin.get(db, :nonexistent, :not_found)
+Goblin.get(db, :nonexistent, default: :not_found)
 # => :not_found
 
 Goblin.remove(db, :user_123)
@@ -124,14 +124,14 @@ Goblin.select(db, max: 2) |> Enum.to_list()
 alias Goblin.Tx
 
 Goblin.transaction(db, fn tx ->
-  count = Tx.get(tx, :counter, 0)
+  count = Tx.get(tx, :counter, default: 0)
   tx = Tx.put(tx, :counter, count + 1)
   {:commit, tx, count + 1}
 end)
 # => 1
 
 Goblin.transaction(db, fn tx ->
-  balance = Tx.get(tx, :account_balance, 0)
+  balance = Tx.get(tx, :account_balance, default: 0)
   
   if balance >= 100 do
     tx = Tx.put(tx, :account_balance, balance - 100)
@@ -156,6 +156,52 @@ A read transaction (via `Goblin.read/2`) do not block each other and are not all
 
 Write transactions (via `Goblin.transaction/2`) are executed in serial order. 
 Writers are queued and are dequeued until the current writer completes its transaction.
+
+### Tags
+
+Keys can be tagged in order to separate data from each other.
+Attempting to read data without specifying a tag will return all data without a data.
+Specifying a tag returns data with only that tag.
+When streaming over data with `Goblin.select/2`, then `tag: :all` can be provided to return all data, including all data with tags.
+
+> #### Note {: .info}
+>
+> It is of this reason that the tag `:all` is reserved. Attempting to write a key-value pair with this tag will result in a raise.
+
+```elixir
+Goblin.put(db, :max_size, 500, tag: :config)
+# => :ok
+
+Goblin.get(db, :max_size)
+# => nil
+
+Goblin.get(db, :max_size, tag: :config)
+# => 500
+
+Goblin.get_multi(db, [:max_size], tag: :config)
+# => [{:config, :max_size, 500}]
+
+Goblin.select(db, tag: :config) |> Enum.to_list()
+# => [{:config, :max_size, 500}]
+
+Goblin.select(db, tag: :all) |> Enum.to_list()
+# => [{:config, :max_size, 500}]
+
+Goblin.select(db) |> Enum.to_list()
+# => []
+
+Goblin.remove(db, :max_size)
+# => :ok
+
+Goblin.get(db, :max_size, tag: :config)
+# => 500
+
+Goblin.remove(db, :max_size, tag: :config)
+# => :ok
+
+Goblin.get(db, :max_size, tag: :config)
+# => nil
+```
 
 ### PubSub
 
@@ -247,10 +293,6 @@ Data is compressed for levels larger than 1.
 
 ## Disk table format
 
-> #### Note {: .warning}
->
-> The disk table format can (and most likely will) change between versions. Disk tables will be automatically migrated to newer versions once a more stable format is released. In the meantime, one should migrate the files oneself.
-
 SST files use the `<no>.goblin` format and follow this binary structure:
 
 | SST | SEPARATOR | FOOTER |
@@ -283,6 +325,12 @@ The metadata section stores:
 - Key range position and size (16 bytes)
 - Sequence range position and size (16 bytes)
 - Number of blocks (8 bytes)
+
+### Migration strategy
+
+A lazy migration strategy is employed in which if a legacy version of the disk table format (i.e. the previous version) is detected, then the disk table is automatically reformatted on start to the new version.
+If a disk table with an older version than the legacy version is detected then no migration will occur and the service will stop.
+One should therefore iterate through the released versions in order to migrate to the latest version.
 
 ## References
 

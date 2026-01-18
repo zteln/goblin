@@ -17,7 +17,7 @@ defprotocol Goblin.Tx do
       end)
 
       Goblin.read(db, fn tx -> 
-        key1 = Goblin.Tx.get(tx, :start, 0)
+        key1 = Goblin.Tx.get(tx, :start, default: 0)
         key2 = Goblin.Tx.get(tx, key1)
         {key1, key2}
       end)
@@ -34,6 +34,8 @@ defprotocol Goblin.Tx do
   - `tx` - The transaction struct
   - `key` - Any Elixir term to use as the key
   - `value` - Any Elixir term to store
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Any Elixir term to use as the tag
 
   ## Returns
 
@@ -53,10 +55,12 @@ defprotocol Goblin.Tx do
 
   - `tx` - The transaction struct
   - `pairs` - The key-value pairs
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Any Elixir term to use as the tag
 
   ## Returns
 
-  - Updated transaction structj
+  - Updated transaction struct
 
   ## Examples
 
@@ -72,6 +76,8 @@ defprotocol Goblin.Tx do
 
   - `tx` - The transaction struct
   - `key` - The key to remove
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the key
 
   ## Returns
 
@@ -91,6 +97,8 @@ defprotocol Goblin.Tx do
 
   - `tx` - The transaction struct
   - `keys` - The list of keys to remove
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the keys
 
   ## Returns
 
@@ -110,7 +118,9 @@ defprotocol Goblin.Tx do
 
   - `tx` - The transaction struct
   - `key` - The key to look up
-  - `opts` - A default value if the key is not found, defaults to `nil`
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the keys
+    - `:default` - Value to return if `key` is not found (default: `nil`)
 
   ## Returns
 
@@ -130,6 +140,8 @@ defprotocol Goblin.Tx do
 
   - `tx` - The transaction struct
   - `keys` - A list of keys to look up
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the keys
 
   ## Returns
 
@@ -151,6 +163,7 @@ defprotocol Goblin.Tx do
   - `opts` - A keyword list with two options:
     - `:min` - The minimum key to range over
     - `:max` - The maximum key to range over
+    - `:tag` - Tag to include, `:all` returns a stream over all data (tagged as well as non-tagged data)
 
   ## Examples
 

@@ -37,13 +37,13 @@ defmodule Goblin do
       alias Goblin.Tx
 
       Goblin.transaction(db, fn tx ->
-        count = Tx.get(tx, :counter, 0) 
+        count = Tx.get(tx, :counter, default: 0) 
         tx = Tx.put(tx, :counter, count + 1)
         {:commit, tx, count + 1}
       end)
 
       Goblin.read(db, fn tx ->
-        key1 = Tx.get(tx, :start, 0)
+        key1 = Tx.get(tx, :start, default: 0)
         key2 = Tx.get(tx, key1)
         {key1, key2}
       end)
@@ -85,6 +85,7 @@ defmodule Goblin do
   @typedoc false
   @type write_term :: {:put, seq_no(), db_key(), db_value()} | {:remove, seq_no(), db_key()}
 
+  @type db_tag :: term()
   @type db_key :: term()
   @type db_value :: term()
 
@@ -111,7 +112,7 @@ defmodule Goblin do
 
       # Update a value
       Goblin.transaction(db, fn tx -> 
-        count = Goblin.Tx.get(tx, :counter, 0)
+        count = Goblin.Tx.get(tx, :counter, default: 0)
         tx = Goblin.Tx.put(tx, :counter, counter + 1)
         {:commit, tx, :ok}
       end)
@@ -140,6 +141,8 @@ defmodule Goblin do
   - `db` - The database server (PID or registered name)
   - `key` - Any Elixir term to use as the key
   - `value` - Any Elixir to associate with `key`
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Any Elixir term to use as the tag
 
   ## Returns
 
@@ -149,11 +152,14 @@ defmodule Goblin do
 
       Goblin.put(db, :user_123, %{name: "Alice", age: 30})
       # => :ok
+
+      Goblin.put(db, :controller, "controller-1", tag: :settings)
+      # => :ok
   """
   @spec put(Supervisor.supervisor(), db_key(), db_value()) :: :ok
   def put(db, key, value, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.put(tx, key, value, opts), :ok}
+      {:commit, Goblin.Tx.put(tx, key, value, Keyword.take(opts, [:tag])), :ok}
     end)
   end
 
@@ -166,6 +172,8 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `pairs` - A list of `{key, value}` tuples
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Any Elixir term to use as the tag
 
   ## Returns
 
@@ -180,10 +188,10 @@ defmodule Goblin do
       ])
       # => :ok
   """
-  @spec put_multi(Supervisor.supervisor(), [{db_key(), db_value()}]) :: :ok
+  @spec put_multi(Supervisor.supervisor(), [{db_key(), db_value()}], keyword()) :: :ok
   def put_multi(db, pairs, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.put_multi(tx, pairs, opts), :ok}
+      {:commit, Goblin.Tx.put_multi(tx, pairs, Keyword.take(opts, [:tag])), :ok}
     end)
   end
 
@@ -197,6 +205,8 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `key` - The key to remove
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the key
 
   ## Returns
 
@@ -212,10 +222,10 @@ defmodule Goblin do
       Goblin.get(db, :user_123)
       # => nil
   """
-  @spec remove(Supervisor.supervisor(), db_key()) :: :ok
+  @spec remove(Supervisor.supervisor(), db_key(), keyword()) :: :ok
   def remove(db, key, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.remove(tx, key, opts), :ok}
+      {:commit, Goblin.Tx.remove(tx, key, Keyword.take(opts, [:tag])), :ok}
     end)
   end
 
@@ -228,6 +238,8 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `keys` - A list of keys to remove
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the key
 
   ## Returns
 
@@ -239,10 +251,10 @@ defmodule Goblin do
       Goblin.remove_multi(db, [:user_1, :user_2, :user_3])
       # => :ok
   """
-  @spec remove_multi(Supervisor.supervisor(), [db_key()]) :: :ok
+  @spec remove_multi(Supervisor.supervisor(), [db_key()], keyword()) :: :ok
   def remove_multi(db, keys, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.remove_multi(tx, keys, opts), :ok}
+      {:commit, Goblin.Tx.remove_multi(tx, keys, Keyword.take(opts, [:tag])), :ok}
     end)
   end
 
@@ -300,7 +312,9 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `key` - The key to look up
-  - `default` - Value to return if `key` is not found (default: `nil`)
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag key is tagged with
+    - `:default` - Value to return if `key` is not found (default: `nil`)
 
   ## Returns
 
@@ -316,13 +330,16 @@ defmodule Goblin do
       Goblin.get(db, :user_123)
       # => %{name: "Alice", age: 30}
 
-      Goblin.get(db, :non_existant_key, :default_value)
+      Goblin.get(db, :non_existant_key, default: :default_value)
       # => :default_value
+
+      Goblin.get(db, :tagged_key, tag: :a_tag)
+      # => :tagged_value
   """
-  @spec get(Supervisor.supervisor(), db_key(), db_value() | nil) :: db_value() | nil
+  @spec get(Supervisor.supervisor(), db_key(), keyword()) :: db_value() | nil
   def get(db, key, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.get(tx, key, opts)
+      Goblin.Tx.get(tx, key, Keyword.take(opts, [:tag, :default]))
     end)
   end
 
@@ -336,6 +353,8 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `keys` - A list of keys to look up
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag associated with the keys
 
   ## Returns
 
@@ -354,10 +373,10 @@ defmodule Goblin do
       Goblin.get_multi(db, [:user_1, :user_2, :non_existing_user])
       # => [user_1: %{name: "Alice"}, user_2: %{name: "Bob"}]
   """
-  @spec get_multi(Supervisor.supervisor(), [db_key()]) :: [{db_key(), db_value()}]
+  @spec get_multi(Supervisor.supervisor(), [db_key()], keyword()) :: [{db_key(), db_value()}]
   def get_multi(db, keys, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.get_multi(tx, keys, opts)
+      Goblin.Tx.get_multi(tx, keys, Keyword.take(opts, [:tag]))
     end)
   end
 
@@ -376,6 +395,7 @@ defmodule Goblin do
   - `opts` - Keyword list of options:
     - `:min` - Minimum key (inclusive, optional)
     - `:max` - Maximum key (inclusive, optional)
+    - `:tag` - Tag to include, `:all` returns a stream over all data (tagged as well as non-tagged data)
 
   ## Returns
 
