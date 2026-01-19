@@ -71,19 +71,34 @@ defmodule TestHelper do
     ExUnit.Callbacks.stop_supervised!(id)
   end
 
-  def trigger_flush(db, opts \\ []) do
-    Stream.iterate(Keyword.get(opts, :key_start, 1), &(&1 + 1))
-    |> Stream.map(&{&1, "#{Keyword.get(opts, :key_prefix, "v")}-#{&1}"})
-    |> Stream.chunk_every(1000)
-    |> Stream.transform(nil, fn chunk, acc ->
-      if Goblin.flushing?(db) do
+  def trigger_flush(db, dir) do
+    dir_count = File.ls!(dir) |> length()
+
+    StreamData.term()
+    |> Stream.chunk_every(50)
+    |> Stream.transform(nil, fn keys, acc ->
+      keys = Enum.uniq(keys)
+      values = StreamData.term() |> Enum.take(length(keys))
+      pairs = Enum.zip(keys, values)
+
+      if length(File.ls!(dir)) > dir_count do
         {:halt, acc}
       else
-        Goblin.put_multi(db, chunk)
-        {chunk, acc}
+        Goblin.put_multi(db, pairs)
+        {pairs, acc}
       end
     end)
     |> Enum.to_list()
+  end
+
+  def uniq_by_value(list, f \\ & &1) do
+    Enum.reduce(list, [], fn item, acc ->
+      case Enum.any?(acc, &(f.(&1) == f.(item))) do
+        true -> acc
+        false -> [item | acc]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   def generate_disk_table(data, opts \\ []) do
