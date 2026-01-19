@@ -32,7 +32,14 @@ defmodule Goblin.Iterator do
   @spec k_merge_stream([Goblin.Iterable.t()], keyword()) :: Enumerable.t(Goblin.triple())
   def k_merge_stream(iterators, opts \\ []) do
     Stream.resource(
-      fn -> Enum.map(iterators, &{Goblin.Iterable.init(&1), nil}) end,
+      fn ->
+        Enum.flat_map(iterators, fn iterator ->
+          case iterate(iterator) do
+            :ok -> []
+            {triple, iterator} -> [{iterator, triple}]
+          end
+        end)
+      end,
       &k_merge(&1, opts),
       fn cursors -> Enum.each(cursors, &k_merge_close/1) end
     )
@@ -43,10 +50,7 @@ defmodule Goblin.Iterator do
     min = opts[:min]
     max = opts[:max]
 
-    cursors =
-      cursors
-      |> Enum.flat_map(&skip/1)
-      |> Enum.sort_by(fn {_, {key, seq, _}} -> {key, -seq} end)
+    cursors = Enum.sort_by(cursors, fn {_, {key, seq, _}} -> {key, -seq} end)
 
     case cursors do
       [] ->
@@ -73,24 +77,13 @@ defmodule Goblin.Iterator do
     end
   end
 
-  defp skip({nil, triple}), do: [{nil, triple}]
-
-  defp skip({iterator, nil}) do
-    case iterate(iterator) do
-      :ok -> []
-      {triple, iterator} -> [{iterator, triple}]
-    end
-  end
-
-  defp skip({iterator, triple}), do: [{iterator, triple}]
-
-  defp jump({nil, {key, _, _}}, key), do: []
+  defp jump({nil, {key1, _, _}}, key2) when key1 == key2, do: []
   defp jump({nil, triple}, _), do: [{nil, triple}]
 
-  defp jump({iterator, {key, _, _}}, key) do
+  defp jump({iterator, {key1, _, _}}, key2) when key1 == key2 do
     case iterate(iterator) do
       :ok -> []
-      {{^key, _, _} = triple, iterator} -> jump({iterator, triple}, key)
+      {{key, _, _} = triple, iterator} when key == key1 -> jump({iterator, triple}, key2)
       {next, iterator} -> [{iterator, next}]
     end
   end

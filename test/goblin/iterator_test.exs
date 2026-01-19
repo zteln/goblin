@@ -38,7 +38,7 @@ defmodule Goblin.IteratorTest do
         lists
         |> List.flatten()
         |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> Enum.uniq_by(&elem(&1, 0))
+        |> TestHelper.uniq_by_value(&elem(&1, 0))
 
       assert data ==
                Goblin.Iterator.k_merge_stream(iterators)
@@ -55,12 +55,10 @@ defmodule Goblin.IteratorTest do
         lists
         |> List.flatten()
         |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> Enum.uniq_by(&elem(&1, 0))
+        |> TestHelper.uniq_by_value(&elem(&1, 0))
+        |> Enum.filter(fn {key, _seq, _val} -> key >= min and key <= max end)
 
-      assert data
-             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-             |> Enum.uniq_by(fn {key, _seq, _val} -> key end)
-             |> Enum.filter(fn {key, _seq, _val} -> key >= min and key <= max end) ==
+      assert data ==
                Goblin.Iterator.k_merge_stream(iterators, min: min, max: max)
                |> Enum.to_list()
     end
@@ -72,12 +70,10 @@ defmodule Goblin.IteratorTest do
         lists
         |> List.flatten()
         |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> Enum.uniq_by(&elem(&1, 0))
+        |> TestHelper.uniq_by_value(&elem(&1, 0))
+        |> Enum.reject(fn {_key, _seq, val} -> val == :"$goblin_tombstone" end)
 
-      assert data
-             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-             |> Enum.uniq_by(fn {key, _seq, _val} -> key end)
-             |> Enum.reject(fn {_key, _seq, val} -> val == :"$goblin_tombstone" end) ==
+      assert data ==
                Goblin.Iterator.k_merge_stream(iterators, filter_tombstones: true)
                |> Enum.to_list()
     end
@@ -89,11 +85,9 @@ defmodule Goblin.IteratorTest do
         lists
         |> List.flatten()
         |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> Enum.uniq_by(&elem(&1, 0))
+        |> TestHelper.uniq_by_value(&elem(&1, 0))
 
-      assert data
-             |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-             |> Enum.uniq_by(fn {key, _seq, _val} -> key end) ==
+      assert data ==
                Goblin.Iterator.k_merge_stream(iterators, filter_tombstones: true)
                |> Enum.to_list()
 
@@ -106,15 +100,14 @@ defmodule Goblin.IteratorTest do
   defp random_iterators_and_data(opts \\ []) do
     num_lists = opts[:num_lists] || 5
     items_per_list = opts[:items_per_list] || 10
-    key_range = opts[:key_range] || 1..20
-    versions_per_key = opts[:versions_per_key] || 1..8
     tombstone? = opts[:tombstone?] || false
+    keys = StreamData.term() |> Enum.take(20)
 
     {lists, _final_seq} =
       1..num_lists
       |> Enum.map_reduce(0, fn _list_idx, seq ->
         {list, new_seq} =
-          generate_list(items_per_list, key_range, versions_per_key, seq, tombstone?)
+          generate_list(keys, items_per_list, seq, tombstone?)
 
         {list, new_seq}
       end)
@@ -128,20 +121,18 @@ defmodule Goblin.IteratorTest do
     {iterators, lists}
   end
 
-  defp generate_list(num_items, key_range, versions_per_key, start_seq, tombstone?) do
-    keys = Enum.to_list(key_range)
-
+  defp generate_list(keys, num_items, start_seq, tombstone?) do
     entries =
       1..num_items
       |> Enum.map_reduce(start_seq, fn _i, seq ->
         key = Enum.random(keys)
-        versions = Enum.random(versions_per_key)
 
         val =
           if tombstone? and :rand.uniform() > 0.5 do
             :"$goblin_tombstone"
           else
-            "value_#{key}_v#{versions}_s#{seq}"
+            [val] = StreamData.term() |> Enum.take(1)
+            val
           end
 
         {{key, seq, val}, seq + 1}
