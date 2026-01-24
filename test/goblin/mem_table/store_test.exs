@@ -39,6 +39,22 @@ defmodule Goblin.MemTable.StoreTest do
       assert {:key, 1, :val2} == Goblin.MemTable.Store.get_by_key(c.store, :key, 2)
       assert {:key, 2, :val3} == Goblin.MemTable.Store.get_by_key(c.store, :key, 3)
     end
+
+    test "gets entry for key with same value (i.e. key1 == key2 only)", c do
+      key1 = 0
+      key2 = 0.0
+      assert key1 == key2
+      refute key1 === key2
+
+      Goblin.MemTable.Store.insert(c.store, key1, 0, :val1)
+      Goblin.MemTable.Store.insert(c.store, key2, 1, :val2)
+
+      assert {key1, 0, :val1} == Goblin.MemTable.Store.get_by_key(c.store, key1, 1)
+      assert {key2, 1, :val2} == Goblin.MemTable.Store.get_by_key(c.store, key1, 2)
+
+      assert {key1, 0, :val1} == Goblin.MemTable.Store.get_by_key(c.store, key2, 1)
+      assert {key2, 1, :val2} == Goblin.MemTable.Store.get_by_key(c.store, key2, 2)
+    end
   end
 
   describe "delete_range/2" do
@@ -81,6 +97,44 @@ defmodule Goblin.MemTable.StoreTest do
       Goblin.MemTable.Store.insert(c.store, :key, 0, :val)
       next = Goblin.MemTable.Store.iterate(c.store)
       assert :end_of_iteration == Goblin.MemTable.Store.iterate(c.store, next)
+    end
+  end
+
+  describe "inc_streamers/1, deinc_streamers/1, get_streamers_count/1" do
+    test "anyone can inc and deinc streamer count", c do
+      parent = self()
+      assert 0 == Goblin.MemTable.Store.get_streamers_count(c.store)
+      assert :ok == Goblin.MemTable.Store.inc_streamers(c.store)
+      assert 1 == Goblin.MemTable.Store.get_streamers_count(c.store)
+      assert :ok == Goblin.MemTable.Store.deinc_streamers(c.store)
+      assert 0 == Goblin.MemTable.Store.get_streamers_count(c.store)
+
+      spawn(fn ->
+        assert 0 == Goblin.MemTable.Store.get_streamers_count(c.store)
+        assert :ok == Goblin.MemTable.Store.inc_streamers(c.store)
+        assert 1 == Goblin.MemTable.Store.get_streamers_count(c.store)
+        assert :ok == Goblin.MemTable.Store.deinc_streamers(c.store)
+        assert 0 == Goblin.MemTable.Store.get_streamers_count(c.store)
+        send(parent, :done)
+      end)
+
+      assert_receive :done
+    end
+
+    test "raises if missing streamers counters ref", c do
+      :ets.delete(c.store, :streamers_counter_ref)
+
+      assert_raise(RuntimeError, fn ->
+        Goblin.MemTable.Store.get_streamers_count(c.store)
+      end)
+
+      assert_raise(RuntimeError, fn ->
+        Goblin.MemTable.Store.inc_streamers(c.store)
+      end)
+
+      assert_raise(RuntimeError, fn ->
+        Goblin.MemTable.Store.deinc_streamers(c.store)
+      end)
     end
   end
 

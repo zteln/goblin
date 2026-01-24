@@ -5,6 +5,8 @@ defmodule Goblin.MemTable.Store do
   @spec new(atom()) :: t()
   def new(name) do
     :ets.new(name, [:named_table, :ordered_set])
+    :ets.insert(name, {:streamers_counter_ref, :counters.new(1, [])})
+    name
   end
 
   @spec insert_commit_seq(t(), Goblin.seq_no()) :: :ok
@@ -84,11 +86,34 @@ defmodule Goblin.MemTable.Store do
   defp handle_iteration(_store, :"$end_of_table"), do: :end_of_iteration
   defp handle_iteration(_store, {key, seq}), do: {key, abs(seq)}
   defp handle_iteration(store, idx), do: iterate(store, idx)
+
+  @spec inc_streamers(t()) :: :ok
+  def inc_streamers(store) do
+    case :ets.lookup(store, :streamers_counter_ref) do
+      [] -> raise "`:counters` ref missing from MemTable Store"
+      [{_, counters_ref}] -> :counters.add(counters_ref, 1, 1)
+    end
+
+    :ok
   end
 
-  defp handle_iteration(:"$end_of_table"), do: :end_of_iteration
-  defp handle_iteration({key, seq}), do: {key, abs(seq)}
-  defp handle_iteration(next), do: next
+  @spec deinc_streamers(t()) :: :ok
+  def deinc_streamers(store) do
+    case :ets.lookup(store, :streamers_counter_ref) do
+      [] -> raise "`:counters` ref missing from MemTable Store"
+      [{_, counters_ref}] -> :counters.sub(counters_ref, 1, 1)
+    end
+
+    :ok
+  end
+
+  @spec get_streamers_count(t()) :: integer()
+  def get_streamers_count(store) do
+    case :ets.lookup(store, :streamers_counter_ref) do
+      [] -> raise "`:counters` ref missing from MemTable Store"
+      [{_, counters_ref}] -> :counters.get(counters_ref, 1)
+    end
+  end
 
   @spec set_ready(t()) :: :ok
   def set_ready(store) do
