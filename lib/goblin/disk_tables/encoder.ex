@@ -1,7 +1,7 @@
 defmodule Goblin.DiskTables.Encoder do
   @moduledoc false
   @sst_block_id "GOBLINBLOCK00000"
-  @sst_block_unit_size 512
+  @sst_block_unit_size 4096
   @sst_header_size byte_size(<<@sst_block_id::binary, 0::integer-16>>)
 
   @separator "GOBLINSEP0000000"
