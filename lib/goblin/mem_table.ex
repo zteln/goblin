@@ -120,7 +120,12 @@ defmodule Goblin.MemTable do
 
   @impl GenServer
   def handle_continue(:maybe_flush, %{flushing: nil} = state) do
-    if Store.size(state.store) >= state.mem_limit do
+    size =
+      Enum.reduce(state.cleaning, Store.size(state.store), fn {_ref, size}, acc ->
+        acc - size
+      end)
+
+    if size >= state.mem_limit do
       case coordinate_wal_rotation(state.wal_server, state.manifest_server) do
         {:ok, rotated_wal} ->
           state = enqueue_flush(state, rotated_wal, state.seq)
@@ -144,7 +149,7 @@ defmodule Goblin.MemTable do
       {{:value, {wal, seq}}, flush_queue} ->
         state =
           %{state | flush_queue: flush_queue}
-          |> flush(wal, seq)
+          |> start_flush_job(wal, seq)
 
         {:noreply, state}
     end
@@ -157,8 +162,13 @@ defmodule Goblin.MemTable do
   @impl GenServer
   def handle_info({ref, {:ok, :flushed}}, %{flushing: {ref, _, _}} = state) do
     {_ref, flushed_seq, _rotated_wal} = state.flushing
-    Store.delete_range(state.store, flushed_seq)
+    state = try_clean_up(state, flushed_seq)
     {:noreply, %{state | flushing: nil}, {:continue, :dequeue_flush}}
+  end
+
+  def handle_info({:try_clean_up, ref, seq}, state) do
+    state = try_clean_up(state, seq, ref)
+    {:noreply, state}
   end
 
   def handle_info({ref, {:error, reason}}, %{flushing: {ref, _, _}} = state) do
@@ -179,7 +189,7 @@ defmodule Goblin.MemTable do
   end
 
   defp enqueue_flush(%{flushing: nil} = state, wal, seq) do
-    flush(state, wal, seq)
+    start_flush_job(state, wal, seq)
   end
 
   defp enqueue_flush(state, wal, seq) do
@@ -187,7 +197,7 @@ defmodule Goblin.MemTable do
     %{state | flush_queue: flush_queue}
   end
 
-  defp flush(state, rotated_wal, seq) do
+  defp start_flush_job(state, rotated_wal, seq) do
     %{
       store: store,
       disk_tables_server: disk_tables_server,
@@ -213,6 +223,28 @@ defmodule Goblin.MemTable do
       end)
 
     %{state | flushing: {ref, seq, rotated_wal}}
+  end
+
+  defp try_clean_up(state, seq, ref \\ make_ref()) do
+    %{store: store, cleaning: cleaning} = state
+
+    size =
+      Enum.reduce(cleaning, Store.size(store), fn {_ref, size}, acc ->
+        acc - size
+      end)
+
+    cleaning =
+      case Store.get_streamers_count(store) do
+        n when n > 0 ->
+          Process.send_after(self(), {:try_clean_up, ref, seq}, 200)
+          Map.put_new(cleaning, ref, size)
+
+        _ ->
+          :ok = Store.delete_range(store, seq)
+          Map.delete(cleaning, ref)
+      end
+
+    %{state | cleaning: cleaning}
   end
 
   defp recover_mem_table(state) do
