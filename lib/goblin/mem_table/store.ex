@@ -46,7 +46,7 @@ defmodule Goblin.MemTable.Store do
     ms = [
       {
         {{:"$1", :"$2"}, :_},
-        [{:andalso, {:"=:=", :"$1", {:const, key}}, {:<, {:abs, :"$2"}, seq}}],
+        [{:andalso, {:==, :"$1", {:const, key}}, {:<, {:abs, :"$2"}, seq}}],
         [:"$_"]
       }
     ]

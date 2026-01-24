@@ -15,8 +15,12 @@ defmodule Goblin.DiskTables.BinarySearchIterator do
   def new(disk_table, keys, seq) do
     keys =
       keys
-      |> Enum.uniq()
-      |> Enum.sort()
+      |> Enum.sort(:desc)
+      |> Enum.reduce([], fn
+        key, [] -> [key]
+        key1, [key2 | _] = acc when key1 == key2 -> acc
+        key, acc -> [key | acc]
+      end)
 
     %__MODULE__{
       file: disk_table.file,
@@ -73,10 +77,10 @@ defmodule Goblin.DiskTables.BinarySearchIterator do
       mid = div(low + high, 2)
 
       case read_block(handler, mid) do
-        {:ok, {^key, s, _v} = triple} when s < seq ->
+        {:ok, {k, s, _v} = triple} when k == key and s < seq ->
           check_left_neighbour(handler, mid - 1, triple, seq)
 
-        {:ok, {^key, s, _v} = triple} when s >= seq ->
+        {:ok, {k, s, _v} = triple} when k == key and s >= seq ->
           check_right_neighbour(handler, mid + 1, triple, seq)
 
         {:ok, {k, _s, _v}} when key < k ->
@@ -96,7 +100,7 @@ defmodule Goblin.DiskTables.BinarySearchIterator do
 
     defp check_left_neighbour(handler, block_no, {key, _, _} = triple, seq) do
       case read_block(handler, block_no) do
-        {:ok, {^key, s, _v} = neighbouring_triple} when s < seq ->
+        {:ok, {k, s, _v} = neighbouring_triple} when k == key and s < seq ->
           check_left_neighbour(handler, block_no - 1, neighbouring_triple, seq)
 
         {:ok, _neighbouring_triple} ->
@@ -109,10 +113,10 @@ defmodule Goblin.DiskTables.BinarySearchIterator do
 
     defp check_right_neighbour(handler, block_no, {key, _, _}, seq) do
       case read_block(handler, block_no) do
-        {:ok, {^key, s, _v} = neighbouring_triple} when s >= seq ->
+        {:ok, {k, s, _v} = neighbouring_triple} when k == key and s >= seq ->
           check_right_neighbour(handler, block_no + 1, neighbouring_triple, seq)
 
-        {:ok, {^key, _s, _v} = neighbouring_triple} ->
+        {:ok, {k, _s, _v} = neighbouring_triple} when k == key ->
           {:ok, block_no + 1, neighbouring_triple}
 
         {:ok, _neighbouring_triple} ->
