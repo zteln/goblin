@@ -77,7 +77,6 @@ defmodule TestHelper do
     StreamData.term()
     |> Stream.chunk_every(50)
     |> Stream.transform(nil, fn keys, acc ->
-      keys = Enum.uniq(keys)
       values = StreamData.term() |> Enum.take(length(keys))
       pairs = Enum.zip(keys, values)
 

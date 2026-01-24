@@ -408,39 +408,55 @@ defmodule GoblinTest do
 
     test "can write and read any term as key or value", c do
       len = 100
-      keys = StreamData.term() |> Enum.take(len) |> Enum.uniq()
-      values = StreamData.term() |> Enum.take(length(keys))
-      pairs = Enum.zip(keys, values)
+
+      pairs =
+        StreamData.term()
+        |> Stream.chunk_every(2)
+        |> Stream.map(fn [key, val] -> {key, val} end)
+        |> Enum.take(len)
+
+      output_pairs =
+        pairs
+        |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
+        |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+        |> TestHelper.uniq_by_value(&elem(&1, 0))
+        |> Enum.map(fn {key, _seq, val} -> {key, val} end)
+
+      keys = Enum.map(output_pairs, &elem(&1, 0))
 
       assert :ok == Goblin.put_multi(c.db, pairs)
 
-      assert Enum.sort_by(pairs, &elem(&1, 0)) ==
-               Goblin.get_multi(c.db, keys)
+      assert output_pairs == Goblin.get_multi(c.db, keys)
 
-      trigger_flush(c.db)
+      data = trigger_flush(c.db, c.tmp_dir)
+
+      output_pairs =
+        (output_pairs ++ data)
+        |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
+        |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+        |> TestHelper.uniq_by_value(&elem(&1, 0))
+        |> Enum.map(fn {key, _seq, val} -> {key, val} end)
+
+      keys = Enum.map(output_pairs, &elem(&1, 0))
 
       assert_eventually do
         refute Goblin.flushing?(c.db)
       end
 
-      assert Enum.sort_by(pairs, &elem(&1, 0)) ==
-               Goblin.get_multi(c.db, keys)
+      assert output_pairs == Goblin.get_multi(c.db, keys)
     end
 
     test "tags can be any term", c do
       len = 100
-      keys = StreamData.term() |> Enum.take(len) |> Enum.uniq()
-      values = StreamData.term() |> Enum.take(length(keys))
-
-      tags =
-        StreamData.term()
-        |> Enum.take(10)
-        |> Enum.reject(&(&1 == :all))
-        |> Enum.uniq()
 
       data =
-        Enum.zip(keys, values)
-        |> Enum.map(fn {key, value} -> {Enum.random(tags), key, value} end)
+        StreamData.term()
+        |> Stream.chunk_every(3)
+        |> Stream.flat_map(fn
+          [_key, _val, :all] -> []
+          [key, val, tag] -> [{tag, key, val}]
+        end)
+        |> Enum.take(len)
 
       assert :ok ==
                Goblin.transaction(c.db, fn tx ->
@@ -452,37 +468,32 @@ defmodule GoblinTest do
                  {:commit, tx, :ok}
                end)
 
-      for tag <- tags do
-        tag_data =
-          data
-          |> Enum.filter(&(elem(&1, 0) == tag))
-          |> Enum.map(fn {_tag, key, value} -> {key, value} end)
-          |> Enum.sort_by(&elem(&1, 0))
+      data =
+        data
+        |> Enum.with_index(fn {tag, key, val}, seq -> {tag, key, seq, val} end)
+        |> Enum.sort_by(fn {_tag, key, seq, _val} -> {key, -seq} end)
+        |> TestHelper.uniq_by_value(&elem(&1, 1))
+        |> Enum.map(fn {tag, key, _seq, val} -> {tag, key, val} end)
 
-        assert tag_data == Goblin.get_multi(c.db, Enum.map(tag_data, &elem(&1, 0)), tag: tag)
+      data
+      |> Enum.each(fn {tag, key, val} ->
+        assert val == Goblin.get(c.db, key, tag: tag)
+        assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
+        assert {tag, key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
+      end)
 
-        assert Enum.filter(data, &(elem(&1, 0) == tag)) |> Enum.sort_by(&elem(&1, 1)) ==
-                 Goblin.select(c.db, tag: tag) |> Enum.to_list()
-      end
-
-      trigger_flush(c.db)
+      trigger_flush(c.db, c.tmp_dir)
 
       assert_eventually do
         refute Goblin.flushing?(c.db)
       end
 
-      for tag <- tags do
-        tag_data =
-          data
-          |> Enum.filter(&(elem(&1, 0) == tag))
-          |> Enum.map(fn {_tag, key, value} -> {key, value} end)
-          |> Enum.sort_by(&elem(&1, 0))
-
-        assert tag_data == Goblin.get_multi(c.db, Enum.map(tag_data, &elem(&1, 0)), tag: tag)
-
-        assert Enum.filter(data, &(elem(&1, 0) == tag)) |> Enum.sort_by(&elem(&1, 1)) ==
-                 Goblin.select(c.db, tag: tag) |> Enum.to_list()
-      end
+      data
+      |> Enum.each(fn {tag, key, val} ->
+        assert val == Goblin.get(c.db, key, tag: tag)
+        assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
+        assert {tag, key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
+      end)
     end
   end
 end

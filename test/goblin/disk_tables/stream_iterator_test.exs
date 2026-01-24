@@ -28,7 +28,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
     {:ok, [disk_table]} =
       Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
 
-    %{disk_table: disk_table}
+    %{disk_table: disk_table, next_file_f: next_file_f}
   end
 
   test "is iterable", c do
@@ -92,5 +92,33 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
     end
 
     assert {:error, :einval} == Goblin.DiskTables.Handler.read(iterator.handler, 0, 0)
+  end
+
+  test "handles any term", c do
+    opts = [
+      level_key: 0,
+      compress?: false,
+      max_sst_size: :infinity,
+      bf_fpp: 0.01
+    ]
+
+    data =
+      StreamData.term()
+      |> Stream.take(100)
+      |> Enum.with_index(fn key, seq ->
+        [val] = StreamData.term() |> Enum.take(1)
+        {key, seq, val}
+      end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+
+    {:ok, [disk_table]} =
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+
+    iterator = Goblin.DiskTables.StreamIterator.new(disk_table.file) |> Goblin.Iterable.init()
+
+    Enum.reduce(data, iterator, fn triple, acc ->
+      assert {^triple, acc} = Goblin.Iterable.next(acc)
+      acc
+    end)
   end
 end

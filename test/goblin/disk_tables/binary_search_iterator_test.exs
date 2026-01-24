@@ -16,26 +16,26 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     opts = [
       level_key: 0,
       compress?: false,
-      max_sst_size: 100 * 512,
+      max_sst_size: :infinity,
       bf_fpp: 0.01,
       bf_bit_array_size: 100
     ]
 
+    %{next_file_f: next_file_f, opts: opts}
+  end
+
+  test "is iterable", c do
     data =
       for n <- 1..100 do
         {n, n - 1, "v-#{n}"}
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
 
-    %{disk_table: disk_table, next_file_f: next_file_f}
-  end
-
-  test "is iterable", c do
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
-             Goblin.DiskTables.BinarySearchIterator.new(c.disk_table, [5, 25, 1, 1], 1000)
+             Goblin.DiskTables.BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 1000)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -86,10 +86,61 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
+  test "keys of same value (i.e. key1 == key2) can be found", c do
+    data =
+      Stream.cycle([0, 0.0, 1.0, 1])
+      |> Stream.take(4)
+      |> Enum.with_index(fn key, seq -> {key, seq, "v-#{seq}-#{key}"} end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+
+    {:ok, [disk_table]} =
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+
+    iterator =
+      disk_table
+      |> Goblin.DiskTables.BinarySearchIterator.new([0], length(data))
+      |> Goblin.Iterable.init()
+
+    zero_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 0.0 end)
+    assert {^zero_key_triple, _iterator} = Goblin.Iterable.next(iterator)
+
+    iterator =
+      disk_table
+      |> Goblin.DiskTables.BinarySearchIterator.new([0.0, 0, 0.0], length(data))
+      |> Goblin.Iterable.init()
+
+    zero_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 0 end)
+    assert {^zero_key_triple, _iterator} = Goblin.Iterable.next(iterator)
+
+    iterator =
+      disk_table
+      |> Goblin.DiskTables.BinarySearchIterator.new([1], length(data))
+      |> Goblin.Iterable.init()
+
+    one_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 1.0 end)
+    assert {^one_key_triple, _iterator} = Goblin.Iterable.next(iterator)
+
+    iterator =
+      disk_table
+      |> Goblin.DiskTables.BinarySearchIterator.new([1.0], length(data))
+      |> Goblin.Iterable.init()
+
+    one_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 1 end)
+    assert {^one_key_triple, _iterator} = Goblin.Iterable.next(iterator)
+  end
+
   test "does not iterate higher than provided sequence number", c do
+    data =
+      for n <- 1..100 do
+        {n, n - 1, "v-#{n}"}
+      end
+
+    {:ok, [disk_table]} =
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
-             Goblin.DiskTables.BinarySearchIterator.new(c.disk_table, [5, 25, 1, 1], 23)
+             Goblin.DiskTables.BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 23)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -105,9 +156,17 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       {:error, :failed_to_read}
     end)
 
+    data =
+      for n <- 1..100 do
+        {n, n - 1, "v-#{n}"}
+      end
+
+    {:ok, [disk_table]} =
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
-             Goblin.DiskTables.BinarySearchIterator.new(c.disk_table, [5, 25, 1, 1], 1000)
+             Goblin.DiskTables.BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 1000)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -118,5 +177,33 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     end
 
     assert {:error, :einval} == Goblin.DiskTables.Handler.read(iterator.handler, 0)
+  end
+
+  test "can handle any term", c do
+    data =
+      StreamData.term()
+      |> Stream.take(100)
+      |> Enum.with_index(fn key, seq ->
+        [val] = StreamData.term() |> Enum.take(1)
+        {key, seq, val}
+      end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+
+    keys = Enum.map(data, &elem(&1, 0))
+
+    {:ok, [disk_table]} =
+      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+
+    iterator =
+      disk_table
+      |> Goblin.DiskTables.BinarySearchIterator.new(keys, length(data))
+      |> Goblin.Iterable.init()
+
+    data
+    |> TestHelper.uniq_by_value(&elem(&1, 0))
+    |> Enum.reduce(iterator, fn triple, acc ->
+      assert {^triple, acc} = Goblin.Iterable.next(acc)
+      acc
+    end)
   end
 end

@@ -13,7 +13,7 @@ defmodule Goblin.ExportTest do
   describe "export/2" do
     @tag db_opts: [mem_limit: 2 * 1024]
     test "exports a .tar.gz snapshot from manifest", c do
-      trigger_flush(c.db)
+      trigger_flush(c.db, c.tmp_dir)
 
       assert_eventually do
         refute Goblin.flushing?(c.db)
