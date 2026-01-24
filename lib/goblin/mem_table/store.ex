@@ -63,23 +63,27 @@ defmodule Goblin.MemTable.Store do
     :ok
   end
 
-  @spec iterate(t()) ::
-          {Goblin.db_key(), Goblin.seq_no()} | :ready | :commit_seq | :end_of_iteration
+  @spec iterate(t()) :: {Goblin.db_key(), Goblin.seq_no()} | :end_of_iteration
   def iterate(store) do
-    :ets.first(store)
-    |> handle_iteration()
+    idx = :ets.first(store)
+    handle_iteration(store, idx)
   end
 
-  @spec iterate(t(), {Goblin.db_key(), Goblin.seq_no()} | :ready | :commit_seq) ::
-          {Goblin.db_key(), Goblin.seq_no()} | :ready | :commit_seq | :end_of_iteration
+  @spec iterate(t(), {Goblin.db_key(), Goblin.seq_no()}) ::
+          {Goblin.db_key(), Goblin.seq_no()} | :end_of_iteration
   def iterate(store, {key, seq}) do
-    :ets.next(store, {key, -seq})
-    |> handle_iteration()
+    idx = :ets.next(store, {key, -seq})
+    handle_iteration(store, idx)
   end
 
-  def iterate(store, next) do
-    :ets.next(store, next)
-    |> handle_iteration()
+  def iterate(store, idx) do
+    idx = :ets.next(store, idx)
+    handle_iteration(store, idx)
+  end
+
+  defp handle_iteration(_store, :"$end_of_table"), do: :end_of_iteration
+  defp handle_iteration(_store, {key, seq}), do: {key, abs(seq)}
+  defp handle_iteration(store, idx), do: iterate(store, idx)
   end
 
   defp handle_iteration(:"$end_of_table"), do: :end_of_iteration
