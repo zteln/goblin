@@ -43,6 +43,15 @@ defmodule Goblin.Broker.ReadTx do
           Goblin.triple()
         ]
   def get_multi(mem_table, disk_tables, seq, keys) do
+    keys =
+      keys
+      |> Enum.sort(:desc)
+      |> Enum.reduce([], fn
+        key, [] -> [key]
+        key1, [key2 | _] = acc when key1 == key2 -> acc
+        key, acc -> [key | acc]
+      end)
+
     multi_search_mem_table(mem_table, keys, seq)
     |> Enum.split_with(fn
       {:not_found, _key} -> false
