@@ -34,6 +34,8 @@ defmodule Goblin.Iterator do
     Stream.resource(
       fn ->
         Enum.flat_map(iterators, fn iterator ->
+          iterator = Goblin.Iterable.init(iterator)
+
           case iterate(iterator) do
             :ok -> []
             {triple, iterator} -> [{iterator, triple}]
