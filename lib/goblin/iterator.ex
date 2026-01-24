@@ -43,7 +43,13 @@ defmodule Goblin.Iterator do
         end)
       end,
       &k_merge(&1, opts),
-      fn cursors -> Enum.each(cursors, &k_merge_close/1) end
+      fn cursors ->
+        Enum.each(cursors, fn
+          {nil, _} -> :ok
+          {iterator, _} -> Goblin.Iterable.deinit(iterator)
+          _ -> :ok
+        end)
+      end
     )
   end
 
@@ -91,8 +97,4 @@ defmodule Goblin.Iterator do
   end
 
   defp jump(cursor, _key), do: [cursor]
-
-  defp k_merge_close({nil, _}), do: :ok
-  defp k_merge_close({iterator, _}), do: Goblin.Iterable.deinit(iterator)
-  defp k_merge_close(_), do: :ok
 end
