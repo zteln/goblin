@@ -9,7 +9,15 @@ defmodule Goblin.MemTable.Iterator do
   defimpl Goblin.Iterable do
     alias Goblin.MemTable.Store
 
-    def init(iterator), do: iterator
+    def init(iterator) do
+      Store.inc_streamers(iterator.store)
+      iterator
+    end
+
+    def deinit(iterator) do
+      Store.deinc_streamers(iterator.store)
+      :ok
+    end
 
     def next(%{idx: nil} = iterator) do
       idx = Store.iterate(iterator.store)
@@ -21,14 +29,14 @@ defmodule Goblin.MemTable.Iterator do
       handle_iteration(iterator, idx)
     end
 
-    def deinit(_iterator), do: :ok
-
     defp handle_iteration(_iterator, :end_of_iteration), do: :ok
 
     defp handle_iteration(%{max_seq: max_seq} = iterator, {key, seq} = idx)
          when seq < max_seq do
-      triple = Store.get(iterator.store, key, seq)
-      {triple, %{iterator | idx: idx}}
+      case Store.get(iterator.store, key, seq) do
+        :not_found -> next(%{iterator | idx: idx})
+        triple -> {triple, %{iterator | idx: idx}}
+      end
     end
 
     defp handle_iteration(iterator, idx) do
