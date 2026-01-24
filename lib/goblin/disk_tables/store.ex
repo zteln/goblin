@@ -48,9 +48,9 @@ defmodule Goblin.DiskTables.Store do
     guard =
       cond do
         is_nil(min) and is_nil(max) -> []
-        is_nil(min) -> [{:"=<", :"$2", max}]
-        is_nil(max) -> [{:"=<", min, :"$3"}]
-        true -> [{:andalso, {:"=<", :"$2", max}, {:"=<", min, :"$3"}}]
+        is_nil(min) -> [{:"=<", :"$2", {:const, max}}]
+        is_nil(max) -> [{:"=<", {:const, min}, :"$3"}]
+        true -> [{:andalso, {:"=<", :"$2", {:const, max}}, {:"=<", {:const, min}, :"$3"}}]
       end
 
     ms = [{{:"$1", {:"$2", :"$3"}, :_}, guard, [:"$1"]}]
