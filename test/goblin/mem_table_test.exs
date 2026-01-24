@@ -134,4 +134,25 @@ defmodule Goblin.MemTableTest do
         assert_receive {:DOWN, _ref, :process, ^mem_table, :flush_failed}
       end)
   end
+
+  test "mem table is only cleaned when there are no streamers", c do
+    Goblin.MemTable.Store.inc_streamers(@mem_table)
+    trigger_flush(c.db, c.tmp_dir)
+    trigger_flush(c.db, c.tmp_dir)
+    trigger_flush(c.db, c.tmp_dir)
+
+    assert_eventually do
+      refute Goblin.flushing?(c.db)
+    end
+
+    size = Goblin.MemTable.Store.size(@mem_table)
+
+    assert Goblin.MemTable.Store.size(@mem_table) == size
+
+    Goblin.MemTable.Store.deinc_streamers(@mem_table)
+
+    assert_eventually do
+      assert Goblin.MemTable.Store.size(@mem_table) < size
+    end
+  end
 end
