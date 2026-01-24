@@ -16,7 +16,8 @@ defmodule Goblin.MemTable do
     :disk_tables_server,
     :flushing,
     seq: 0,
-    flush_queue: :queue.new()
+    flush_queue: :queue.new(),
+    cleaning: %{}
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -41,17 +42,6 @@ defmodule Goblin.MemTable do
           :ok | {:error, term()}
   def insert(server, writes, seq) do
     GenServer.call(server, {:insert, writes, seq})
-  end
-
-  @spec get(Store.t(), Goblin.db_key(), Goblin.seq_no()) ::
-          {:value, Goblin.triple()} | :not_found
-  def get(store, key, seq) do
-    Store.wait_until_ready(store)
-
-    case Store.get_by_key(store, key, seq) do
-      {key, seq, value} -> {:value, {key, seq, value}}
-      _ -> :not_found
-    end
   end
 
   @spec get_multi(Store.t(), [Goblin.db_key()], Goblin.seq_no()) :: [

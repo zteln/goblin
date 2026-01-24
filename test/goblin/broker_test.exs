@@ -143,7 +143,7 @@ defmodule Goblin.BrokerTest do
                {:commit, tx, :ok}
              end)
 
-    assert {:value, {key, 0, val}} == Goblin.MemTable.get(@mem_table, key, 1)
+    assert [{:value, {key, 0, val}}] == Goblin.MemTable.get_multi(@mem_table, [key], 1)
   end
 
   test "failed writers are cleaned up", c do

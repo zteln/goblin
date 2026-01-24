@@ -3,20 +3,22 @@ defmodule Goblin.MemTableTest do
   use TestHelper
   use Mimic
   import ExUnit.CaptureLog
+
   @mem_table __MODULE__.MemTable
   @disk_tables __MODULE__.DiskTables
+
   setup_db(
     mem_limit: 2 * 1024,
     bf_bit_array_size: 1000
   )
 
   test "can read and write data", c do
-    assert :not_found == Goblin.MemTable.get(@mem_table, :key, 0)
+    assert [{:not_found, :key}] == Goblin.MemTable.get_multi(@mem_table, [:key], 0)
     assert :ok == Goblin.MemTable.insert(c.mem_table, [{:put, 0, :key, :val}], 1)
-    assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
+    assert [{:value, {:key, 0, :val}}] == Goblin.MemTable.get_multi(@mem_table, [:key], 1)
     assert :ok == Goblin.MemTable.insert(c.mem_table, [{:put, 1, :key, :new_val}], 2)
-    assert {:value, {:key, 1, :new_val}} == Goblin.MemTable.get(@mem_table, :key, 2)
-    assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
+    assert [{:value, {:key, 1, :new_val}}] == Goblin.MemTable.get_multi(@mem_table, [:key], 2)
+    assert [{:value, {:key, 0, :val}}] == Goblin.MemTable.get_multi(@mem_table, [:key], 1)
     assert :ok == Goblin.MemTable.insert(c.mem_table, [{:put, 2, :another_key, :another_val}], 3)
 
     assert [
@@ -53,32 +55,37 @@ defmodule Goblin.MemTableTest do
 
   test "recovers state on start", c do
     assert :ok == Goblin.MemTable.insert(c.mem_table, [{:put, 0, :key, :val}], 1)
-    assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
+    assert [{:value, {:key, 0, :val}}] == Goblin.MemTable.get_multi(@mem_table, [:key], 1)
 
     stop_db(__MODULE__)
     start_db(c.tmp_dir, name: __MODULE__)
 
-    assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
+    assert [{:value, {:key, 0, :val}}] == Goblin.MemTable.get_multi(@mem_table, [:key], 1)
   end
 
   test "memory is flushed to disk when exceeding memory limit", c do
-    data = trigger_flush(c.db)
-    {min_key, _} = Enum.min_by(data, &elem(&1, 0))
-    {max_key, _} = Enum.max_by(data, &elem(&1, 0))
+    data =
+      trigger_flush(c.db, c.tmp_dir)
+
+    triples =
+      data
+      |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+      |> TestHelper.uniq_by_value(&elem(&1, 0))
 
     assert_eventually do
       refute Goblin.MemTable.flushing?(c.mem_table)
     end
 
-    assert data ==
+    assert triples ==
              Goblin.DiskTables.stream_iterators(
                __MODULE__.DiskTables,
-               min_key,
-               max_key,
+               nil,
+               nil,
                length(data)
              )
              |> Goblin.Iterator.k_merge_stream()
-             |> Enum.map(fn {k, _s, v} -> {k, v} end)
+             |> Enum.to_list()
   end
 
   test "all versions of keys are flushed", c do
@@ -86,12 +93,12 @@ defmodule Goblin.MemTableTest do
     Goblin.put(c.db, :key1, :val1_2)
     Goblin.put(c.db, :key1, :val1_3)
     Goblin.put(c.db, :key2, :val2_1)
-    assert {:value, {:key1, 0, :val1_1}} == Goblin.MemTable.get(@mem_table, :key1, 1)
-    assert {:value, {:key1, 1, :val1_2}} == Goblin.MemTable.get(@mem_table, :key1, 2)
-    assert {:value, {:key1, 2, :val1_3}} == Goblin.MemTable.get(@mem_table, :key1, 3)
-    assert {:value, {:key2, 3, :val2_1}} == Goblin.MemTable.get(@mem_table, :key2, 4)
+    assert [{:value, {:key1, 0, :val1_1}}] == Goblin.MemTable.get_multi(@mem_table, [:key1], 1)
+    assert [{:value, {:key1, 1, :val1_2}}] == Goblin.MemTable.get_multi(@mem_table, [:key1], 2)
+    assert [{:value, {:key1, 2, :val1_3}}] == Goblin.MemTable.get_multi(@mem_table, [:key1], 3)
+    assert [{:value, {:key2, 3, :val2_1}}] == Goblin.MemTable.get_multi(@mem_table, [:key2], 4)
 
-    trigger_flush(c.db)
+    trigger_flush(c.db, c.tmp_dir)
 
     assert_eventually do
       assert [{:key1, 0, :val1_1}] ==
@@ -130,7 +137,7 @@ defmodule Goblin.MemTableTest do
 
     {_result, _log} =
       with_log(fn ->
-        trigger_flush(c.db)
+        trigger_flush(c.db, c.tmp_dir)
         assert_receive {:DOWN, _ref, :process, ^mem_table, :flush_failed}
       end)
   end

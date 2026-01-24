@@ -25,11 +25,11 @@ defmodule Goblin.Broker.ReadTx do
         ) ::
           Goblin.triple() | :not_found
   def get(mem_table, disk_tables, seq, key) do
-    case search_mem_table(mem_table, key, seq) do
-      {:value, triple} ->
+    case search_mem_table(mem_table, [key], seq) do
+      [{:value, triple}] ->
         triple
 
-      :not_found ->
+      [{:not_found, _key}] ->
         case search_disk_tables(disk_tables, [key], seq) do
           [] -> :not_found
           [triple] -> triple
@@ -52,7 +52,7 @@ defmodule Goblin.Broker.ReadTx do
         key, acc -> [key | acc]
       end)
 
-    multi_search_mem_table(mem_table, keys, seq)
+    search_mem_table(mem_table, keys, seq)
     |> Enum.split_with(fn
       {:not_found, _key} -> false
       _ -> true
@@ -90,11 +90,8 @@ defmodule Goblin.Broker.ReadTx do
     end)
   end
 
-  defp multi_search_mem_table(mem_table, keys, seq),
+  defp search_mem_table(mem_table, keys, seq),
     do: MemTable.get_multi(mem_table, keys, seq)
-
-  defp search_mem_table(mem_table, key, seq),
-    do: MemTable.get(mem_table, key, seq)
 
   defp search_disk_tables(disk_tables, keys, seq) do
     DiskTables.search_iterators(disk_tables, keys, seq)

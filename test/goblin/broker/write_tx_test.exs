@@ -83,7 +83,7 @@ defmodule Goblin.Broker.WriteTxTest do
   test "reads fallback to memtable if not in transaction writes", c do
     Goblin.put(c.db, :key, :val)
     tx = Goblin.Broker.WriteTx.new(@mem_table, @disk_tables)
-    assert {:value, {:key, 0, :val}} == Goblin.MemTable.get(@mem_table, :key, 1)
+    assert [{:value, {:key, 0, :val}}] == Goblin.MemTable.get_multi(@mem_table, [:key], 1)
     assert [] == Goblin.DiskTables.search_iterators(@disk_tables, [:key], 1)
     assert :val == Goblin.Tx.get(tx, :key)
     assert [{:key, :val}] == Goblin.Tx.get_multi(tx, [:key])
@@ -91,27 +91,36 @@ defmodule Goblin.Broker.WriteTxTest do
   end
 
   test "reads fallback to disk tables if not in transaction writes", c do
-    data = trigger_flush(c.db)
-    keys = Enum.map(data, &elem(&1, 0))
+    triples =
+      trigger_flush(c.db, c.tmp_dir)
+      |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+      |> TestHelper.uniq_by_value(&elem(&1, 0))
+
+    keys = Enum.map(triples, &elem(&1, 0))
 
     assert_eventually do
       refute Goblin.flushing?(c.db)
     end
 
     Enum.each(keys, fn key ->
-      assert :not_found == Goblin.MemTable.get(@mem_table, key, length(data))
+      assert [{:not_found, key}] == Goblin.MemTable.get_multi(@mem_table, [key], length(triples))
     end)
 
-    assert [_iterator] = Goblin.DiskTables.search_iterators(@disk_tables, keys, length(data))
+    assert [_iterator] = Goblin.DiskTables.search_iterators(@disk_tables, keys, length(triples))
 
     tx = Goblin.Broker.WriteTx.new(@mem_table, @disk_tables)
 
-    for {key, val} <- data do
+    triples
+    |> Enum.each(fn {key, _seq, val} ->
       assert val == Goblin.Tx.get(tx, key)
-    end
+    end)
 
-    assert data == Goblin.Tx.get_multi(tx, keys)
-    assert data == Goblin.Tx.select(tx) |> Enum.to_list()
+    assert Enum.map(triples, fn {key, _seq, val} -> {key, val} end) ==
+             Goblin.Tx.get_multi(tx, keys)
+
+    assert Enum.map(triples, fn {key, _seq, val} -> {key, val} end) ==
+             Goblin.Tx.select(tx) |> Enum.to_list()
   end
 
   test "can write tagged keys", c do
