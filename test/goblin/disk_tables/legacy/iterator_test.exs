@@ -58,7 +58,7 @@ defmodule Goblin.DiskTables.Legacy.IteratorTest do
   defp gen_new_disk_table(data \\ nil, next_file_f, opts) do
     opts =
       Keyword.merge(opts,
-        max_sst_size: 100 * 512,
+        max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
         bf_fpp: 0.01
       )
 

@@ -50,13 +50,16 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     opts = [
       level_key: 0,
       compress?: false,
-      max_sst_size: 100 * 512,
+      max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
       bf_fpp: 0.01,
       bf_bit_array_size: 100
     ]
 
-    triple1 = {1, 0, :crypto.strong_rand_bytes(1024)}
-    triple2 = {2, 1, :crypto.strong_rand_bytes(1024)}
+    triple1 =
+      {1, 0, :crypto.strong_rand_bytes(3 * Goblin.DiskTables.Encoder.sst_block_unit_size())}
+
+    triple2 =
+      {2, 1, :crypto.strong_rand_bytes(5 * Goblin.DiskTables.Encoder.sst_block_unit_size())}
 
     data = [triple1, triple2]
 

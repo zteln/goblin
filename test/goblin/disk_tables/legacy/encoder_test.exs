@@ -15,10 +15,12 @@ defmodule Goblin.DiskTables.Legacy.Legacy.EncoderTest do
     end
 
     test "can encode and decode large triple" do
-      triple = {:key, 0, :binary.copy("X", 600)}
-      assert {sst_block, 2} = Goblin.DiskTables.Legacy.Encoder.encode_sst_block(triple, false)
+      triple =
+        {:key, 0, :binary.copy("X", 2 * Goblin.DiskTables.Legacy.Encoder.sst_block_unit_size())}
 
-      assert {:ok, 2} ==
+      assert {sst_block, 3} = Goblin.DiskTables.Legacy.Encoder.encode_sst_block(triple, false)
+
+      assert {:ok, 3} ==
                Goblin.DiskTables.Legacy.Encoder.decode_sst_header_block(
                  :binary.part(sst_block, 0, Goblin.DiskTables.Legacy.Encoder.sst_header_size())
                )
@@ -27,7 +29,7 @@ defmodule Goblin.DiskTables.Legacy.Legacy.EncoderTest do
     end
 
     test "can compress data in SST block" do
-      triple = {:key, 0, :binary.copy("X", 600)}
+      triple = {:key, 0, :binary.copy("X", Goblin.DiskTables.Encoder.sst_block_unit_size())}
 
       assert {uncompressed_sst_block, 2} =
                Goblin.DiskTables.Legacy.Encoder.encode_sst_block(triple, false)

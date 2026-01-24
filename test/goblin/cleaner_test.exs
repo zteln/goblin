@@ -33,7 +33,7 @@ defmodule Goblin.CleanerTest do
     end
   end
 
-  @tag db_opts: [max_sst_size: 100 * 512]
+  @tag db_opts: [max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size()]
   test "disk tables are removed from disk tables server", c do
     data =
       for n <- 1..100 do

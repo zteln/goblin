@@ -88,6 +88,10 @@ defmodule Goblin.Broker.ReadTxTest do
     test "can get values associated with keys from disk tables", c do
       pairs = trigger_flush(c.db, c.tmp_dir)
 
+      assert_eventually do
+        refute Goblin.flushing?(c.db)
+      end
+
       triples =
         pairs
         |> Enum.with_index(fn {key, value}, idx -> {key, idx, value} end)

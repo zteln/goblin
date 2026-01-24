@@ -19,7 +19,7 @@ defmodule Goblin.CompactorTest do
     {:ok, [disk_table1, disk_table2]} =
       generate_disk_table(data,
         disk_tables_server: c.disk_tables,
-        max_sst_size: 100 * 512
+        max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size()
       )
 
     assert :ok == Goblin.Compactor.put(c.compactor, disk_table1)
@@ -46,7 +46,7 @@ defmodule Goblin.CompactorTest do
       generate_disk_table(data,
         level_key: 1,
         disk_tables_server: c.disk_tables,
-        max_sst_size: 100 * 512
+        max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size()
       )
 
     assert :ok ==
@@ -88,7 +88,7 @@ defmodule Goblin.CompactorTest do
     {:ok, [disk_table1, disk_table2]} =
       generate_disk_table(data,
         disk_tables_server: c.disk_tables,
-        max_sst_size: 100 * 512
+        max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size()
       )
 
     assert :ok == Goblin.Compactor.put(c.compactor, disk_table1)
@@ -130,7 +130,7 @@ defmodule Goblin.CompactorTest do
     {:ok, [disk_table1, disk_table2]} =
       generate_disk_table(data,
         disk_tables_server: c.disk_tables,
-        max_sst_size: 100 * 512
+        max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size()
       )
 
     {_result, _log} =

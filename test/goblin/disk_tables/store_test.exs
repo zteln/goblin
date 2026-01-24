@@ -6,7 +6,7 @@ defmodule Goblin.DiskTables.StoreTest do
   @disk_table_opts [
     level_key: 0,
     compress?: false,
-    max_sst_size: 100 * 512,
+    max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
     bf_fpp: 0.01
   ]
 
