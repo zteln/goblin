@@ -24,14 +24,14 @@ defmodule Goblin.DiskTables.StreamIterator do
       %{max_seq: max_seq} = iterator
 
       case read_next_sst_block(iterator.handler) do
-        {:ok, {_k, s, _v} = triple, handler} when max_seq != nil and s <= max_seq ->
+        {:ok, triple, handler} when is_nil(max_seq) ->
           {triple, %{iterator | handler: handler}}
 
-        {:ok, {_k, s, _v}, handler} when max_seq != nil and s > max_seq ->
+        {:ok, {_k, s, _v} = triple, handler} when s <= max_seq ->
+          {triple, %{iterator | handler: handler}}
+
+        {:ok, {_k, s, _v}, handler} when s > max_seq ->
           next(%{iterator | handler: handler})
-
-        {:ok, triple, handler} ->
-          {triple, %{iterator | handler: handler}}
 
         {:error, :end_of_sst} ->
           :ok
