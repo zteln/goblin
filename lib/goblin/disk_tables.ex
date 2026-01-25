@@ -214,5 +214,13 @@ defmodule Goblin.DiskTables do
   end
 
   defp tmp_file(file), do: "#{file}.tmp"
-  defp file_path(dir, number), do: Path.join(dir, "#{to_string(number)}#{@file_suffix}")
+
+  defp file_path(dir, number) do
+    name =
+      number
+      |> Integer.to_string(16)
+      |> String.pad_leading(20, "0")
+
+    Path.join(dir, "#{name}#{@file_suffix}")
+  end
 end

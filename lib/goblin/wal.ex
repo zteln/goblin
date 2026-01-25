@@ -5,7 +5,7 @@ defmodule Goblin.WAL do
   alias Goblin.Manifest
   alias Goblin.Cleaner
 
-  @log_file "wal.goblin"
+  @wal_suffix "wal"
 
   defstruct [
     :wal,
@@ -184,12 +184,12 @@ defmodule Goblin.WAL do
   end
 
   defp parse_file(file) do
-    [_, _, count_str] =
+    [hex, @wal_suffix] =
       file
       |> Path.basename()
       |> String.split(".", trim: true)
 
-    count = String.to_integer(count_str)
+    count = String.to_integer(hex, 16)
     {count, file}
   end
 
@@ -199,7 +199,7 @@ defmodule Goblin.WAL do
       |> List.keysort(0)
       |> Enum.reduce_while(0, fn
         {count, _file}, acc when acc < count ->
-          if File.exists?(Path.join(dir, "#{@log_file}.#{acc}")) do
+          if File.exists?(wal_filename(dir, acc)) do
             {:cont, acc + 1}
           else
             {:halt, acc}
@@ -209,6 +209,15 @@ defmodule Goblin.WAL do
           {:cont, acc + 1}
       end)
 
-    {new_count, Path.join(dir, "#{@log_file}.#{new_count}")}
+    {new_count, wal_filename(dir, new_count)}
+  end
+
+  defp wal_filename(dir, count) do
+    name =
+      count
+      |> Integer.to_string(16)
+      |> String.pad_leading(5, "0")
+
+    Path.join(dir, "#{name}.#{@wal_suffix}")
   end
 end

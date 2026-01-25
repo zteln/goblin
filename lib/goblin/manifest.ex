@@ -2,7 +2,7 @@ defmodule Goblin.Manifest do
   @moduledoc false
   use GenServer
 
-  @manifest_file "manifest.goblin"
+  @manifest_file "goblin.manifest"
   @manifest_max_size 1024 * 1024
 
   @type snapshot :: %{
