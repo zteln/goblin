@@ -30,25 +30,14 @@ defmodule Goblin.Cleaner do
 
   @spec inc(table()) :: :ok
   def inc(table) do
-    case :ets.lookup(table, :transactions) do
-      [] -> :ets.insert(table, {:transactions, 1})
-      [{_, n}] -> :ets.insert(table, {:transactions, n + 1})
-    end
-
+    :ets.update_counter(table, :transactions, {2, 1}, {:transactions, 0})
     :ok
   end
 
   @spec deinc(table(), Goblin.server()) :: :ok
   def deinc(table, server) do
-    case :ets.lookup(table, :transactions) do
-      [{_, 1}] ->
-        :ets.delete(table, :transactions)
-        GenServer.cast(server, :clean_up)
-
-      [{_, n}] ->
-        :ets.insert(table, {:transactions, n - 1})
-    end
-
+    result = :ets.update_counter(table, :transactions, {2, -1}, {:transactions, 0})
+    if result <= 0, do: GenServer.cast(server, :clean_up)
     :ok
   end
 
@@ -85,6 +74,11 @@ defmodule Goblin.Cleaner do
   defp handle_clean(state) do
     case :ets.lookup(state.table, :transactions) do
       [] ->
+        with :ok <- clean_buffer(state.clean_buffer, state.disk_tables_server) do
+          {:ok, %{state | clean_buffer: []}}
+        end
+
+      [{_, n}] when n <= 0 ->
         with :ok <- clean_buffer(state.clean_buffer, state.disk_tables_server) do
           {:ok, %{state | clean_buffer: []}}
         end
