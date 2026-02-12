@@ -1,97 +1,86 @@
 defmodule Goblin.ManifestTest do
   use ExUnit.Case, async: true
-  use TestHelper
+  use Goblin.TestHelper
+  use Mimic
+  alias Goblin.Manifest
   import ExUnit.CaptureLog
 
-  @moduletag :tmp_dir
   setup_db()
 
-  test "can update database state", c do
-    assert %{disk_tables: [], wal_rotations: [], wal: _wal, count: 0, seq: 0} =
-             Goblin.Manifest.snapshot(c.manifest, [
-               :disk_tables,
-               :wal,
-               :wal_rotations,
-               :count,
-               :seq
-             ])
+  test "durably tracks metadata across restarts", c do
+    # can update state
+    assert :ok ==
+             Manifest.update(c.manifest,
+               add_disk_tables: ["foo", "bar"],
+               remove_disk_tables: ["baz"],
+               add_wals: ["foo.wal", "bar.wal"],
+               remove_wals: ["baz.wal"],
+               create_wal: "wal.wal",
+               seq: 999
+             )
 
-    assert :ok == Goblin.Manifest.log_wal(c.manifest, "new_wal")
-    assert %{wal: Path.join(c.tmp_dir, "new_wal")} == Goblin.Manifest.snapshot(c.manifest, [:wal])
+    # can get correct state
+    assert %{
+             disk_tables: disk_tables,
+             wal_rotations: wal_rotations,
+             wal: wal,
+             seq: 999,
+             count: 2
+           } = Manifest.snapshot(c.manifest, [:disk_tables, :wal_rotations, :wal, :seq, :count])
 
-    assert :ok == Goblin.Manifest.log_rotation(c.manifest, "wal1", "wal2")
+    assert Enum.sort(["foo", "bar", "foo.wal", "bar.wal", "wal.wal"]) ==
+             Enum.map([wal] ++ wal_rotations ++ disk_tables, &Path.basename/1)
+             |> Enum.sort()
 
-    assert %{wal_rotations: [Path.join(c.tmp_dir, "wal1")], wal: Path.join(c.tmp_dir, "wal2")} ==
-             Goblin.Manifest.snapshot(c.manifest, [:wal, :wal_rotations])
+    # can get same state after restart
+    stop_db(name: __MODULE__)
+    %{manifest: manifest} = start_db(data_dir: c.tmp_dir, name: __MODULE__)
 
-    assert :ok == Goblin.Manifest.log_flush(c.manifest, ["sst1"], "wal1")
+    assert %{
+             disk_tables: disk_tables,
+             wal_rotations: wal_rotations,
+             wal: wal,
+             seq: 999,
+             count: 2
+           } = Manifest.snapshot(manifest, [:disk_tables, :wal_rotations, :wal, :seq, :count])
 
-    assert %{wal_rotations: [], disk_tables: [Path.join(c.tmp_dir, "sst1")]} ==
-             Goblin.Manifest.snapshot(c.manifest, [:disk_tables, :wal_rotations])
-
-    assert :ok == Goblin.Manifest.log_sequence(c.manifest, 5)
-    assert %{seq: 5} == Goblin.Manifest.snapshot(c.manifest, [:seq])
-
-    assert :ok == Goblin.Manifest.log_compaction(c.manifest, ["sst1"], ["sst2"])
-
-    assert %{disk_tables: [Path.join(c.tmp_dir, "sst2")]} ==
-             Goblin.Manifest.snapshot(c.manifest, [:disk_tables])
+    assert Enum.sort(["foo", "bar", "foo.wal", "bar.wal", "wal.wal"]) ==
+             Enum.map([wal] ++ wal_rotations ++ disk_tables, &Path.basename/1)
+             |> Enum.sort()
   end
 
-  @tag db_opts: [manifest_max_size: 512]
-  test "automatically rotates when exceeding size limit", c do
-    %{file: file} = :sys.get_state(c.manifest)
-    %{size: size} = File.stat!(file)
+  test "failing to append to log stops the server", %{manifest: manifest} do
+    Process.monitor(manifest)
+    Process.flag(:trap_exit, true)
 
-    [seq] =
-      Stream.iterate(1, &(&1 + 1))
-      |> Stream.transform(size, fn n, acc ->
-        Goblin.Manifest.log_sequence(c.manifest, n)
-        %{size: size} = File.stat!(file)
+    Goblin.Manifest.Log
+    |> expect(:append, fn _log, _terms ->
+      {:error, :failed_to_append}
+    end)
 
-        if size < acc do
-          {:halt, size}
-        else
-          {[n], size}
-        end
-      end)
-      |> Stream.take(-1)
-      |> Enum.to_list()
+    Goblin.Manifest.Log
+    |> allow(self(), manifest)
 
-    assert %{seq: seq + 1} == Goblin.Manifest.snapshot(c.manifest, [:seq])
+    with_log(fn ->
+      assert {:error, :failed_to_append} = Manifest.update(manifest, seq: 1)
+      assert_receive {:DOWN, _ref, :process, ^manifest, :failed_to_append}
+    end)
   end
 
-  test "recovers previous manifest if it exists", c do
-    assert %{seq: 0} == Goblin.Manifest.snapshot(c.manifest, [:seq])
-    %{file: file} = :sys.get_state(c.manifest)
-    File.cp!(file, "#{file}.0")
-    Goblin.Manifest.log_sequence(c.manifest, 1)
+  test "recovers from interrupted rotation", c do
+    # setup interrupted rotation
+    Manifest.update(c.manifest, seq: 999)
+    %{log_file: log_file} = :sys.get_state(c.manifest)
+    File.cp!(log_file, "#{log_file}.rotation")
 
-    {manifest, _log} =
-      with_log(fn ->
-        stop_db(__MODULE__)
-        %{manifest: manifest} = start_db(c.tmp_dir, name: __MODULE__)
-        manifest
-      end)
+    # change state
+    Manifest.update(c.manifest, seq: 1000)
 
-    assert %{seq: 0} == Goblin.Manifest.snapshot(manifest, [:seq])
-  end
+    # restart database
+    stop_db(name: __MODULE__)
+    %{manifest: manifest} = start_db(data_dir: c.tmp_dir, name: __MODULE__)
 
-  test "only cleans up Goblin generated files on start", c do
-    other_file = Path.join(c.tmp_dir, "foo")
-    File.touch!(other_file)
-
-    goblin_file = Path.join(c.tmp_dir, "bar")
-    File.touch!(goblin_file)
-
-    Goblin.Manifest.log_compaction(c.manifest, [goblin_file], [])
-
-    stop_db(__MODULE__)
-    start_db(c.tmp_dir, name: __MODULE__)
-
-    assert_eventually do
-      assert File.exists?(other_file)
-      refute File.exists?(goblin_file)
-    end
+    # recover previous state
+    assert %{seq: 999} == Manifest.snapshot(manifest, [:seq])
   end
 end

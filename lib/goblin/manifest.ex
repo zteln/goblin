@@ -2,157 +2,134 @@ defmodule Goblin.Manifest do
   @moduledoc false
   use GenServer
 
-  @manifest_file "goblin.manifest"
-  @manifest_max_size 1024 * 1024
+  import Goblin.Registry, only: [via: 2]
 
-  @type snapshot :: %{
-          disk_tables: [Path.t()],
-          wal_rotations: [Path.t()],
-          wal: Path.t() | nil,
-          count: non_neg_integer(),
-          seq: Goblin.seq_no(),
-          manifest: {String.t(), Path.t()},
-          trash: [Path.t()]
-        }
+  alias __MODULE__.{
+    Log,
+    Snapshot
+  }
+
+  @log_file "manifest.goblin"
+  @default_max_log_size 10 * 1024 * 1024
 
   defstruct [
-    :name,
-    :file,
-    :dir,
-    :max_size,
-    :snapshot,
-    :waiting,
-    size: 0
+    :log,
+    :log_file,
+    :data_dir,
+    :max_log_size,
+    log_size: 0,
+    snapshot: %Snapshot{}
   ]
+
+  @type state :: %__MODULE__{}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    name = opts[:name]
+    registry = opts[:registry]
+    name = opts[:name] || __MODULE__
+    max_log_size = opts[:max_log_size] || @default_max_log_size
 
     args = [
-      local_name: opts[:local_name] || name,
-      db_dir: opts[:db_dir],
-      manifest_max_size: opts[:manifest_max_size]
+      name: name,
+      max_log_size: max_log_size,
+      data_dir: opts[:data_dir]
     ]
 
-    GenServer.start_link(__MODULE__, args, name: name)
+    GenServer.start_link(__MODULE__, args, name: via(registry, name))
   end
 
-  @spec log_wal(Goblin.server(), Path.t()) :: :ok | {:error, term()}
-  def log_wal(manifest, wal) do
-    GenServer.call(manifest, {:log_edit, {:current_wal, trim_dir(wal)}})
+  @doc "Updates the manifest snapshot, appending any updates to the log."
+  @spec update(Goblin.server(), keyword()) :: :ok | {:error, term()}
+  def update(manifest, opts) do
+    updates =
+      opts
+      |> Keyword.take([
+        :add_disk_tables,
+        :remove_disk_tables,
+        :add_wals,
+        :remove_wals,
+        :create_wal,
+        :seq
+      ])
+      |> Enum.reduce([], fn
+        {:add_disk_tables, disk_tables}, acc ->
+          Enum.map(disk_tables, &{:disk_table_added, &1}) ++ acc
+
+        {:remove_disk_tables, disk_tables}, acc ->
+          Enum.map(disk_tables, &{:disk_table_removed, &1}) ++ acc
+
+        {:add_wals, wals}, acc ->
+          Enum.map(wals, &{:wal_added, &1}) ++ acc
+
+        {:remove_wals, wals}, acc ->
+          Enum.map(wals, &{:wal_removed, &1}) ++ acc
+
+        {:create_wal, wal}, acc ->
+          [{:wal_created, wal} | acc]
+
+        {:seq, seq}, acc ->
+          [{:seq, seq} | acc]
+      end)
+      |> Enum.map(fn
+        {:seq, seq} -> {:seq, seq}
+        {action, file} -> {action, trim_dir(file)}
+      end)
+
+    GenServer.call(manifest, {:update, updates})
   end
 
-  @spec log_rotation(Goblin.server(), Path.t(), Path.t()) ::
-          :ok | {:error, term()}
-  def log_rotation(manifest, wal_rotation, wal_current) do
-    edits = [{:wal_added, trim_dir(wal_rotation)}, {:current_wal, trim_dir(wal_current)}]
-    GenServer.call(manifest, {:log_edit, edits})
-  end
-
-  @spec log_flush(Goblin.server(), [Path.t()], Path.t()) ::
-          :ok | {:error, term()}
-  def log_flush(manifest, disk_tables, wal) do
-    added_edits = Enum.map(disk_tables, &{:disk_table_added, trim_dir(&1)})
-    removed_edit = {:wal_removed, trim_dir(wal)}
-    GenServer.call(manifest, {:log_edit, [removed_edit | added_edits]})
-  end
-
-  @spec log_sequence(Goblin.server(), Goblin.seq_no()) :: :ok | {:error, term()}
-  def log_sequence(manifest, seq) do
-    GenServer.call(manifest, {:log_edit, {:seq, seq}})
-  end
-
-  @spec log_compaction(Goblin.server(), [Path.t()], [Path.t()]) ::
-          :ok | {:error, term()}
-  def log_compaction(manifest, removed_disk_tables, added_disk_tables) do
-    removed_edits = Enum.map(removed_disk_tables, &{:disk_table_removed, trim_dir(&1)})
-    added_edits = Enum.map(added_disk_tables, &{:disk_table_added, trim_dir(&1)})
-    GenServer.call(manifest, {:log_edit, added_edits ++ removed_edits})
-  end
-
-  @spec snapshot(Goblin.server(), [
-          :disk_tables | :wal_rotations | :wal | :count | :seq | :manifest
-        ]) ::
-          snapshot()
-  def snapshot(manifest, keys \\ []) do
+  @doc "Fetches the current manifest snapshot."
+  @spec snapshot(
+          Goblin.server(),
+          list(:disk_tables | :wal | :wal_rotations | :seq | :count | :copy)
+        ) ::
+          map()
+  def snapshot(manifest, keys) do
+    keys = Enum.filter(keys, &(&1 in [:disk_tables, :wal, :wal_rotations, :seq, :count, :copy]))
     GenServer.call(manifest, {:snapshot, keys})
   end
 
   @impl GenServer
   def init(args) do
-    name = args[:local_name]
-    db_dir = args[:db_dir]
-    file = Path.join(db_dir, @manifest_file)
-    max_size = args[:manifest_max_size] || @manifest_max_size
+    data_dir = args[:data_dir]
+    name = args[:name]
 
-    if File.exists?(rotated_file(file)) do
-      recover_rotated_manifest(file)
-    end
+    log_file = Path.join(data_dir, @log_file)
 
-    with :ok <- open_manifest(name, file),
-         {:ok, snapshot} <- fetch_snapshot(name),
-         :ok <- clean_up(db_dir, clean_snapshot_trash(snapshot, db_dir)) do
-      {:ok,
-       %__MODULE__{
-         name: name,
-         file: file,
-         dir: db_dir,
-         max_size: max_size,
-         snapshot: snapshot,
-         size: Map.get(File.stat!(file), :size)
-       }}
-    else
-      {:error, reason} -> {:stop, reason}
+    if File.exists?(rotation_file(log_file)),
+      do: File.rename(rotation_file(log_file), log_file)
+
+    case Log.open(name, log_file) do
+      {:ok, log} ->
+        %{size: log_size} = File.stat!(log_file)
+
+        {:ok,
+         %__MODULE__{
+           log: log,
+           log_file: log_file,
+           data_dir: data_dir,
+           log_size: log_size,
+           max_log_size: args[:max_log_size]
+         }, {:continue, :recover_snapshot}}
+
+      {:error, reason} ->
+        {:stop, reason, %__MODULE__{}}
     end
   end
 
   @impl GenServer
-  def handle_call({:log_edit, edit}, _from, state) do
-    case append_to_manifest(state.name, edit) do
-      {:ok, size} ->
-        snapshot = apply_edit(state.snapshot, edit)
-        state = %{state | size: state.size + size, snapshot: snapshot}
-        {:reply, :ok, state, {:continue, :maybe_rotate}}
-
-      {:error, reason} = error ->
-        {:stop, reason, error, state}
-    end
-  end
-
-  def handle_call({:snapshot, keys}, _from, state) do
-    %{dir: dir} = state
-
-    manifest_copy =
-      if :manifest in keys do
-        now = DateTime.utc_now(:second) |> DateTime.to_iso8601(:basic)
-        suffix = "#{now}.copy"
-        manifest_copy = "#{state.file}.#{suffix}"
-        File.cp!(state.file, manifest_copy)
-        {suffix, manifest_copy}
-      end
-
+  def handle_continue(:recover_snapshot, state) do
     snapshot =
-      state.snapshot
-      |> Map.put(:manifest, manifest_copy)
-      |> Map.take(keys)
-      |> Map.replace_lazy(:wal, &(&1 && Path.join(dir, &1)))
-      |> Map.replace_lazy(:disk_tables, fn disk_tables ->
-        disk_tables
-        |> MapSet.to_list()
-        |> Enum.map(&Path.join(dir, &1))
-      end)
-      |> Map.replace_lazy(:wal_rotations, fn wal_rotations ->
-        wal_rotations
-        |> Enum.map(&Path.join(dir, &1))
+      Log.stream_log!(state.log)
+      |> Enum.reduce(state.snapshot, fn update, acc ->
+        Snapshot.update(acc, update)
       end)
 
-    {:reply, snapshot, state}
+    {:noreply, %{state | snapshot: snapshot}}
   end
 
-  @impl GenServer
-  def handle_continue(:maybe_rotate, %{size: size, max_size: max_size} = state)
-      when size >= max_size do
+  def handle_continue(:maybe_rotate, %{log_size: log_size, max_log_size: max_log_size} = state)
+      when log_size > max_log_size do
     case rotate(state) do
       {:ok, state} -> {:noreply, state}
       {:error, reason} -> {:stop, reason, state}
@@ -161,143 +138,80 @@ defmodule Goblin.Manifest do
 
   def handle_continue(:maybe_rotate, state), do: {:noreply, state}
 
-  defp clean_up(dir, snapshot) do
-    tracked_files =
-      List.flatten([
-        snapshot.wal,
-        MapSet.to_list(snapshot.disk_tables),
-        snapshot.wal_rotations
-      ])
+  @impl GenServer
+  def handle_call({:update, updates}, _from, state) do
+    case Log.append(state.log, updates) do
+      {:ok, size} ->
+        snapshot = Snapshot.update(state.snapshot, updates)
 
-    File.ls!(dir)
-    |> Enum.reject(&(&1 == @manifest_file))
-    |> Enum.reject(&(&1 in tracked_files))
-    |> Enum.filter(&(&1 in snapshot.trash))
-    |> Enum.map(&Path.join(dir, &1))
-    |> Enum.each(&File.rm!/1)
+        {:reply, :ok, %{state | snapshot: snapshot, log_size: state.log_size + size},
+         {:continue, :maybe_rotate}}
+
+      {:error, reason} = error ->
+        {:stop, reason, error, state}
+    end
   end
 
+  def handle_call({:snapshot, keys}, _from, state) do
+    %{snapshot: snapshot, data_dir: data_dir} = state
+
+    copy =
+      if :copy in keys do
+        suffix = ".#{System.unique_integer([:positive])}"
+
+        file_copies =
+          Enum.map([@log_file, snapshot.wal | snapshot.wal_rotations], fn file ->
+            src = Path.join(data_dir, file)
+            dst = Path.join(data_dir, "#{file}#{suffix}")
+            File.cp!(src, dst)
+            dst
+          end)
+
+        {suffix, file_copies}
+      end
+
+    snapshot =
+      snapshot
+      |> Map.put(:copy, copy)
+      |> Map.take(keys)
+      |> Map.replace_lazy(:wal, &(&1 && Path.join(data_dir, &1)))
+      |> Map.replace_lazy(:disk_tables, fn disk_tables ->
+        disk_tables
+        |> MapSet.to_list()
+        |> Enum.map(&Path.join(data_dir, &1))
+      end)
+      |> Map.replace_lazy(:wal_rotations, fn wal_rotations ->
+        wal_rotations
+        |> Enum.map(&Path.join(data_dir, &1))
+      end)
+
+    {:reply, snapshot, state}
+  end
+
+  @spec rotate(state()) :: {:ok, state()} | {:error, term()}
   defp rotate(state) do
-    with :ok <- close_manifest(state.name),
-         :ok <- File.rename(state.file, rotated_file(state.file)),
-         :ok <- open_manifest(state.name, state.file),
-         snapshot <- clean_snapshot_trash(state.snapshot, state.dir),
-         {:ok, size} <- append_to_manifest(state.name, {:snapshot, snapshot}),
-         :ok <- File.rm(rotated_file(state.file)) do
-      size = Map.get(File.stat!(state.file), :size) + size
-      {:ok, %{state | size: size, snapshot: snapshot}}
+    %{log: log, log_file: file, snapshot: snapshot, data_dir: data_dir} = state
+    snapshot = clean_tracked(snapshot, data_dir)
+
+    with :ok <- Log.close(log),
+         :ok <- File.rename(file, rotation_file(file)),
+         {:ok, log} <- Log.open(log, file),
+         {:ok, size} <- Log.append(log, {:snapshot, snapshot}),
+         :ok <- File.rm(rotation_file(file)) do
+      %{size: log_size} = File.stat!(file)
+      {:ok, %{state | log_size: log_size + size, snapshot: snapshot}}
     end
   end
 
-  defp open_manifest(name, file) do
-    opts = [name: name, file: ~c"#{file}"]
-
-    case :disk_log.open(opts) do
-      {:ok, _log} -> :ok
-      {:repaired, _log, _recovered, _bad_bytes} -> :ok
-      error -> error
-    end
+  @spec clean_tracked(Snapshot.t(), Path.t()) :: Snapshot.t()
+  defp clean_tracked(snapshot, data_dir) do
+    tracked = Enum.filter(snapshot.tracked, &File.exists?(Path.join(data_dir, &1)))
+    %{snapshot | tracked: tracked}
   end
 
-  defp append_to_manifest(name, edits) when is_list(edits) do
-    with :ok <- :disk_log.log_terms(name, edits),
-         :ok <- :disk_log.sync(name) do
-      {:ok, Enum.reduce(edits, 0, &(&2 + :erlang.external_size(&1)))}
-    end
-  end
+  @spec rotation_file(Path.t()) :: Path.t()
+  defp rotation_file(file), do: "#{file}.rotation"
 
-  defp append_to_manifest(name, edit), do: append_to_manifest(name, [edit])
-
-  defp close_manifest(name) do
-    :disk_log.close(name)
-  end
-
-  defp recover_rotated_manifest(file) do
-    File.rename(rotated_file(file), file)
-  end
-
-  defp fetch_snapshot(name) do
-    case :disk_log.chunk(name, :start, 1) do
-      {:error, _reason} = error ->
-        error
-
-      :eof ->
-        snapshot = new_snapshot()
-
-        with {:ok, _size} <- append_to_manifest(name, {:snapshot, snapshot}) do
-          {:ok, snapshot}
-        end
-
-      {continuation, [{:snapshot, snapshot}]} ->
-        update_snapshot(name, continuation, snapshot)
-    end
-  end
-
-  defp update_snapshot(name, continuation, snapshot) do
-    case :disk_log.chunk(name, continuation, 1) do
-      :eof ->
-        {:ok, snapshot}
-
-      {continuation, [edit]} ->
-        snapshot = apply_edit(snapshot, edit)
-        update_snapshot(name, continuation, snapshot)
-    end
-  end
-
-  defp clean_snapshot_trash(snapshot, dir) do
-    trash = Enum.filter(snapshot.trash, &File.exists?(Path.join(dir, &1)))
-    %{snapshot | trash: trash}
-  end
-
-  defp apply_edit(snapshot, []), do: snapshot
-
-  defp apply_edit(snapshot, [edit | edits]) do
-    snapshot
-    |> apply_edit(edit)
-    |> apply_edit(edits)
-  end
-
-  defp apply_edit(snapshot, {:disk_table_added, disk_table}) do
-    disk_tables = MapSet.put(snapshot.disk_tables, disk_table)
-    %{snapshot | disk_tables: disk_tables, count: snapshot.count + 1}
-  end
-
-  defp apply_edit(snapshot, {:disk_table_removed, disk_table}) do
-    disk_tables = MapSet.delete(snapshot.disk_tables, disk_table)
-    trash = [disk_table | snapshot.trash]
-    %{snapshot | disk_tables: disk_tables, trash: trash}
-  end
-
-  defp apply_edit(snapshot, {:wal_added, wal}) do
-    wal_rotations = [wal | snapshot.wal_rotations]
-    %{snapshot | wal_rotations: wal_rotations}
-  end
-
-  defp apply_edit(snapshot, {:wal_removed, wal}) do
-    wal_rotations = Enum.reject(snapshot.wal_rotations, &(&1 == wal))
-    trash = [wal | snapshot.trash]
-    %{snapshot | wal_rotations: wal_rotations, trash: trash}
-  end
-
-  defp apply_edit(snapshot, {:current_wal, wal}) do
-    %{snapshot | wal: wal}
-  end
-
-  defp apply_edit(snapshot, {:seq, seq}) do
-    %{snapshot | seq: seq}
-  end
-
-  defp new_snapshot,
-    do: %{
-      disk_tables: MapSet.new(),
-      wal_rotations: [],
-      wal: nil,
-      count: 0,
-      seq: 0,
-      trash: []
-    }
-
-  defp rotated_file(file), do: "#{file}.0"
-
+  @spec trim_dir(Path.t()) :: Path.t()
   defp trim_dir(name), do: Path.basename(name)
 end
