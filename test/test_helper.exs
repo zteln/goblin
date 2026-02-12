@@ -1,4 +1,4 @@
-defmodule TestHelper do
+defmodule Goblin.TestHelper do
   @moduledoc false
   require ExUnit.Assertions
   require ExUnit.Callbacks
@@ -22,16 +22,16 @@ defmodule TestHelper do
           )
 
         if Map.get(c, :start_db?, true),
-          do: start_db(c.tmp_dir, opts),
+          do: start_db([data_dir: c.tmp_dir] ++ opts),
           else: :ok
       end
     end
   end
 
-  def start_db(db_dir, opts \\ []) do
+  def start_db(opts \\ []) do
     db =
       ExUnit.Callbacks.start_link_supervised!(
-        {Goblin, [db_dir: db_dir] ++ opts},
+        {Goblin, opts},
         id: opts[:name]
       )
 
@@ -42,33 +42,24 @@ defmodule TestHelper do
     ] = Supervisor.which_children(db)
 
     [
-      {Goblin.Broker, broker, _, _},
-      {Goblin.MemTable, mem_table, _, _},
+      {Goblin.MemTables, mem_tables, _, _},
       {Goblin.DiskTables, disk_tables, _, _},
-      {Goblin.Compactor, compactor, _, _},
-      {Goblin.WAL, wal, _, _},
-      {Goblin.Cleaner, cleaner, _, _},
+      {Goblin.Broker, broker, _, _},
       {Goblin.Manifest, manifest, _, _}
     ] = Supervisor.which_children(proc_sup)
-
-    # Wait for mem_table to finish recovering...
-    :sys.get_status(mem_table)
 
     %{
       db: db,
       registry: registry,
       broker: broker,
-      mem_table: mem_table,
+      mem_tables: mem_tables,
       disk_tables: disk_tables,
-      compactor: compactor,
-      wal: wal,
-      cleaner: cleaner,
       manifest: manifest
     }
   end
 
-  def stop_db(id) do
-    ExUnit.Callbacks.stop_supervised!(id)
+  def stop_db(opts \\ []) do
+    ExUnit.Callbacks.stop_supervised!(opts[:name])
   end
 
   def trigger_flush(db, dir) do
@@ -131,8 +122,8 @@ defmodule TestHelper do
     end
   end
 
-  def assert_eventually(_f, timeout, _step) when timeout <= 0,
-    do: ExUnit.Assertions.assert(false, "Timed out")
+  def assert_eventually(f, timeout, _step) when timeout <= 0,
+    do: f.()
 
   def assert_eventually(f, timeout, step) do
     try do
@@ -149,5 +140,5 @@ Mimic.copy(Goblin.DiskTables)
 Mimic.copy(Goblin.DiskTables.DiskTable)
 Mimic.copy(Goblin.DiskTables.Handler)
 Mimic.copy(Goblin.DiskTables.Legacy.Encoder)
-Mimic.copy(Goblin.MemTable)
+Mimic.copy(Goblin.Manifest.Log)
 ExUnit.start()
