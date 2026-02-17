@@ -33,7 +33,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
 
   test "is iterable", c do
     assert %Goblin.DiskTables.StreamIterator{} =
-             iterator = Goblin.DiskTables.StreamIterator.new(c.disk_table.file)
+             iterator = Goblin.DiskTables.StreamIterator.new(c.disk_table)
 
     assert %Goblin.DiskTables.StreamIterator{} =
              iterator = Goblin.Iterable.init(iterator)
@@ -54,7 +54,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
 
   test "does not iterate past provided sequence number", c do
     assert %Goblin.DiskTables.StreamIterator{} =
-             iterator = Goblin.DiskTables.StreamIterator.new(c.disk_table.file, 25)
+             iterator = Goblin.DiskTables.StreamIterator.new(c.disk_table, 25)
 
     assert %Goblin.DiskTables.StreamIterator{} =
              iterator = Goblin.Iterable.init(iterator)
@@ -80,7 +80,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
     end)
 
     assert %Goblin.DiskTables.StreamIterator{} =
-             iterator = Goblin.DiskTables.StreamIterator.new(c.disk_table.file, 25)
+             iterator = Goblin.DiskTables.StreamIterator.new(c.disk_table, 25)
 
     assert %Goblin.DiskTables.StreamIterator{} =
              iterator = Goblin.Iterable.init(iterator)
@@ -114,7 +114,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
     {:ok, [disk_table]} =
       Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
 
-    iterator = Goblin.DiskTables.StreamIterator.new(disk_table.file) |> Goblin.Iterable.init()
+    iterator = Goblin.DiskTables.StreamIterator.new(disk_table) |> Goblin.Iterable.init()
 
     Enum.reduce(data, iterator, fn triple, acc ->
       assert {^triple, acc} = Goblin.Iterable.next(acc)

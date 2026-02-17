@@ -1,7 +1,7 @@
 defmodule Goblin.DiskTables.Legacy.Encoder do
   @moduledoc false
   @sst_block_id "GOBLINBLOCK00000"
-  @sst_block_unit_size 4096
+  @sst_block_unit_size 1024
   @sst_header_size byte_size(<<@sst_block_id::binary, 0::integer-16>>)
 
   @separator "GOBLINSEP0000000"
@@ -214,7 +214,5 @@ defmodule Goblin.DiskTables.Legacy.Encoder do
   defp encode(term, true), do: :erlang.term_to_binary(term, [:compressed])
   defp encode(term, false), do: :erlang.term_to_binary(term)
   defp decode(data), do: :erlang.binary_to_term(data)
-
-  defp no_blocks(size),
-    do: div(size + @sst_block_unit_size - 1, @sst_block_unit_size)
+  defp no_blocks(size), do: div(size + @sst_block_unit_size - 1, @sst_block_unit_size)
 end

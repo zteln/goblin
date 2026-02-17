@@ -203,7 +203,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       |> Goblin.Iterable.init()
 
     data
-    |> TestHelper.uniq_by_value(&elem(&1, 0))
+    |> Goblin.TestHelper.uniq_by_value(&elem(&1, 0))
     |> Enum.reduce(iterator, fn triple, acc ->
       assert {^triple, acc} = Goblin.Iterable.next(acc)
       acc

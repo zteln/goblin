@@ -113,6 +113,35 @@ defmodule Goblin.DiskTables.DiskTable do
     end
   end
 
+  @spec within_min_max?(t(), Goblin.db_key()) :: boolean()
+  def within_min_max?(disk_table, key) do
+    %{key_range: {min, max}} = disk_table
+    min <= key and key <= max
+  end
+
+  @spec bloom_filter_member?(t(), Goblin.db_key()) :: boolean()
+  def bloom_filter_member?(disk_table, key) do
+    BloomFilter.member?(disk_table.bloom_filter, key)
+  end
+
+  @spec within_bounds?(t(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: boolean()
+  def within_bounds?(_disk_table, nil, nil), do: true
+
+  def within_bounds?(disk_table, min, nil) do
+    %{key_range: {_, max}} = disk_table
+    min <= max
+  end
+
+  def within_bounds?(disk_table, nil, max) do
+    %{key_range: {min, _}} = disk_table
+    min <= max
+  end
+
+  def within_bounds?(disk_table, min, max) do
+    %{key_range: {disk_table_min, disk_table_max}} = disk_table
+    min <= disk_table_max and disk_table_min <= max
+  end
+
   defp append_sst_block(disk_table, handler, {key, seq, _value} = triple, compress?) do
     {sst_block, no_blocks} = Encoder.encode_sst_block(triple, compress?)
 
@@ -184,7 +213,7 @@ defmodule Goblin.DiskTables.DiskTable do
   defp verify_crc(_handler, finish, finish, _target_crc, _crc), do: {:error, :invalid_crc}
 
   defp verify_crc(handler, start, finish, target_crc, crc) do
-    inc = min(finish - start, 4096)
+    inc = min(finish - start, Encoder.sst_block_unit_size())
 
     with {:ok, chunk} <- Handler.read(handler, start, inc) do
       crc = :erlang.crc32(crc, chunk)
@@ -282,5 +311,34 @@ defmodule Goblin.DiskTables.DiskTable do
 
   defp set_size(disk_table, size) do
     %{disk_table | size: size}
+  end
+end
+
+defimpl Goblin.Queryable, for: Goblin.DiskTables.DiskTable do
+  alias Goblin.DiskTables.{DiskTable, BinarySearchIterator, StreamIterator}
+
+  def has_key?(disk_table, key) do
+    DiskTable.within_min_max?(disk_table, key) and
+      DiskTable.bloom_filter_member?(disk_table, key)
+  end
+
+  def search(disk_table, keys, seq) do
+    keys =
+      Enum.filter(keys, fn key ->
+        DiskTable.within_min_max?(disk_table, key) and
+          DiskTable.bloom_filter_member?(disk_table, key)
+      end)
+
+    case keys do
+      [] -> []
+      _ -> BinarySearchIterator.new(disk_table, keys, seq)
+    end
+  end
+
+  def stream(disk_table, min, max, seq) do
+    case DiskTable.within_bounds?(disk_table, min, max) do
+      true -> StreamIterator.new(disk_table, seq)
+      false -> []
+    end
   end
 end

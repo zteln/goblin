@@ -6,7 +6,15 @@ defmodule Goblin.TestHelper do
 
   defmacro __using__(_) do
     quote do
-      import unquote(__MODULE__)
+      import unquote(__MODULE__),
+        only: [
+          setup_db: 0,
+          setup_db: 1,
+          start_db: 1,
+          stop_db: 1,
+          assert_eventually: 1,
+          assert_eventually: 3
+        ]
     end
   end
 
@@ -48,6 +56,8 @@ defmodule Goblin.TestHelper do
       {Goblin.Manifest, manifest, _, _}
     ] = Supervisor.which_children(proc_sup)
 
+    _new_ref = Goblin.Broker.SnapshotRegistry.new_ref(Module.concat(opts[:name], Broker))
+
     %{
       db: db,
       registry: registry,
@@ -62,19 +72,20 @@ defmodule Goblin.TestHelper do
     ExUnit.Callbacks.stop_supervised!(opts[:name])
   end
 
-  def trigger_flush(db, dir) do
-    dir_count = File.ls!(dir) |> length()
+  def trigger_flush(opts, key_generator \\ &StreamData.term/0) do
+    %{wal: wal} = Goblin.Manifest.snapshot(opts[:manifest], [:wal])
 
-    StreamData.term()
+    key_generator.()
     |> Stream.chunk_every(50)
     |> Stream.transform(nil, fn keys, acc ->
       values = StreamData.term() |> Enum.take(length(keys))
       pairs = Enum.zip(keys, values)
+      %{wal: new_wal} = Goblin.Manifest.snapshot(opts[:manifest], [:wal])
 
-      if length(File.ls!(dir)) > dir_count do
+      if new_wal != wal do
         {:halt, acc}
       else
-        Goblin.put_multi(db, pairs)
+        Goblin.put_multi(opts[:db], pairs)
         {pairs, acc}
       end
     end)
@@ -89,24 +100,6 @@ defmodule Goblin.TestHelper do
       end
     end)
     |> Enum.reverse()
-  end
-
-  def generate_disk_table(data, opts \\ []) do
-    next_file_f = fn ->
-      file = Goblin.DiskTables.new_file(opts[:disk_tables_server])
-      {"#{file}.tmp", file}
-    end
-
-    %{opts: disk_tables_server_opts} = :sys.get_state(opts[:disk_tables_server])
-
-    opts =
-      Keyword.merge(disk_tables_server_opts,
-        level_key: opts[:level_key] || 0,
-        compress?: false,
-        max_sst_size: opts[:max_sst_size] || disk_tables_server_opts[:max_sst_size]
-      )
-
-    Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
   end
 
   defmacro assert_eventually(opts \\ [], do: block) do
@@ -141,4 +134,5 @@ Mimic.copy(Goblin.DiskTables.DiskTable)
 Mimic.copy(Goblin.DiskTables.Handler)
 Mimic.copy(Goblin.DiskTables.Legacy.Encoder)
 Mimic.copy(Goblin.Manifest.Log)
+Mimic.copy(Goblin.MemTables.WAL)
 ExUnit.start()

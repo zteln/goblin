@@ -7,9 +7,10 @@ defmodule Goblin.DiskTables.StreamIterator do
     :max_seq
   ]
 
-  @spec new(Path.t(), Goblin.seq_no() | nil) :: Goblin.Iterable.t()
-  def new(file, seq \\ nil) do
-    %__MODULE__{file: file, max_seq: seq}
+  @spec new(Goblin.DiskTables.DiskTable.t(), Goblin.seq_no() | nil) ::
+          Goblin.Iterable.t()
+  def new(disk_table, seq \\ nil) do
+    %__MODULE__{file: disk_table.file, max_seq: seq}
   end
 
   defimpl Goblin.Iterable do
