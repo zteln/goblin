@@ -10,7 +10,7 @@ defmodule Goblin do
 
       {:ok, db} = Goblin.start_link(
         name: MyApp.DB,
-        db_dir: "/path/to/db"
+        data_dir: "/path/to/db"
       )
 
   ## Basic operations
@@ -51,7 +51,7 @@ defmodule Goblin do
   ## Configuration
 
   - `name` - Registered name for the database supervisor (optional)
-  - `db_dir` - Directory path for storing database files (required)
+  - `data_dir` - Directory path for storing database files (required)
   - `flush_level_file_limit` - How many files in flush level before compaction is triggered (default: 4)
   - `mem_limit` - How many bytes are stored in memory before flushing (default: 64 * 1024 * 1024)
   - `level_base_size` - How many bytes are stored in level 1 before compaction is triggered (default: 256 * 1024 * 1024)
@@ -66,22 +66,21 @@ defmodule Goblin do
   - **Broker** - Transactions management
   - **MemTable** - Memory buffer server
   - **DiskTables** - Disk table management
-  - **Compactor** - Compaction server
-  - **Cleaner** - Safe file removal server
-  - **WAL** - Write-ahead log server
   - **Manifest** - Tracks database state and file metadata
   """
   use Supervisor
   import Goblin.Registry, only: [via: 2]
 
   @typedoc false
-  @type level_key :: non_neg_integer()
+  @type level_key :: -1 | non_neg_integer()
   @typedoc false
   @type seq_no :: non_neg_integer()
   @typedoc false
+  @type pair :: {Goblin.db_key(), Goblin.db_value()}
+  @typedoc false
   @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
   @typedoc false
-  @type server :: module() | {:via, Registry, {module(), module()}}
+  @type server :: pid() | module() | {:via, Registry, {module(), module()}}
   @typedoc false
   @type write_term :: {:put, seq_no(), db_key(), db_value()} | {:remove, seq_no(), db_key()}
 
@@ -129,8 +128,8 @@ defmodule Goblin do
   def transaction(db, f) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
-    broker = via(registry, child_name(namespace, Broker))
-    Goblin.Broker.write_transaction(broker, f)
+    broker = child_name(namespace, Broker)
+    Goblin.Broker.write_transaction(broker, via(registry, broker), f)
   end
 
   @doc """
@@ -297,11 +296,9 @@ defmodule Goblin do
   def read(db, f) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
-    cleaner = child_name(namespace, Cleaner)
-    cleaner_server = via(registry, cleaner)
-    mem_table = child_name(namespace, MemTable)
-    disk_tables = child_name(namespace, DiskTables)
-    Goblin.Broker.read_transaction(cleaner, cleaner_server, mem_table, disk_tables, f)
+    broker = child_name(namespace, Broker)
+    mem_tables = child_name(namespace, MemTables)
+    Goblin.Broker.read_transaction(broker, via(registry, broker), mem_tables, f)
   end
 
   @doc """
@@ -423,11 +420,20 @@ defmodule Goblin do
       Goblin.select(db) |> Enum.to_list()
       # => [{1, "one"}, {2, "two"}, {3, "three"}, {4, "four"}, {5, "five"}]
   """
-  @spec select(Supervisor.supervisor(), keyword()) :: Enumerable.t({db_key(), db_value()})
+  @spec select(Supervisor.supervisor(), keyword()) ::
+          Enumerable.t({db_key(), db_value()} | {db_tag(), db_key(), db_value()})
   def select(db, opts \\ []) do
-    read(db, fn tx ->
-      Goblin.Tx.select(tx, Keyword.take(opts, [:min, :max, :tag]))
-    end)
+    namespace = namespace(db)
+    registry = child_name(namespace, Registry)
+    broker = child_name(namespace, Broker)
+    mem_tables = child_name(namespace, MemTables)
+
+    Goblin.Broker.select(
+      broker,
+      via(registry, broker),
+      mem_tables,
+      Keyword.take(opts, [:min, :max, :tag])
+    )
   end
 
   @doc """
@@ -480,8 +486,8 @@ defmodule Goblin do
   def compacting?(db) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
-    compactor = via(registry, child_name(namespace, Compactor))
-    Goblin.Compactor.compacting?(compactor)
+    disk_tables = child_name(namespace, DiskTables)
+    Goblin.DiskTables.compacting?(via(registry, disk_tables))
   end
 
   @doc """
@@ -499,8 +505,8 @@ defmodule Goblin do
   def flushing?(db) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
-    mem_table_server = via(registry, child_name(namespace, MemTable))
-    Goblin.MemTable.flushing?(mem_table_server)
+    mem_tables = child_name(namespace, MemTables)
+    Goblin.MemTables.flushing?(via(registry, mem_tables))
   end
 
   @doc """
@@ -568,7 +574,7 @@ defmodule Goblin do
   ## Options
 
   - `:name` - Registered name for the supervisor (optional)
-  - `:db_dir` - Directory path for database files (required)
+  - `:data_dir` - Directory path for database files (required)
   - `:flush_level_file_limit` - How many files in flush level before compaction is triggered (default: 4)
   - `:mem_limit` - How many bytes are stored in memory before flushing (default: 64 * 1024 * 1024)
   - `:level_base_size` - How many bytes are stored in level 1 before compaction is triggered (default: 256 * 1024 * 1024)
@@ -585,7 +591,7 @@ defmodule Goblin do
 
       {:ok, db} = Goblin.start_link(
         name: MyApp.DB,
-        db_dir: "/var/lib/myapp/db",
+        data_dir: "/var/lib/myapp/db",
         flush_level_file_limit: 4,
         mem_limit: 64 * 1024 * 1024,
         level_base_size: 256 * 1024 * 1024,
@@ -595,9 +601,9 @@ defmodule Goblin do
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    db_dir = opts[:db_dir] || raise "no db_dir provided."
+    data_dir = opts[:data_dir] || raise "no data_dir provided."
     name = opts[:name] || __MODULE__
-    File.exists?(db_dir) || File.mkdir_p!(db_dir)
+    File.exists?(data_dir) || File.mkdir_p!(data_dir)
     Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
