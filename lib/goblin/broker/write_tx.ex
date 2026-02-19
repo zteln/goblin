@@ -1,53 +1,28 @@
 defmodule Goblin.Broker.WriteTx do
   @moduledoc false
-  alias Goblin.Broker
-  alias Goblin.MemTable
-  alias Goblin.DiskTables
+  alias Goblin.{
+    Broker,
+    Broker.SnapshotRegistry,
+    Queryable
+  }
 
   defstruct [
     :seq,
-    :mem_table,
-    :disk_tables,
+    :snapshot_ref,
+    :snapshot_registry,
+    :max_level_key,
     writes: []
   ]
 
-  defmodule Iterator do
-    @moduledoc false
-
-    defstruct [
-      :writes
-    ]
-
-    defimpl Goblin.Iterable do
-      def init(iterator), do: iterator
-      def deinit(_iterator), do: :ok
-
-      def next(%{writes: []}), do: :ok
-
-      def next(iterator) do
-        [next | writes] = iterator.writes
-        {next, %{iterator | writes: writes}}
-      end
-    end
-  end
-
-  @spec new(Goblin.MemTable.Store.t(), Goblin.DiskTables.Store.t()) :: Goblin.Tx.t()
-  def new(mem_table, disk_tables) do
-    seq = MemTable.commit_seq(mem_table)
-    %__MODULE__{seq: seq, mem_table: mem_table, disk_tables: disk_tables}
-  end
-
-  @spec iterator([Goblin.write_term()]) :: Goblin.Iterable.t()
-  def iterator(writes) do
-    writes =
-      writes
-      |> Enum.map(fn
-        {:put, seq, key, value} -> {key, seq, value}
-        {:remove, seq, key} -> {key, seq, :"$goblin_tombstone"}
-      end)
-      |> Enum.sort_by(fn {key, seq, _value} -> {key, -seq} end)
-
-    %Iterator{writes: writes}
+  @doc "Returns a new Tx struct that can both read and write."
+  @spec new(:ets.table(), reference(), Goblin.seq_no(), Goblin.level_key()) :: Goblin.Tx.t()
+  def new(snapshot_registry, snapshot_ref, seq, max_level_key) do
+    %__MODULE__{
+      snapshot_registry: snapshot_registry,
+      snapshot_ref: snapshot_ref,
+      seq: seq,
+      max_level_key: max_level_key
+    }
   end
 
   defimpl Goblin.Tx do
@@ -55,7 +30,6 @@ defmodule Goblin.Broker.WriteTx do
       key =
         case opts[:tag] do
           nil -> key
-          :all -> raise "The tag `:all` is reserved."
           tag -> {:"$goblin_tag", tag, key}
         end
 
@@ -67,7 +41,6 @@ defmodule Goblin.Broker.WriteTx do
       tagger =
         case opts[:tag] do
           nil -> fn key -> key end
-          :all -> raise "The tag `:all` is reserved."
           tag -> fn key -> {:"$goblin_tag", tag, key} end
         end
 
@@ -81,7 +54,6 @@ defmodule Goblin.Broker.WriteTx do
       key =
         case opts[:tag] do
           nil -> key
-          :all -> raise "The tag `:all` is reserved."
           tag -> {:"$goblin_tag", tag, key}
         end
 
@@ -93,7 +65,6 @@ defmodule Goblin.Broker.WriteTx do
       tagger =
         case opts[:tag] do
           nil -> fn key -> key end
-          :all -> raise "The tag `:all` is reserved."
           tag -> fn key -> {:"$goblin_tag", tag, key} end
         end
 
@@ -110,23 +81,27 @@ defmodule Goblin.Broker.WriteTx do
           tag -> {:"$goblin_tag", tag, key}
         end
 
-      case Enum.find(tx.writes, fn
-             {:put, _seq, ^key, _value} -> true
-             {:remove, _seq, ^key} -> true
-             _ -> false
-           end) do
-        nil ->
-          case Broker.ReadTx.get(tx.mem_table, tx.disk_tables, tx.seq, key) do
-            :not_found -> opts[:default]
-            {_key, _seq, :"$goblin_tombstone"} -> opts[:default]
-            {_key, _seq, value} -> value
-          end
+      tx_table =
+        Enum.map(tx.writes, fn
+          {:put, seq, key, value} -> {key, seq, value}
+          {:remove, seq, key} -> {key, seq, :"$goblin_tombstone"}
+        end)
 
-        {:put, _seq, _key, value} ->
-          value
+      tables_f = fn level_key ->
+        [
+          tx_table
+          | SnapshotRegistry.filter_tables(
+              tx.snapshot_registry,
+              tx.snapshot_ref,
+              level_key: level_key,
+              filter: &Queryable.has_key?(&1, key)
+            )
+        ]
+      end
 
-        {:remove, _seq, _key} ->
-          opts[:default]
+      case Broker.ReadTx.search(tables_f, [key], tx.seq, tx.max_level_key) do
+        [] -> opts[:default]
+        [{_key, value}] -> value
       end
     end
 
@@ -137,53 +112,28 @@ defmodule Goblin.Broker.WriteTx do
           tag -> Enum.map(keys, &{:"$goblin_tag", tag, &1})
         end
 
-      {found, keys} =
-        Enum.reduce_while(tx.writes, {[], keys}, fn
-          _, {_, []} = acc ->
-            {:halt, acc}
-
-          {:put, _seq, key, value}, {found, keys} = acc ->
-            case Enum.split_with(keys, &(&1 == key)) do
-              {[], _keys} ->
-                {:cont, acc}
-
-              {_, keys} ->
-                case key do
-                  {:"$goblin_tag", _tag, key} -> {:cont, {[{key, value} | found], keys}}
-                  key -> {:cont, {[{key, value} | found], keys}}
-                end
-            end
-
-          {:remove, _seq, key}, {found, keys} = acc ->
-            case Enum.split_with(keys, &(&1 == key)) do
-              {[], _keys} -> {:cont, acc}
-              {_, keys} -> {:cont, {found, keys}}
-            end
+      tx_table =
+        Enum.map(tx.writes, fn
+          {:put, seq, key, value} -> {key, seq, value}
+          {:remove, seq, key} -> {key, seq, :"$goblin_tombstone"}
         end)
 
-      rest =
-        Broker.ReadTx.get_multi(tx.mem_table, tx.disk_tables, tx.seq, keys)
-        |> Enum.flat_map(fn
-          {_key, _seq, :"$goblin_tombstone"} -> []
-          {{:"$goblin_tag", _tag, key}, _seq, val} -> [{key, val}]
-          {key, _seq, val} -> [{key, val}]
-        end)
+      tables_f = fn level_key ->
+        [
+          tx_table
+          | SnapshotRegistry.filter_tables(
+              tx.snapshot_registry,
+              tx.snapshot_ref,
+              level_key: level_key,
+              filter: fn table ->
+                Enum.any?(keys, &Queryable.has_key?(table, &1))
+              end
+            )
+        ]
+      end
 
-      (found ++ rest)
+      Broker.ReadTx.search(tables_f, keys, tx.seq, tx.max_level_key)
       |> List.keysort(0)
-    end
-
-    def select(tx, opts) do
-      min = opts[:min]
-      max = opts[:max]
-      tag = opts[:tag]
-
-      [
-        Broker.WriteTx.iterator(tx.writes),
-        MemTable.iterator(tx.mem_table, tx.seq)
-        | DiskTables.stream_iterators(tx.disk_tables, min, max, tx.seq)
-      ]
-      |> Broker.ReadTx.select(min, max, tag)
     end
   end
 end

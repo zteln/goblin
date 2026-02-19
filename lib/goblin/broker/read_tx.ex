@@ -1,102 +1,66 @@
 defmodule Goblin.Broker.ReadTx do
   @moduledoc false
-  alias Goblin.Broker
-  alias Goblin.MemTable
-  alias Goblin.DiskTables
-  alias Goblin.Iterator
+  alias Goblin.{
+    Broker,
+    Broker.SnapshotRegistry,
+    Iterator,
+    Queryable
+  }
 
   defstruct [
     :seq,
-    :mem_table,
-    :disk_tables
+    :snapshot_ref,
+    :snapshot_registry,
+    :max_level_key
   ]
 
-  @spec new(Goblin.MemTable.Store.t(), Goblin.DiskTables.Store.t()) :: Goblin.Tx.t()
-  def new(mem_table, disk_tables) do
-    seq = MemTable.commit_seq(mem_table)
-    %__MODULE__{seq: seq, mem_table: mem_table, disk_tables: disk_tables}
+  @doc "Returns a new Tx struct for read-only transactions."
+  @spec new(:ets.table(), reference(), Goblin.seq_no(), Goblin.level_key()) ::
+          Goblin.Tx.t()
+  def new(snapshot_registry, snapshot_ref, seq, max_level_key) do
+    %__MODULE__{
+      snapshot_registry: snapshot_registry,
+      snapshot_ref: snapshot_ref,
+      seq: seq,
+      max_level_key: max_level_key
+    }
   end
 
-  @spec get(
-          Goblin.MemTable.Store.t(),
-          Goblin.DiskTables.Store.t(),
+  @doc "Performs a search through tables retrieved via provided callback for multiple keys."
+  @spec search(
+          (Goblin.level_key() -> list(Queryable.t())),
+          list(Goblin.db_key()),
           Goblin.seq_no(),
-          Goblin.db_key()
+          Goblin.level_key()
         ) ::
-          Goblin.triple() | :not_found
-  def get(mem_table, disk_tables, seq, key) do
-    case search_mem_table(mem_table, [key], seq) do
-      [{:value, triple}] ->
-        triple
+          list(Goblin.pair())
+  def search(tables_f, keys, seq, max_level_key, level_key \\ -1, acc \\ [])
 
-      [{:not_found, _key}] ->
-        case search_disk_tables(disk_tables, [key], seq) do
-          [] -> :not_found
-          [triple] -> triple
-        end
-    end
+  def search(_tables_f, [], _seq, _max_level_key, _level, acc) do
+    acc
+    |> Enum.map(fn
+      {{:"$goblin_tag", _tag, key}, val} -> {key, val}
+      {key, val} -> {key, val}
+    end)
+    |> List.keysort(0)
   end
 
-  @spec get_multi(Goblin.MemTable.Store.t(), Goblin.DiskTables.Store.t(), Goblin.seq_no(), [
-          Goblin.db_key()
-        ]) :: [
-          Goblin.triple()
-        ]
-  def get_multi(mem_table, disk_tables, seq, keys) do
-    keys =
-      keys
-      |> Enum.sort(:desc)
-      |> Enum.reduce([], fn
-        key, [] -> [key]
-        key1, [key2 | _] = acc when key1 == key2 -> acc
-        key, acc -> [key | acc]
+  def search(tables_f, _keys, seq, max_level_key, level, acc)
+      when level > max_level_key,
+      do: search(tables_f, [], seq, max_level_key, level, acc)
+
+  def search(tables_f, keys, seq, max_level_key, level_key, acc) do
+    {acc, keys} =
+      Iterator.k_merge_stream(fn ->
+        Enum.map(tables_f.(level_key), &Queryable.search(&1, keys, seq))
+      end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+      |> Enum.uniq()
+      |> Enum.reduce({acc, keys}, fn {key, _seq, val}, {acc, keys} ->
+        {[{key, val} | acc], Enum.reject(keys, &(&1 == key))}
       end)
 
-    search_mem_table(mem_table, keys, seq)
-    |> Enum.split_with(fn
-      {:not_found, _key} -> false
-      _ -> true
-    end)
-    |> then(fn {found, not_found} ->
-      keys = Enum.map(not_found, &elem(&1, 1))
-
-      found =
-        Enum.map(found, fn
-          {:value, triple} -> triple
-        end)
-
-      found ++ search_disk_tables(disk_tables, keys, seq)
-    end)
-  end
-
-  def select(iterators, min, max, tag) do
-    iterators
-    |> Goblin.Iterator.k_merge_stream(min: min, max: max)
-    |> Stream.flat_map(fn
-      {{:"$goblin_tag", ^tag, key}, _seq, value} ->
-        [{tag, key, value}]
-
-      {{:"$goblin_tag", stored_tag, key}, _seq, value} when tag == :all ->
-        [{stored_tag, key, value}]
-
-      {{:"$goblin_tag", _tag, _key}, _seq, _value} when is_nil(tag) ->
-        []
-
-      {key, _seq, value} when is_nil(tag) or tag == :all ->
-        [{key, value}]
-
-      _ ->
-        []
-    end)
-  end
-
-  defp search_mem_table(mem_table, keys, seq),
-    do: MemTable.get_multi(mem_table, keys, seq)
-
-  defp search_disk_tables(disk_tables, keys, seq) do
-    DiskTables.search_iterators(disk_tables, keys, seq)
-    |> Iterator.k_merge_stream()
-    |> Enum.to_list()
+    search(tables_f, keys, seq, max_level_key, level_key + 1, acc)
   end
 
   defimpl Goblin.Tx do
@@ -123,10 +87,18 @@ defmodule Goblin.Broker.ReadTx do
           tag -> {:"$goblin_tag", tag, key}
         end
 
-      case Broker.ReadTx.get(tx.mem_table, tx.disk_tables, tx.seq, key) do
-        :not_found -> opts[:default]
-        {_key, _seq, :"$goblin_tombstone"} -> opts[:default]
-        {_key, _seq, value} -> value
+      tables_f = fn level_key ->
+        SnapshotRegistry.filter_tables(
+          tx.snapshot_registry,
+          tx.snapshot_ref,
+          level_key: level_key,
+          filter: &Queryable.has_key?(&1, key)
+        )
+      end
+
+      case Broker.ReadTx.search(tables_f, [key], tx.seq, tx.max_level_key) do
+        [] -> opts[:default]
+        [{_key, value}] -> value
       end
     end
 
@@ -137,25 +109,18 @@ defmodule Goblin.Broker.ReadTx do
           tag -> Enum.map(keys, &{:"$goblin_tag", tag, &1})
         end
 
-      Broker.ReadTx.get_multi(tx.mem_table, tx.disk_tables, tx.seq, keys)
-      |> Enum.flat_map(fn
-        {_key, _seq, :"$goblin_tombstone"} -> []
-        {{:"$goblin_tag", _tag, key}, _seq, val} -> [{key, val}]
-        {key, _seq, val} -> [{key, val}]
-      end)
-      |> List.keysort(0)
-    end
+      tables_f = fn level_key ->
+        SnapshotRegistry.filter_tables(
+          tx.snapshot_registry,
+          tx.snapshot_ref,
+          level_key: level_key,
+          filter: fn table ->
+            Enum.any?(keys, &Queryable.has_key?(table, &1))
+          end
+        )
+      end
 
-    def select(tx, opts) do
-      min = opts[:min]
-      max = opts[:max]
-      tag = opts[:tag]
-
-      [
-        MemTable.iterator(tx.mem_table, tx.seq)
-        | DiskTables.stream_iterators(tx.disk_tables, min, max, tx.seq)
-      ]
-      |> Broker.ReadTx.select(min, max, tag)
+      Broker.ReadTx.search(tables_f, keys, tx.seq, tx.max_level_key)
     end
   end
 end
