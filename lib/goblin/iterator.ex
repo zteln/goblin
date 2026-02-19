@@ -1,24 +1,13 @@
-defprotocol Goblin.Iterable do
-  @moduledoc false
-  @type t :: t()
-
-  @spec init(t()) :: t()
-  def init(iter)
-
-  @spec deinit(t()) :: :ok
-  def deinit(iter)
-
-  @spec next(t()) :: t() | :ok
-  def next(iter)
-end
-
 defmodule Goblin.Iterator do
   @moduledoc false
 
-  @spec linear_stream(Goblin.Iterable.t()) :: Enumerable.t(Goblin.triple())
-  def linear_stream(iterator) do
+  @spec linear_stream((-> Goblin.Iterable.t())) :: Enumerable.t(Goblin.triple())
+  def linear_stream(init_f) do
     Stream.resource(
-      fn -> Goblin.Iterable.init(iterator) end,
+      fn ->
+        init_f.()
+        |> Goblin.Iterable.init()
+      end,
       fn iterator ->
         case iterate(iterator) do
           :ok -> {:halt, nil}
@@ -29,11 +18,13 @@ defmodule Goblin.Iterator do
     )
   end
 
-  @spec k_merge_stream([Goblin.Iterable.t()], keyword()) :: Enumerable.t(Goblin.triple())
-  def k_merge_stream(iterators, opts \\ []) do
+  @spec k_merge_stream((-> [Goblin.Iterable.t()]), keyword()) ::
+          Enumerable.t(Goblin.triple())
+  def k_merge_stream(init_f, opts \\ []) do
     Stream.resource(
       fn ->
-        Enum.flat_map(iterators, fn iterator ->
+        init_f.()
+        |> Enum.flat_map(fn iterator ->
           iterator = Goblin.Iterable.init(iterator)
 
           case iterate(iterator) do
@@ -49,6 +40,8 @@ defmodule Goblin.Iterator do
           {iterator, _} -> Goblin.Iterable.deinit(iterator)
           _ -> :ok
         end)
+
+        opts[:after] && opts[:after].()
       end
     )
   end
