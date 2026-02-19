@@ -105,7 +105,13 @@ defmodule Goblin.DiskTables do
   def handle_call({:add_new, disk_tables}, _from, state) do
     levels =
       Enum.reduce(disk_tables, state.levels, fn disk_table, acc ->
-        Broker.register_table(state.broker, disk_table.file, disk_table, &File.rm(&1.file))
+        Broker.register_table(
+          state.broker,
+          disk_table.file,
+          disk_table.level_key,
+          disk_table,
+          &File.rm(&1.file)
+        )
 
         Map.update(acc, disk_table.level_key, [disk_table], &[disk_table | &1])
       end)
@@ -148,7 +154,14 @@ defmodule Goblin.DiskTables do
       {:ok, disk_tables} ->
         levels =
           Enum.reduce(disk_tables, state.levels, fn disk_table, acc ->
-            Broker.register_table(state.broker, disk_table.file, disk_table, &File.rm(&1.file))
+            Broker.register_table(
+              state.broker,
+              disk_table.file,
+              disk_table.level_key,
+              disk_table,
+              &File.rm(&1.file)
+            )
+
             Map.update(acc, disk_table.level_key, [disk_table], &[disk_table | &1])
           end)
 
@@ -183,7 +196,6 @@ defmodule Goblin.DiskTables do
     :ok
   end
 
-  @spec maybe_compact(state(), list(non_neg_integer())) :: state()
   defp maybe_compact(state, []), do: state
 
   defp maybe_compact(state, [level_key | level_keys]) do
@@ -196,7 +208,6 @@ defmodule Goblin.DiskTables do
     end
   end
 
-  @spec compact(state(), non_neg_integer()) :: state()
   defp compact(state, source_level_key) do
     me = self()
 
@@ -289,12 +300,6 @@ defmodule Goblin.DiskTables do
     %{state | compacting: ref, levels: levels}
   end
 
-  @spec find_overlapping(
-          list(DiskTable.t()),
-          {Goblin.db_key(), Goblin.db_key()},
-          list(DiskTable.t())
-        ) ::
-          list(DiskTable.t())
   defp find_overlapping(targets, key_range, acc \\ [])
   defp find_overlapping([], _key_range, acc), do: acc
 
@@ -308,7 +313,6 @@ defmodule Goblin.DiskTables do
     end
   end
 
-  @spec exceeding_level_limit?(list(DiskTable.t()), Goblin.level_key(), keyword()) :: boolean()
   defp exceeding_level_limit?(level, @flush_level, opts) do
     Enum.count(level) >= opts[:flush_level_file_limit]
   end
@@ -318,8 +322,6 @@ defmodule Goblin.DiskTables do
       opts[:level_base_size] * opts[:level_size_multiplier] ** (level_key - 1)
   end
 
-  @spec recover_disk_tables(list(Path.t()), keyword(), list(DiskTable.t())) ::
-          {:ok, list(DiskTable.t())} | {:error, term()}
   defp recover_disk_tables(disk_table_names, opts, acc \\ [])
   defp recover_disk_tables([], _opts, acc), do: {:ok, acc}
 
@@ -342,7 +344,6 @@ defmodule Goblin.DiskTables do
     end
   end
 
-  @spec migrate(Path.t(), keyword()) :: {:ok, DiskTable.t()} | {:error, term()}
   defp migrate(name, opts) do
     next_file_f = fn -> {tmp_file(name), name} end
 
@@ -364,10 +365,8 @@ defmodule Goblin.DiskTables do
     end
   end
 
-  @spec tmp_file(Path.t()) :: Path.t()
   defp tmp_file(file), do: "#{file}.tmp"
 
-  @spec file_path(Path.t(), non_neg_integer()) :: Path.t()
   defp file_path(dir, number) do
     name =
       number
