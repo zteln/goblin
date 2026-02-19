@@ -66,7 +66,7 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.put_multi(tx, [user1: %{name: "Alice"}, user2: %{name: "Bob"}])
   """
-  @spec put_multi(t(), [{Goblin.db_key(), Goblin.db_value()}]) :: t()
+  @spec put_multi(t(), list({Goblin.db_key(), Goblin.db_value()})) :: t()
   def put_multi(tx, pairs, opts \\ [])
 
   @doc """
@@ -108,7 +108,7 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.remove_multi(tx, [:user1, :user2])
   """
-  @spec remove_multi(t(), [Goblin.db_key()], keyword()) :: t()
+  @spec remove_multi(t(), list(Goblin.db_key()), keyword()) :: t()
   def remove_multi(tx, keys, opts \\ [])
 
   @doc """
@@ -151,30 +151,7 @@ defprotocol Goblin.Tx do
 
       [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.get_multi(tx, [:user1, :user2])
   """
-  @spec get_multi(t(), [Goblin.db_key()], keyword()) :: [{Goblin.db_key(), Goblin.db_value()}]
+  @spec get_multi(t(), list(Goblin.db_key()), keyword()) ::
+          list({Goblin.db_key(), Goblin.db_value()})
   def get_multi(tx, keys, opts \\ [])
-
-  @doc """
-  Retrieves a stream over key-value pairs sorted in ascending order by key.
-
-  ## Parameters
-
-  - `tx` - The transaction struct
-  - `opts` - A keyword list with two options:
-    - `:min` - The minimum key to range over
-    - `:max` - The maximum key to range over
-    - `:tag` - Tag to include, `:all` returns a stream over all data (tagged as well as non-tagged data)
-
-  ## Examples
-
-      [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.select(tx) |> Enum.to_list()
-
-      [user1: %{name: "Alice"}] = Goblin.Tx.select(tx, max: :user1) |> Enum.to_list()
-
-      [user2: %{name: "Bob"}] = Goblin.Tx.select(tx, min: :user2) |> Enum.to_list()
-
-      [user1: %{name: "Alice"}, user2: %{name: "Bob"}] = Goblin.Tx.select(tx, min: :user1, max: :user2) |> Enum.to_list()
-  """
-  @spec select(t(), keyword()) :: Enumerable.t({Goblin.db_key(), Goblin.db_value()})
-  def select(tx, opts \\ [])
 end
