@@ -2,34 +2,30 @@ defmodule Goblin.Export do
   @moduledoc false
   alias Goblin.Manifest
 
-  @spec export(Path.t(), Goblin.server()) :: {:ok, Path.t()} | {:error, term()}
-  def export(dir, manifest_server) do
+  @spec export(Path.t(), GenServer.server()) :: {:ok, Path.t()} | {:error, term()}
+  def export(dir, manifest) do
     %{
       disk_tables: disk_tables,
-      wal: wal,
-      wal_rotations: wal_rotations,
-      manifest: {suffix, manifest}
+      copy: {suffix, copies}
     } =
-      Manifest.snapshot(manifest_server, [
+      Manifest.snapshot(manifest, [
         :disk_tables,
-        :wal,
-        :wal_rotations,
-        :manifest
+        :copy
       ])
 
     tar_name = tar_name(dir)
 
     tar_filelist =
-      List.flatten([disk_tables, wal, wal_rotations, manifest])
+      List.flatten(disk_tables ++ copies)
       |> Enum.map(&tar_file(&1, suffix))
 
     case create_tar(tar_name, tar_filelist) do
       :ok ->
-        File.rm!(manifest)
+        Enum.each(copies, &File.rm!/1)
         {:ok, tar_name}
 
       error ->
-        File.rm!(manifest)
+        Enum.each(copies, &File.rm!/1)
         File.rm!(tar_name)
         error
     end
