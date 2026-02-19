@@ -12,6 +12,7 @@ defmodule Goblin.BloomFilter do
   @default_fpp 0.01
   @type t :: %__MODULE__{}
 
+  @doc "Generates a new scalable Bloom filter struct."
   @spec new(keyword()) :: t()
   def new(opts) do
     fpp = opts[:fpp] || @default_fpp
@@ -20,6 +21,7 @@ defmodule Goblin.BloomFilter do
     %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
   end
 
+  @doc "Put a new key in the Bloom filter."
   @spec put(t(), Goblin.db_key()) :: t()
   def put(bf, key) do
     [current_bit_array | bit_arrays] = bf.bit_arrays
@@ -36,6 +38,7 @@ defmodule Goblin.BloomFilter do
     end
   end
 
+  @doc "Check whether `key` might be a member of the provided Bloom filter."
   @spec member?(t(), term()) :: boolean()
   def member?(bf, key) do
     Enum.any?(bf.bit_arrays, &BitArray.member?(&1, key))

@@ -188,7 +188,6 @@ defmodule Goblin.Manifest do
     {:reply, snapshot, state}
   end
 
-  @spec rotate(state()) :: {:ok, state()} | {:error, term()}
   defp rotate(state) do
     %{log: log, log_file: file, snapshot: snapshot, data_dir: data_dir} = state
     snapshot = clean_tracked(snapshot, data_dir)
@@ -203,15 +202,12 @@ defmodule Goblin.Manifest do
     end
   end
 
-  @spec clean_tracked(Snapshot.t(), Path.t()) :: Snapshot.t()
   defp clean_tracked(snapshot, data_dir) do
     tracked = Enum.filter(snapshot.tracked, &File.exists?(Path.join(data_dir, &1)))
     %{snapshot | tracked: tracked}
   end
 
-  @spec rotation_file(Path.t()) :: Path.t()
   defp rotation_file(file), do: "#{file}.rotation"
 
-  @spec trim_dir(Path.t()) :: Path.t()
   defp trim_dir(name), do: Path.basename(name)
 end

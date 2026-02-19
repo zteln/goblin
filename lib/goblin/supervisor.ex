@@ -2,8 +2,6 @@ defmodule Goblin.Supervisor do
   @moduledoc false
   use Supervisor
 
-  import Goblin.Registry, only: [via: 2]
-
   @default_flush_level_file_limit 4
   @default_mem_limit 64 * 1024 * 1024
   @default_level_base_size 256 * 1024 * 1024
@@ -18,7 +16,7 @@ defmodule Goblin.Supervisor do
   def init(args) do
     namespace = args[:namespace]
     registry = args[:registry]
-    db_dir = args[:db_dir]
+    data_dir = args[:data_dir]
     flush_level_file_limit = args[:flush_level_file_limit] || @default_flush_level_file_limit
     mem_limit = args[:mem_limit] || @default_mem_limit
     level_base_size = args[:level_base_size] || @default_level_base_size
@@ -26,79 +24,51 @@ defmodule Goblin.Supervisor do
     max_sst_size = args[:max_sst_size] || div(level_base_size, level_size_multiplier)
     pub_sub = args[:pub_sub]
 
-    manifest_name = Goblin.child_name(namespace, Manifest)
-    cleaner_name = Goblin.child_name(namespace, Cleaner)
-    wal_name = Goblin.child_name(namespace, WAL)
-    compactor_name = Goblin.child_name(namespace, Compactor)
-    broker_name = Goblin.child_name(namespace, Broker)
-    disk_tables_name = Goblin.child_name(namespace, DiskTables)
-    mem_table_name = Goblin.child_name(namespace, MemTable)
+    manifest = Goblin.child_name(namespace, Manifest)
+    broker = Goblin.child_name(namespace, Broker)
+    disk_tables = Goblin.child_name(namespace, DiskTables)
+    mem_tables = Goblin.child_name(namespace, MemTables)
 
     children = [
       {Goblin.Manifest,
        Keyword.merge(
          args,
-         name: via(registry, manifest_name),
-         local_name: manifest_name,
-         db_dir: db_dir
+         name: manifest,
+         data_dir: data_dir,
+         registry: registry
        )},
-      {Goblin.Cleaner,
-       Keyword.merge(
-         args,
-         name: via(registry, cleaner_name),
-         local_name: cleaner_name,
-         disk_tables_server: via(registry, disk_tables_name)
-       )},
-      {Goblin.WAL,
-       Keyword.merge(
-         args,
-         name: via(registry, wal_name),
-         local_name: wal_name,
-         db_dir: db_dir,
-         manifest_server: via(registry, manifest_name),
-         cleaner_server: via(registry, cleaner_name)
-       )},
-      {Goblin.Compactor,
+      {Goblin.Broker,
        Keyword.merge(args,
-         name: via(registry, compactor_name),
-         manifest_server: via(registry, manifest_name),
-         disk_tables_server: via(registry, disk_tables_name),
-         cleaner_server: via(registry, cleaner_name),
+         name: broker,
+         mem_tables: mem_tables,
+         pub_sub: pub_sub,
+         registry: registry
+       )},
+      {Goblin.DiskTables,
+       Keyword.merge(args,
+         name: disk_tables,
+         data_dir: data_dir,
+         manifest: manifest,
+         broker: broker,
+         registry: registry,
+         bf_fpp: args[:bf_fpp],
+         max_sst_size: max_sst_size,
          flush_level_file_limit: flush_level_file_limit,
          level_base_size: level_base_size,
          level_size_multiplier: level_size_multiplier
        )},
-      {Goblin.DiskTables,
+      {Goblin.MemTables,
        Keyword.merge(args,
-         name: via(registry, disk_tables_name),
-         local_name: disk_tables_name,
-         db_dir: db_dir,
-         manifest_server: via(registry, manifest_name),
-         compactor_server: via(registry, compactor_name),
-         bf_fpp: args[:bf_fpp],
-         max_sst_size: max_sst_size
-       )},
-      {Goblin.MemTable,
-       Keyword.merge(args,
-         name: via(registry, mem_table_name),
-         local_name: mem_table_name,
-         wal_server: via(registry, wal_name),
-         manifest_server: via(registry, manifest_name),
-         disk_tables_server: via(registry, disk_tables_name),
-         mem_limit: mem_limit
-       )},
-      {Goblin.Broker,
-       Keyword.merge(args,
-         name: via(registry, broker_name),
-         mem_table: via(registry, mem_table_name),
-         mem_table_store: mem_table_name,
-         disk_tables_store: disk_tables_name,
-         cleaner_table: cleaner_name,
-         cleaner_server: via(registry, cleaner_name),
-         pub_sub: pub_sub
+         name: mem_tables,
+         data_dir: data_dir,
+         mem_limit: mem_limit,
+         manifest: manifest,
+         broker: broker,
+         disk_tables: disk_tables,
+         registry: registry
        )}
     ]
 
-    Supervisor.init(children, strategy: :one_for_all)
+    Supervisor.init(children, strategy: :rest_for_one)
   end
 end
