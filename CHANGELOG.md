@@ -1,14 +1,27 @@
 # Changelog
 
+## v0.6.0 (2026-02-20)
+* Breaking changes
+    * Disk table format was updated to include a field stating whether the disk table is compressed or not
+    * Keys can now be tagged, allowing separation of data when querying
+    * `Goblin.Tx.select` is removed; use `Goblin.select/2` instead, which runs outside a transaction
+* Enhancements
+    * Added automatic lazy migration of disk tables when a legacy version is detected
+    * Change key-value pair block size to 1024 bytes
+* Improvements
+    * Key comparison is enforced to compare value only (i.e. via `==`) throughout the database
+* Bug fixes
+    * Fix race condition where the memory table can be cleaned up when active readers are iterating
+
 ## v0.5.0 (2026-01-11)
-- Breaking changes
-    - The Bloom filter struct has changed (incompatible with previous versions)
-- Improvements
-    - The manifest can only delete previously tracked files upon start
-    - If a `.tmp` file already exists when trying to write a new, then the previous version is removed before continuing to write
-    - The Bloom filter implementation was refactored into a scalable Bloom filter implementation
-- Bug fixes
-    - Fixes a bug where the arguments to a function call were in the wrong order
+* Breaking changes
+    * The Bloom filter struct has changed (incompatible with previous versions)
+* Improvements
+    * The manifest can only delete previously tracked files upon start
+    * If a `.tmp` file already exists when trying to write a new, then the previous version is removed before continuing to write
+    * The Bloom filter implementation was refactored into a scalable Bloom filter implementation
+* Bug fixes
+    * Fixes a bug where the arguments to a function call were in the wrong order
 
 ## v0.4.2 (2026-01-10)
 * Changes
