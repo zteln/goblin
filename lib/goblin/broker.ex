@@ -264,8 +264,12 @@ defmodule Goblin.Broker do
   defp publish_commit(pub_sub, writes) do
     Task.start(fn ->
       writes =
-        writes
-        |> Enum.map(&Tuple.delete_at(&1, 1))
+        Enum.map(writes, fn
+          {:put, _seq, {:"$goblin_tag", tag, key}, value} -> {:put, tag, key, value}
+          {:put, _seq, key, value} -> {:put, key, value}
+          {:remove, _seq, {:"$goblin_tag", tag, key}} -> {:remove, tag, key}
+          {:remove, _seq, key} -> {:remove, key}
+        end)
 
       PubSub.publish(pub_sub, writes)
     end)
