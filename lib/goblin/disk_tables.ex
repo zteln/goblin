@@ -67,9 +67,13 @@ defmodule Goblin.DiskTables do
       {tmp_file, file}
     end
 
-    opts = Keyword.merge(opts, GenServer.call(server, :get_opts))
+    opts =
+      Keyword.merge(
+        [next_file_f: next_file_f] ++ opts,
+        GenServer.call(server, :get_opts)
+      )
 
-    with {:ok, disk_tables} <- DiskTable.write_new(stream, next_file_f, opts) do
+    with {:ok, disk_tables} <- DiskTable.write_new(stream, opts) do
       GenServer.call(server, {:add_new, disk_tables})
       {:ok, disk_tables}
     end
@@ -353,8 +357,8 @@ defmodule Goblin.DiskTables do
          {:ok, [disk_table]} <-
            DiskTable.write_new(
              Goblin.Iterator.linear_stream(fn -> iterator end),
-             next_file_f,
              Keyword.merge(opts,
+               next_file_f: next_file_f,
                level_key: level_key,
                compress?: compressed?,
                max_sst_size: :infinity

@@ -109,7 +109,7 @@ defmodule Goblin.DiskTablesTest do
     Process.flag(:trap_exit, true)
 
     DiskTables.DiskTable
-    |> expect(:write_new, fn _stream, _next_file_f, _opts ->
+    |> expect(:write_new, fn _stream, _opts ->
       {:error, :failed_to_create_new_disk_tables}
     end)
 

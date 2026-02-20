@@ -23,7 +23,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         compress?: false,
         max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
         bf_fpp: 0.01,
-        bf_bit_array_size: 100
+        bf_bit_array_size: 100,
+        next_file_f: c.next_file_f
       ]
 
       data =
@@ -32,7 +33,7 @@ defmodule Goblin.DiskTables.DiskTableTest do
         end
 
       assert {:ok, [_disk_table]} =
-               Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+               Goblin.DiskTables.DiskTable.write_new(data, opts)
     end
 
     test "splits into several disk tables when exceeding max_sst_size", c do
@@ -41,7 +42,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         compress?: false,
         max_sst_size: 50 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
         bf_fpp: 0.01,
-        bf_bit_array_size: 100
+        bf_bit_array_size: 100,
+        next_file_f: c.next_file_f
       ]
 
       data =
@@ -50,7 +52,7 @@ defmodule Goblin.DiskTables.DiskTableTest do
         end
 
       assert {:ok, [_disk_table1, _disk_table2]} =
-               Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+               Goblin.DiskTables.DiskTable.write_new(data, opts)
     end
 
     test "does not create any disk tables if data is empty", c do
@@ -59,10 +61,11 @@ defmodule Goblin.DiskTables.DiskTableTest do
         compress?: false,
         max_sst_size: 50 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
         bf_fpp: 0.01,
-        bf_bit_array_size: 100
+        bf_bit_array_size: 100,
+        next_file_f: c.next_file_f
       ]
 
-      assert {:ok, []} = Goblin.DiskTables.DiskTable.write_new([], c.next_file_f, opts)
+      assert {:ok, []} = Goblin.DiskTables.DiskTable.write_new([], opts)
     end
 
     test "returns {:error, reason} when error occurs", c do
@@ -76,7 +79,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         compress?: false,
         max_sst_size: 50 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
         bf_fpp: 0.01,
-        bf_bit_array_size: 100
+        bf_bit_array_size: 100,
+        next_file_f: c.next_file_f
       ]
 
       data =
@@ -85,7 +89,7 @@ defmodule Goblin.DiskTables.DiskTableTest do
         end
 
       assert {:error, :failed_to_write_sst_block} =
-               Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+               Goblin.DiskTables.DiskTable.write_new(data, opts)
     end
   end
 
@@ -96,7 +100,8 @@ defmodule Goblin.DiskTables.DiskTableTest do
         compress?: false,
         max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
         bf_fpp: 0.01,
-        bf_bit_array_size: 100
+        bf_bit_array_size: 100,
+        next_file_f: c.next_file_f
       ]
 
       data =
@@ -105,7 +110,7 @@ defmodule Goblin.DiskTables.DiskTableTest do
         end
 
       {:ok, [disk_table]} =
-        Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+        Goblin.DiskTables.DiskTable.write_new(data, opts)
 
       %{target_disk_table: disk_table}
     end

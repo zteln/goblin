@@ -18,52 +18,20 @@ defmodule Goblin.DiskTables.DiskTable do
 
   @spec write_new(
           Enumerable.t(Goblin.triple()),
-          (-> {Path.t(), Path.t()}),
           keyword()
         ) :: {:ok, [t()]} | {:error, term()}
-  def write_new(data_stream, next_file_f, opts) do
-    level_key = opts[:level_key]
-    compress? = opts[:compress?]
-    max_sst_size = opts[:max_sst_size]
-    bf_fpp = opts[:bf_fpp]
-    bf_bit_array_size = opts[:bf_bit_array_size]
+  def write_new(data_stream, opts) do
+    opts = Enum.into(opts, %{})
 
-    Enum.reduce_while(data_stream, {nil, nil, [], []}, fn
-      triple, {nil, nil, files, disk_tables} ->
-        {tmp_file, file} = new_files = next_file_f.()
-
-        disk_table = %__MODULE__{
-          file: file,
-          level_key: level_key,
-          bloom_filter: BloomFilter.new(bit_array_size: bf_bit_array_size, fpp: bf_fpp)
-        }
-
-        with {:ok, handler} <- Handler.open(tmp_file, write?: true),
-             {:ok, disk_table, handler} <-
-               append_sst_block(disk_table, handler, triple, compress?) do
-          {:cont, {disk_table, handler, [new_files | files], disk_tables}}
-        else
-          error -> {:halt, error}
-        end
-
-      triple, {disk_table, handler, files, disk_tables} ->
-        case append_sst_block(disk_table, handler, triple, compress?) do
-          {:ok, %{size: size} = disk_table, handler}
-          when max_sst_size != :infinity and size >= max_sst_size ->
-            case append_footer_and_close(disk_table, handler, compress?) do
-              {:ok, disk_table} -> {:cont, {nil, nil, files, [disk_table | disk_tables]}}
-              error -> {:halt, error}
-            end
-
-          {:ok, disk_table, handler} ->
-            {:cont, {disk_table, handler, files, disk_tables}}
-
-          error ->
-            {:halt, error}
-        end
+    Enum.reduce_while(data_stream, {nil, nil, [], []}, fn data, acc ->
+      case append_data(data, acc, opts) do
+        {:ok, acc} -> {:cont, acc}
+        error -> {:halt, {error, acc}}
+      end
     end)
     |> then(fn
-      {:error, _} = error ->
+      {{:error, _} = error, {_, _, files, _}} ->
+        Enum.each(files, fn {tmp_file, _file} -> File.rm(tmp_file) end)
         error
 
       {nil, nil, files, disk_tables} ->
@@ -72,44 +40,52 @@ defmodule Goblin.DiskTables.DiskTable do
         end
 
       {disk_table, handler, files, disk_tables} ->
-        with {:ok, disk_table} <- append_footer_and_close(disk_table, handler, compress?),
+        with {:ok, disk_table} <- append_footer(disk_table, handler, opts[:compress?]),
              :ok <- mv_files(files) do
           {:ok, Enum.reverse([disk_table | disk_tables])}
+        else
+          error ->
+            Handler.close(handler)
+            error
         end
     end)
   end
 
   @spec parse(Path.t()) :: {:ok, t()} | {:error, term()}
   def parse(file) do
-    with {:ok, handler} <- Handler.open(file),
-         :ok <- verify_magic(handler),
-         {:ok, size} <- parse_size(handler),
-         {:ok, crc} <- parse_crc(handler),
-         :ok <- verify_crc(handler, size, crc),
-         {:ok,
-          {
-            level_key,
-            bf_block_info,
-            key_range_block_info,
-            seq_range_block_info,
-            no_blocks,
-            _compressed?
-          }} <- parse_metadata(handler),
-         {:ok, bloom_filter} <- parse_bloom_filter(handler, bf_block_info),
-         {:ok, key_range} <- parse_key_range(handler, key_range_block_info),
-         {:ok, seq_range} <- parse_seq_range(handler, seq_range_block_info),
-         :ok <- Handler.close(handler) do
-      {:ok,
-       %__MODULE__{
-         file: file,
-         level_key: level_key,
-         no_blocks: no_blocks,
-         size: size,
-         crc: crc,
-         bloom_filter: bloom_filter,
-         key_range: key_range,
-         seq_range: seq_range
-       }}
+    handler = Handler.open!(file)
+
+    try do
+      with :ok <- verify_magic(handler),
+           {:ok, size} <- parse_size(handler),
+           {:ok, crc} <- parse_crc(handler),
+           :ok <- verify_crc(handler, size, crc),
+           {:ok,
+            {
+              level_key,
+              bf_block_info,
+              key_range_block_info,
+              seq_range_block_info,
+              no_blocks,
+              _compressed?
+            }} <- parse_metadata(handler),
+           {:ok, bloom_filter} <- parse_bloom_filter(handler, bf_block_info),
+           {:ok, key_range} <- parse_key_range(handler, key_range_block_info),
+           {:ok, seq_range} <- parse_seq_range(handler, seq_range_block_info) do
+        {:ok,
+         %__MODULE__{
+           file: file,
+           level_key: level_key,
+           no_blocks: no_blocks,
+           size: size,
+           crc: crc,
+           bloom_filter: bloom_filter,
+           key_range: key_range,
+           seq_range: seq_range
+         }}
+      end
+    after
+      Handler.close(handler)
     end
   end
 
@@ -140,6 +116,62 @@ defmodule Goblin.DiskTables.DiskTable do
   def within_bounds?(disk_table, min, max) do
     %{key_range: {disk_table_min, disk_table_max}} = disk_table
     min <= disk_table_max and disk_table_min <= max
+  end
+
+  defp append_data(triple, {nil, nil, files, disk_tables}, opts) do
+    {tmp_file, file} = new_files = opts[:next_file_f].()
+    bloom_filter = BloomFilter.new(bit_array_size: opts[:bf_bit_array_size], fpp: opts[:bf_fpp])
+
+    disk_table = %__MODULE__{
+      file: file,
+      level_key: opts[:level_key],
+      bloom_filter: bloom_filter
+    }
+
+    handler = Handler.open!(tmp_file, write?: true)
+    append_data(triple, {disk_table, handler, [new_files | files], disk_tables}, opts)
+  end
+
+  defp append_data(
+         triple,
+         {disk_table, handler, files, disk_tables},
+         %{max_sst_size: :infinity} = opts
+       ) do
+    case append_sst_block(disk_table, handler, triple, opts[:compress?]) do
+      {:ok, disk_table, handler} ->
+        {:ok, {disk_table, handler, files, disk_tables}}
+
+      error ->
+        Handler.close(handler)
+        error
+    end
+  end
+
+  defp append_data(
+         triple,
+         {%{size: size} = disk_table, handler, files, disk_tables},
+         %{max_sst_size: max_sst_size} = opts
+       )
+       when size >= max_sst_size do
+    case append_footer(disk_table, handler, opts[:compress?]) do
+      {:ok, disk_table} ->
+        append_data(triple, {nil, nil, files, [disk_table | disk_tables]}, opts)
+
+      error ->
+        Handler.close(handler)
+        error
+    end
+  end
+
+  defp append_data(triple, {disk_table, handler, files, disk_tables}, opts) do
+    case append_sst_block(disk_table, handler, triple, opts[:compress?]) do
+      {:ok, disk_table, handler} ->
+        {:ok, {disk_table, handler, files, disk_tables}}
+
+      error ->
+        Handler.close(handler)
+        error
+    end
   end
 
   defp append_sst_block(disk_table, handler, {key, seq, _value} = triple, compress?) do
@@ -173,22 +205,20 @@ defmodule Goblin.DiskTables.DiskTable do
         compress?
       )
 
-    with {:ok, handler} <- Handler.write(handler, footer_block) do
+    with {:ok, handler} <- Handler.write(handler, footer_block),
+         :ok <- Handler.sync(handler),
+         :ok <- Handler.close(handler) do
       disk_table =
         disk_table
         |> set_bloom_filter(disk_table.bloom_filter)
         |> set_size(size)
         |> update_crc(crc)
 
-      {:ok, disk_table, handler}
-    end
-  end
-
-  defp append_footer_and_close(disk_table, handler, compress?) do
-    with {:ok, disk_table, handler} <- append_footer(disk_table, handler, compress?),
-         :ok <- Handler.sync(handler),
-         :ok <- Handler.close(handler) do
       {:ok, disk_table}
+    else
+      error ->
+        Handler.close(handler)
+        error
     end
   end
 

@@ -17,7 +17,8 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
       level_key: 0,
       compress?: false,
       max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
-      bf_fpp: 0.01
+      bf_fpp: 0.01,
+      next_file_f: next_file_f
     ]
 
     data =
@@ -26,9 +27,9 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
+      Goblin.DiskTables.DiskTable.write_new(data, opts)
 
-    %{disk_table: disk_table, next_file_f: next_file_f}
+    %{disk_table: disk_table, opts: opts}
   end
 
   test "is iterable", c do
@@ -99,7 +100,8 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
       level_key: 0,
       compress?: false,
       max_sst_size: :infinity,
-      bf_fpp: 0.01
+      bf_fpp: 0.01,
+      next_file_f: c.opts[:next_file_f]
     ]
 
     data =
@@ -112,7 +114,7 @@ defmodule Goblin.DiskTables.StreamIteratorTest do
       |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+      Goblin.DiskTables.DiskTable.write_new(data, opts)
 
     iterator = Goblin.DiskTables.StreamIterator.new(disk_table) |> Goblin.Iterable.init()
 

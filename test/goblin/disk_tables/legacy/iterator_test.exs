@@ -18,9 +18,9 @@ defmodule Goblin.DiskTables.Legacy.IteratorTest do
   end
 
   test "new/1 returns correct level_key and whether the disk table is compressed", c do
-    disk_table = gen_new_disk_table(c.next_file_f, level_key: 42, compress?: false)
+    disk_table = gen_new_disk_table(next_file_f: c.next_file_f, level_key: 42, compress?: false)
     assert {:ok, 42, false, _iterator} = Goblin.DiskTables.Legacy.Iterator.new(disk_table.file)
-    disk_table = gen_new_disk_table(c.next_file_f, level_key: 17, compress?: true)
+    disk_table = gen_new_disk_table(next_file_f: c.next_file_f, level_key: 17, compress?: true)
     assert {:ok, 17, true, _iterator} = Goblin.DiskTables.Legacy.Iterator.new(disk_table.file)
   end
 
@@ -30,7 +30,7 @@ defmodule Goblin.DiskTables.Legacy.IteratorTest do
       {:error, :invalid_magic}
     end)
 
-    disk_table = gen_new_disk_table(c.next_file_f, level_key: 42, compress?: false)
+    disk_table = gen_new_disk_table(next_file_f: c.next_file_f, level_key: 42, compress?: false)
     assert {:error, :invalid_magic} = Goblin.DiskTables.Legacy.Iterator.new(disk_table.file)
   end
 
@@ -40,7 +40,7 @@ defmodule Goblin.DiskTables.Legacy.IteratorTest do
         {n, n - 1, "v-#{n}"}
       end
 
-    disk_table = gen_new_disk_table(c.next_file_f, level_key: 42, compress?: false)
+    disk_table = gen_new_disk_table(next_file_f: c.next_file_f, level_key: 42, compress?: false)
     assert {:ok, _, _, iterator} = Goblin.DiskTables.Legacy.Iterator.new(disk_table.file)
 
     Enum.reduce_while(data, Goblin.Iterable.init(iterator), fn triple, iterator ->
@@ -55,7 +55,7 @@ defmodule Goblin.DiskTables.Legacy.IteratorTest do
     end)
   end
 
-  defp gen_new_disk_table(data \\ nil, next_file_f, opts) do
+  defp gen_new_disk_table(data \\ nil, opts) do
     opts =
       Keyword.merge(opts,
         max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
@@ -69,7 +69,7 @@ defmodule Goblin.DiskTables.Legacy.IteratorTest do
         end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, next_file_f, opts)
+      Goblin.DiskTables.DiskTable.write_new(data, opts)
 
     disk_table
   end

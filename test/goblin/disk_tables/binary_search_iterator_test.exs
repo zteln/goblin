@@ -18,10 +18,11 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       compress?: false,
       max_sst_size: :infinity,
       bf_fpp: 0.01,
-      bf_bit_array_size: 100
+      bf_bit_array_size: 100,
+      next_file_f: next_file_f
     ]
 
-    %{next_file_f: next_file_f, opts: opts}
+    %{opts: opts}
   end
 
   test "is iterable", c do
@@ -31,7 +32,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+      Goblin.DiskTables.DiskTable.write_new(data, c.opts)
 
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
@@ -52,7 +53,8 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       compress?: false,
       max_sst_size: 100 * Goblin.DiskTables.Encoder.sst_block_unit_size(),
       bf_fpp: 0.01,
-      bf_bit_array_size: 100
+      bf_bit_array_size: 100,
+      next_file_f: c.opts[:next_file_f]
     ]
 
     triple1 =
@@ -64,7 +66,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     data = [triple1, triple2]
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, opts)
+      Goblin.DiskTables.DiskTable.write_new(data, opts)
 
     assert disk_table.no_blocks > 2
 
@@ -97,7 +99,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+      Goblin.DiskTables.DiskTable.write_new(data, c.opts)
 
     iterator =
       disk_table
@@ -139,7 +141,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+      Goblin.DiskTables.DiskTable.write_new(data, c.opts)
 
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
@@ -165,7 +167,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+      Goblin.DiskTables.DiskTable.write_new(data, c.opts)
 
     assert %Goblin.DiskTables.BinarySearchIterator{} =
              iterator =
@@ -195,7 +197,7 @@ defmodule Goblin.DiskTables.BinarySearchIteratorTest do
     keys = Enum.map(data, &elem(&1, 0))
 
     {:ok, [disk_table]} =
-      Goblin.DiskTables.DiskTable.write_new(data, c.next_file_f, c.opts)
+      Goblin.DiskTables.DiskTable.write_new(data, c.opts)
 
     iterator =
       disk_table
