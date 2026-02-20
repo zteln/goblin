@@ -116,6 +116,10 @@ defmodule Goblin.MemTables do
     {:stop, reason, state}
   end
 
+  def handle_info({:DOWN, ref, _, _, reason}, %{flushing: ref} = state) do
+    {:stop, reason, state}
+  end
+
   def handle_info(_, state), do: {:noreply, state}
 
   @impl GenServer

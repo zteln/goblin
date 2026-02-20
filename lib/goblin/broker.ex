@@ -262,7 +262,7 @@ defmodule Goblin.Broker do
   end
 
   defp publish_commit(pub_sub, writes) do
-    Task.async(fn ->
+    Task.start(fn ->
       writes =
         writes
         |> Enum.map(&Tuple.delete_at(&1, 1))

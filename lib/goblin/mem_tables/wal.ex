@@ -80,7 +80,7 @@ defmodule Goblin.MemTables.WAL do
       |> Path.basename()
       |> String.split(".")
 
-    next_n = String.to_integer(n) + 1
+    next_n = String.to_integer(n, 16) + 1
     filename(dir, next_n)
   end
 end
