@@ -1,239 +1,164 @@
 defmodule Goblin.BrokerTest do
   use ExUnit.Case, async: true
-  use TestHelper
+  use Goblin.TestHelper
   use Mimic
+
   import ExUnit.CaptureLog
 
-  setup_db(
-    mem_limit: 2 * 1024,
-    bf_bit_array_size: 1000
-  )
+  alias Goblin.MemTables
 
-  @mem_table __MODULE__.MemTable
-  @disk_tables __MODULE__.DiskTables
-  @cleaner_table __MODULE__.Cleaner
+  setup_db()
 
-  test "can have multiple readers simultanously", c do
-    parent = self()
-
-    reader1 =
-      spawn(fn ->
-        Goblin.Broker.read_transaction(
-          @cleaner_table,
-          c.cleaner,
-          @mem_table,
-          @disk_tables,
-          fn _tx ->
-            send(parent, :ready)
-
-            receive do
-              :done -> :ok
-            end
-          end
-        )
-      end)
-
-    assert_receive :ready
-
-    reader2 =
-      spawn(fn ->
-        Goblin.Broker.read_transaction(
-          @cleaner_table,
-          c.cleaner,
-          @mem_table,
-          @disk_tables,
-          fn _tx ->
-            send(parent, :ready)
-
-            receive do
-              :done -> :ok
-            end
-          end
-        )
-      end)
-
-    assert_receive :ready
-
-    send(reader1, :done)
-    send(reader2, :done)
-  end
-
-  test "readers can only read from their snapshot", c do
-    parent = self()
-    [key] = StreamData.term() |> Enum.take(1)
-    [val1, val2] = StreamData.term() |> Enum.take(2)
-
-    Goblin.put(c.db, key, val1)
-
-    reader =
-      spawn(fn ->
-        Goblin.Broker.read_transaction(
-          @cleaner_table,
-          c.cleaner,
-          @mem_table,
-          @disk_tables,
-          fn tx ->
-            send(parent, :ready)
-
-            receive do
-              :read_key -> :ok
-            end
-
-            assert val1 == Goblin.Tx.get(tx, key)
-            send(parent, :done)
-          end
-        )
-      end)
-
-    assert_receive :ready
-    Goblin.put(c.db, key, val2)
-    send(reader, :read_key)
-    assert_receive :done
-  end
-
-  test "writers are queued", c do
-    parent = self()
-
-    writer1 =
-      spawn(fn ->
-        assert :ok ==
-                 Goblin.Broker.write_transaction(c.broker, fn tx ->
-                   send(parent, :ready)
-
-                   receive do
-                     :done -> :ok
-                   end
-
-                   {:commit, tx, :ok}
-                 end)
-      end)
-
-    assert_receive :ready
-
-    writer2 =
-      spawn(fn ->
-        assert :ok ==
-                 Goblin.Broker.write_transaction(c.broker, fn tx ->
-                   send(parent, :ready)
-
-                   receive do
-                     :done -> :ok
-                   end
-
-                   {:commit, tx, :ok}
-                 end)
-
-        send(parent, :done)
-      end)
-
-    refute_receive :ready
-    send(writer1, :done)
-    assert_receive :ready
-    send(writer2, :done)
-    assert_receive :done
-  end
-
-  test "writes are inserted into memtable", c do
-    [key] = StreamData.term() |> Enum.take(1)
-    [val] = StreamData.term() |> Enum.take(1)
-
-    assert :ok ==
-             Goblin.Broker.write_transaction(c.broker, fn tx ->
-               tx = Goblin.Tx.put(tx, key, val)
-               {:commit, tx, :ok}
-             end)
-
-    assert [{:value, {key, 0, val}}] == Goblin.MemTable.get_multi(@mem_table, [key], 1)
-  end
-
-  test "failed writers are cleaned up", c do
-    parent = self()
-
-    writer1 =
-      spawn(fn ->
-        assert :ok ==
-                 Goblin.Broker.write_transaction(c.broker, fn _tx ->
-                   send(parent, :ready)
-
-                   receive do
-                     :done -> :ok
-                   end
-
-                   Process.exit(self(), :normal)
-                 end)
-      end)
-
-    assert_receive :ready
-
-    spawn(fn ->
+  describe "contract" do
+    test "write transactions commit data", c do
       assert :ok ==
-               Goblin.Broker.write_transaction(c.broker, fn tx ->
+               Goblin.transaction(c.db, fn tx ->
+                 tx = Goblin.Tx.put(tx, :key, :val)
                  {:commit, tx, :ok}
                end)
 
-      send(parent, :done)
-    end)
+      assert :val == Goblin.get(c.db, :key)
+    end
 
-    send(writer1, :done)
-    assert_receive :done
-  end
+    test "write transactions are serialized", c do
+      parent = self()
 
-  test "aborted transactions are not committed", c do
-    [key] = StreamData.term() |> Enum.take(1)
-    [val] = StreamData.term() |> Enum.take(1)
+      # writer 1 holds the lock
+      writer1 =
+        spawn(fn ->
+          Goblin.transaction(c.db, fn tx ->
+            send(parent, :writer1_started)
 
-    assert {:error, :aborted} ==
-             Goblin.Broker.write_transaction(c.broker, fn tx ->
-               Goblin.Tx.put(tx, key, val)
-               :abort
-             end)
+            receive do
+              :continue -> :ok
+            end
 
-    refute val == Goblin.get(c.db, key)
-  end
+            {:commit, Goblin.Tx.put(tx, :k1, :v1), :ok}
+          end)
 
-  test "commits are broadcasted", c do
-    [key1, key2] = StreamData.term() |> Enum.take(2)
-    [val] = StreamData.term() |> Enum.take(1)
-
-    Goblin.subscribe(c.db)
-
-    assert :ok ==
-             Goblin.Broker.write_transaction(c.broker, fn tx ->
-               tx =
-                 tx
-                 |> Goblin.Tx.put(key1, val)
-                 |> Goblin.Tx.remove(key2)
-
-               {:commit, tx, :ok}
-             end)
-
-    assert_receive {:put, ^key1, ^val}
-    assert_receive {:remove, ^key2}
-  end
-
-  test "broker server stops if MemTable is unable to insert writes", %{broker: broker} do
-    Process.monitor(broker)
-    Process.flag(:trap_exit, true)
-
-    [key] = StreamData.term() |> Enum.take(1)
-    [val] = StreamData.term() |> Enum.take(1)
-
-    Goblin.MemTable
-    |> expect(:insert, fn _mem_table_server, _writes, _seq ->
-      {:error, :unable_to_insert_writes}
-    end)
-
-    Goblin.MemTable
-    |> allow(self(), broker)
-
-    {_result, _log} =
-      with_log(fn ->
-        Goblin.Broker.write_transaction(broker, fn tx ->
-          tx = Goblin.Tx.put(tx, key, val)
-          {:commit, tx, :ok}
+          send(parent, :writer1_done)
         end)
 
-        assert_receive {:DOWN, _ref, :process, ^broker, :unable_to_insert_writes}
+      assert_receive :writer1_started
+
+      # writer 2 is queued — cannot start until writer 1 commits
+      spawn(fn ->
+        Goblin.transaction(c.db, fn tx ->
+          send(parent, :writer2_started)
+          {:commit, Goblin.Tx.put(tx, :k2, :v2), :ok}
+        end)
+
+        send(parent, :writer2_done)
       end)
+
+      # writer 2 should not have started yet
+      refute_receive :writer2_started, 100
+
+      # release writer 1
+      send(writer1, :continue)
+      assert_receive :writer1_done
+
+      # writer 2 should now proceed
+      assert_receive :writer2_started
+      assert_receive :writer2_done
+
+      assert :v1 == Goblin.get(c.db, :k1)
+      assert :v2 == Goblin.get(c.db, :k2)
+    end
+
+    test "aborted transactions are not committed", c do
+      assert {:error, :aborted} ==
+               Goblin.transaction(c.db, fn tx ->
+                 Goblin.Tx.put(tx, :key, :val)
+                 :abort
+               end)
+
+      assert nil == Goblin.get(c.db, :key)
+    end
+  end
+
+  describe "failure handling" do
+    test "crashed writer releases the lock", c do
+      parent = self()
+
+      # writer 1 will crash
+      pid =
+        spawn(fn ->
+          Goblin.transaction(c.db, fn tx ->
+            send(parent, :writer1_started)
+
+            receive do
+              :crash -> exit(:crash)
+            end
+
+            {:commit, tx, :ok}
+          end)
+        end)
+
+      assert_receive :writer1_started
+
+      # writer 2 is queued
+      spawn(fn ->
+        result =
+          Goblin.transaction(c.db, fn tx ->
+            {:commit, Goblin.Tx.put(tx, :key, :val), :ok}
+          end)
+
+        send(parent, {:writer2_done, result})
+      end)
+
+      # writer 2 should be blocked
+      refute_receive {:writer2_done, _}, 100
+
+      # crash writer 1
+      Process.exit(pid, :kill)
+
+      # writer 2 should proceed
+      assert_receive {:writer2_done, :ok}, 1000
+      assert :val == Goblin.get(c.db, :key)
+    end
+
+    test "commits are broadcast to subscribers", c do
+      Goblin.subscribe(c.db)
+
+      Goblin.transaction(c.db, fn tx ->
+        tx =
+          tx
+          |> Goblin.Tx.put(:key, :val)
+          |> Goblin.Tx.remove(:other_key)
+
+        {:commit, tx, :ok}
+      end)
+
+      assert_receive {:put, :key, :val}
+      assert_receive {:remove, :other_key}
+    end
+
+    test "stops when MemTables fails to write", %{broker: broker} = c do
+      Process.monitor(broker)
+      Process.flag(:trap_exit, true)
+
+      MemTables
+      |> expect(:write, fn _server, _seq, _writes ->
+        {:error, :write_failed}
+      end)
+
+      MemTables
+      |> allow(self(), broker)
+
+      with_log(fn ->
+        try do
+          Goblin.transaction(c.db, fn tx ->
+            {:commit, Goblin.Tx.put(tx, :key, :val), :ok}
+          end)
+        rescue
+          ArgumentError -> :ok
+        catch
+          :exit, _ -> :ok
+        end
+
+        assert_receive {:DOWN, _ref, :process, ^broker, :write_failed}
+      end)
+    end
   end
 end

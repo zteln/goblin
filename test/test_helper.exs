@@ -10,8 +10,12 @@ defmodule Goblin.TestHelper do
         only: [
           setup_db: 0,
           setup_db: 1,
+          start_db: 0,
           start_db: 1,
+          stop_db: 0,
           stop_db: 1,
+          trigger_flush: 1,
+          trigger_flush: 2,
           assert_eventually: 1,
           assert_eventually: 3
         ]
@@ -134,5 +138,6 @@ Mimic.copy(Goblin.DiskTables.DiskTable)
 Mimic.copy(Goblin.DiskTables.Handler)
 Mimic.copy(Goblin.DiskTables.Legacy.Encoder)
 Mimic.copy(Goblin.Manifest.Log)
+Mimic.copy(Goblin.MemTables)
 Mimic.copy(Goblin.MemTables.WAL)
 ExUnit.start()

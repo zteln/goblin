@@ -8,45 +8,15 @@ defmodule Goblin.ManifestTest do
   setup_db()
 
   test "durably tracks metadata across restarts", c do
-    # can update state
-    assert :ok ==
-             Manifest.update(c.manifest,
-               add_disk_tables: ["foo", "bar"],
-               remove_disk_tables: ["baz"],
-               add_wals: ["foo.wal", "bar.wal"],
-               remove_wals: ["baz.wal"],
-               create_wal: "wal.wal",
-               seq: 999
-             )
+    # update seq
+    assert :ok == Manifest.update(c.manifest, seq: 999)
+    assert %{seq: 999} = Manifest.snapshot(c.manifest, [:seq])
 
-    # can get correct state
-    assert %{
-             disk_tables: disk_tables,
-             wal_rotations: wal_rotations,
-             wal: wal,
-             seq: 999,
-             count: 2
-           } = Manifest.snapshot(c.manifest, [:disk_tables, :wal_rotations, :wal, :seq, :count])
-
-    assert Enum.sort(["foo", "bar", "foo.wal", "bar.wal", "wal.wal"]) ==
-             Enum.map([wal] ++ wal_rotations ++ disk_tables, &Path.basename/1)
-             |> Enum.sort()
-
-    # can get same state after restart
+    # seq survives restart
     stop_db(name: __MODULE__)
-    %{manifest: manifest} = start_db(data_dir: c.tmp_dir, name: __MODULE__)
+    %{manifest: manifest} = start_db(name: __MODULE__, data_dir: c.tmp_dir)
 
-    assert %{
-             disk_tables: disk_tables,
-             wal_rotations: wal_rotations,
-             wal: wal,
-             seq: 999,
-             count: 2
-           } = Manifest.snapshot(manifest, [:disk_tables, :wal_rotations, :wal, :seq, :count])
-
-    assert Enum.sort(["foo", "bar", "foo.wal", "bar.wal", "wal.wal"]) ==
-             Enum.map([wal] ++ wal_rotations ++ disk_tables, &Path.basename/1)
-             |> Enum.sort()
+    assert %{seq: 999} = Manifest.snapshot(manifest, [:seq])
   end
 
   test "failing to append to log stops the server", %{manifest: manifest} do

@@ -1,6 +1,6 @@
 defmodule GoblinTest do
   use ExUnit.Case, async: true
-  use TestHelper
+  use Goblin.TestHelper
   import ExUnit.CaptureLog
 
   describe "start_link/1" do
@@ -11,9 +11,9 @@ defmodule GoblinTest do
       dir2 = Path.join(c.tmp_dir, "dir2")
       dir3 = Path.join(c.tmp_dir, "dir3")
 
-      assert {:ok, db1} = Goblin.start_link(name: DB1, db_dir: dir1)
-      assert {:ok, db2} = Goblin.start_link(name: DB2, db_dir: dir2)
-      assert {:ok, db3} = Goblin.start_link(name: DB3, db_dir: dir3)
+      assert {:ok, db1} = Goblin.start_link(name: DB1, data_dir: dir1)
+      assert {:ok, db2} = Goblin.start_link(name: DB2, data_dir: dir2)
+      assert {:ok, db3} = Goblin.start_link(name: DB3, data_dir: dir3)
 
       assert Process.alive?(db1)
       assert Process.alive?(db2)
@@ -30,7 +30,7 @@ defmodule GoblinTest do
     @describetag :tmp_dir
 
     test "stops started database", c do
-      {:ok, db} = Goblin.start_link(db_dir: c.tmp_dir)
+      {:ok, db} = Goblin.start_link(data_dir: c.tmp_dir)
       assert :ok == Goblin.stop(db)
       refute Process.alive?(db)
     end
@@ -90,21 +90,13 @@ defmodule GoblinTest do
     end
 
     test "aborted commits cannot be read", c do
-      parent = self()
+      assert {:error, :aborted} ==
+               Goblin.transaction(c.db, fn tx ->
+                 Goblin.Tx.put(tx, :key, :val)
+                 :abort
+               end)
 
-      spawn(fn ->
-        assert {:error, :aborted} ==
-                 Goblin.transaction(c.db, fn tx ->
-                   Goblin.Tx.put(tx, :key, :val)
-                   :abort
-                 end)
-
-        send(parent, :done)
-      end)
-
-      assert_receive :done
-
-      refute :val == Goblin.get(c.db, :key)
+      assert nil == Goblin.get(c.db, :key)
     end
 
     test "concurrent reads cannot read from writing transaction", c do
@@ -183,6 +175,34 @@ defmodule GoblinTest do
       assert 10 == length(Enum.filter(results, &match?(:ok, &1)))
       assert 10 == length(Enum.filter(results, &match?({:error, :aborted}, &1)))
       assert 0 == Goblin.get(c.db, :counter)
+    end
+  end
+
+  describe "queries" do
+    setup_db()
+
+    test "select respects min/max bounds", c do
+      Goblin.put_multi(c.db, [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}])
+
+      assert [{2, :b}, {3, :c}, {4, :d}] == Goblin.select(c.db, min: 2, max: 4) |> Enum.to_list()
+      assert [{3, :c}, {4, :d}, {5, :e}] == Goblin.select(c.db, min: 3) |> Enum.to_list()
+      assert [{1, :a}, {2, :b}] == Goblin.select(c.db, max: 2) |> Enum.to_list()
+
+      assert [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}] ==
+               Goblin.select(c.db) |> Enum.to_list()
+    end
+
+    test "remove then put overwrites tombstone", c do
+      Goblin.put(c.db, :key, :first)
+      assert :first == Goblin.get(c.db, :key)
+
+      Goblin.remove(c.db, :key)
+      assert nil == Goblin.get(c.db, :key)
+      assert [] == Goblin.select(c.db) |> Enum.to_list()
+
+      Goblin.put(c.db, :key, :second)
+      assert :second == Goblin.get(c.db, :key)
+      assert [{:key, :second}] == Goblin.select(c.db) |> Enum.to_list()
     end
   end
 
@@ -319,8 +339,8 @@ defmodule GoblinTest do
       assert :v == Goblin.get(c.db, :k)
       assert :w == Goblin.get(c.db, :l)
 
-      stop_db(__MODULE__)
-      %{db: db} = start_db(c.tmp_dir, name: __MODULE__)
+      stop_db(name: __MODULE__)
+      %{db: db} = start_db(data_dir: c.tmp_dir, name: __MODULE__)
 
       assert :v == Goblin.get(db, :k)
       assert :w == Goblin.get(db, :l)
@@ -350,7 +370,7 @@ defmodule GoblinTest do
 
       {backup_db, _log} =
         with_log(fn ->
-          assert {:ok, backup_db} = Goblin.start_link(name: Goblin.Backup, db_dir: c.unpack_dir)
+          assert {:ok, backup_db} = Goblin.start_link(name: Goblin.Backup, data_dir: c.unpack_dir)
           backup_db
         end)
 
@@ -372,16 +392,17 @@ defmodule GoblinTest do
     end
 
     test "subscribes only to specific database instance", c do
-      assert {:ok, db1} = Goblin.start_link(name: Goblin1, db_dir: c.other_db_dir)
+      assert {:ok, db1} = Goblin.start_link(name: Goblin1, data_dir: c.other_db_dir)
 
       assert :ok == Goblin.subscribe(c.db)
 
       Goblin.put(c.db, :k, :v)
-
       assert_receive {:put, :k, :v}
 
-      Goblin.put(db1, :l, :w)
+      Goblin.remove(c.db, :k)
+      assert_receive {:remove, :k}
 
+      Goblin.put(db1, :l, :w)
       refute_receive {:put, :l, :w}
     end
 
@@ -419,7 +440,7 @@ defmodule GoblinTest do
         pairs
         |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
         |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> TestHelper.uniq_by_value(&elem(&1, 0))
+        |> Goblin.TestHelper.uniq_by_value(&elem(&1, 0))
         |> Enum.map(fn {key, _seq, val} -> {key, val} end)
 
       keys = Enum.map(output_pairs, &elem(&1, 0))
@@ -428,13 +449,13 @@ defmodule GoblinTest do
 
       assert output_pairs == Goblin.get_multi(c.db, keys)
 
-      data = trigger_flush(c.db, c.tmp_dir)
+      data = trigger_flush(c)
 
       output_pairs =
         (output_pairs ++ data)
         |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
         |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> TestHelper.uniq_by_value(&elem(&1, 0))
+        |> Goblin.TestHelper.uniq_by_value(&elem(&1, 0))
         |> Enum.map(fn {key, _seq, val} -> {key, val} end)
 
       keys = Enum.map(output_pairs, &elem(&1, 0))
@@ -452,9 +473,8 @@ defmodule GoblinTest do
       data =
         StreamData.term()
         |> Stream.chunk_every(3)
-        |> Stream.flat_map(fn
-          [_key, _val, :all] -> []
-          [key, val, tag] -> [{tag, key, val}]
+        |> Stream.map(fn
+          [key, val, tag] -> {tag, key, val}
         end)
         |> Enum.take(len)
 
@@ -472,17 +492,17 @@ defmodule GoblinTest do
         data
         |> Enum.with_index(fn {tag, key, val}, seq -> {tag, key, seq, val} end)
         |> Enum.sort_by(fn {_tag, key, seq, _val} -> {key, -seq} end)
-        |> TestHelper.uniq_by_value(&elem(&1, 1))
+        |> Goblin.TestHelper.uniq_by_value(&elem(&1, 1))
         |> Enum.map(fn {tag, key, _seq, val} -> {tag, key, val} end)
 
       data
       |> Enum.each(fn {tag, key, val} ->
         assert val == Goblin.get(c.db, key, tag: tag)
         assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
-        assert {tag, key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
+        assert {key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
       end)
 
-      trigger_flush(c.db, c.tmp_dir)
+      trigger_flush(c)
 
       assert_eventually do
         refute Goblin.flushing?(c.db)
@@ -492,7 +512,7 @@ defmodule GoblinTest do
       |> Enum.each(fn {tag, key, val} ->
         assert val == Goblin.get(c.db, key, tag: tag)
         assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
-        assert {tag, key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
+        assert {key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
       end)
     end
   end
