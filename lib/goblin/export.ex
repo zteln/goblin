@@ -45,7 +45,7 @@ defmodule Goblin.Export do
     export_name =
       path
       |> Path.basename()
-      |> String.trim_trailing(".#{suffix}")
+      |> String.trim_trailing(suffix)
 
     {~c"#{export_name}", ~c"#{path}"}
   end
