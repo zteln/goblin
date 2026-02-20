@@ -246,3 +246,8 @@ the file is automatically migrated to the current version.
 
 If you see `:emfile` errors, the file descriptor limit has been reached.
 Increase it with `ulimit -n <limit>`.
+
+## References
+
+- [CubDB](https://github.com/lucaong/cubdb) - Embedded COW B+Tree database
+- [RocksDB Documentation](https://github.com/facebook/rocksdb/wiki) - Facebook's LSM key-value store
