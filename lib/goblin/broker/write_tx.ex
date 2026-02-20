@@ -82,10 +82,12 @@ defmodule Goblin.Broker.WriteTx do
         end
 
       tx_table =
-        Enum.map(tx.writes, fn
+        tx.writes
+        |> Enum.map(fn
           {:put, seq, key, value} -> {key, seq, value}
           {:remove, seq, key} -> {key, seq, :"$goblin_tombstone"}
         end)
+        |> Enum.sort_by(fn {key, seq, _value} -> {key, -seq} end)
 
       tables_f = fn level_key ->
         [
@@ -113,10 +115,12 @@ defmodule Goblin.Broker.WriteTx do
         end
 
       tx_table =
-        Enum.map(tx.writes, fn
+        tx.writes
+        |> Enum.map(fn
           {:put, seq, key, value} -> {key, seq, value}
           {:remove, seq, key} -> {key, seq, :"$goblin_tombstone"}
         end)
+        |> Enum.sort_by(fn {key, seq, _value} -> {key, -seq} end)
 
       tables_f = fn level_key ->
         [
