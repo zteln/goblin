@@ -1,4 +1,5 @@
 defprotocol Goblin.Queryable do
+  @moduledoc false
   @type t :: t()
 
   @doc "Returns whether a key might be in a provided table or not."
