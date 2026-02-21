@@ -1,6 +1,4 @@
-Mix.install([:benchee, {:goblin, path: File.cwd!()}], force: true)
-
-tmp_dir = "#{File.cwd!()}/tmp/goblin_benchmark"
+tmp_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put"
 
 Benchee.run(
   %{
@@ -17,7 +15,7 @@ Benchee.run(
   },
   before_scenario: fn size ->
     File.rm_rf!(tmp_dir)
-    {:ok, db} = Goblin.start_link(db_dir: tmp_dir)
+    {:ok, db} = Goblin.start_link(data_dir: tmp_dir)
     {db, size}
   end,
   before_each: fn {db, size} ->
