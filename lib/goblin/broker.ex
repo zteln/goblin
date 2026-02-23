@@ -39,6 +39,7 @@ defmodule Goblin.Broker do
     GenServer.start_link(__MODULE__, args, name: via(opts[:registry], name))
   end
 
+  @doc "Starts a transaction for a writer. Blocks until there are no writers."
   @spec write_transaction(:ets.table(), GenServer.server(), (Goblin.Tx.t() -> Goblin.Tx.return())) ::
           any() | {:error, :aborted}
   def write_transaction(broker, server, f) do
@@ -56,6 +57,7 @@ defmodule Goblin.Broker do
     end
   end
 
+  @doc "Start a transaction for a reader."
   @spec read_transaction(:ets.table(), GenServer.server(), :ets.table(), (Goblin.Tx.t() -> any())) ::
           any()
   def read_transaction(broker, server, mem_tables, f) do
@@ -72,6 +74,7 @@ defmodule Goblin.Broker do
     end
   end
 
+  @doc "Scans the database for keys matching in the provided range."
   @spec select(:ets.table(), GenServer.server(), :ets.table(), keyword()) ::
           Enumerable.t(Goblin.pair())
   def select(broker, server, mem_tables, opts) do
@@ -120,6 +123,7 @@ defmodule Goblin.Broker do
     end)
   end
 
+  @doc "Register a new table for the snapshot registry."
   @spec register_table(
           :ets.table(),
           term(),
@@ -132,15 +136,18 @@ defmodule Goblin.Broker do
     SnapshotRegistry.add_table(broker, id, level_key, table, delete_callback)
   end
 
+  @doc "Soft delete a table, making it unavailable for future snapshots."
   @spec soft_delete(:ets.table(), GenServer.server(), term()) :: :ok
   def soft_delete(broker, server, id) do
     SnapshotRegistry.soft_delete(broker, id)
     GenServer.cast(server, :try_clean_up)
   end
 
+  @doc "Increment the ready flag."
   @spec inc_ready(:ets.table()) :: :ok
   def inc_ready(broker), do: SnapshotRegistry.inc_ready(broker)
 
+  @doc "Deincrement the ready flag."
   @spec deinc_ready(:ets.table()) :: :ok
   def deinc_ready(broker), do: SnapshotRegistry.deinc_ready(broker)
 
