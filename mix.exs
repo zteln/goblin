@@ -28,7 +28,7 @@ defmodule Goblin.MixProject do
       {:benchee, "~> 1.5", only: :dev},
       {:mimic, "~> 2.2", only: :test},
       {:stream_data, "~> 1.2", only: :test},
-      {:ex_doc, "~> 0.39.1", only: :dev, runtime: false, warn_if_outdated: true}
+      {:ex_doc, "~> 0.40.0", only: :dev, runtime: false, warn_if_outdated: true}
     ]
   end
 
