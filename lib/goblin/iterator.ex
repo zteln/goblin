@@ -1,6 +1,7 @@
 defmodule Goblin.Iterator do
   @moduledoc false
 
+  @doc "Streams through an entire Iterable from start to finish."
   @spec linear_stream((-> Goblin.Iterable.t())) :: Enumerable.t(Goblin.triple())
   def linear_stream(init_f) do
     Stream.resource(
@@ -18,6 +19,7 @@ defmodule Goblin.Iterator do
     )
   end
 
+  @doc "Performs a k-way merge between iterators provided. Returns a stream over the result."
   @spec k_merge_stream((-> [Goblin.Iterable.t()]), keyword()) ::
           Enumerable.t(Goblin.triple())
   def k_merge_stream(init_f, opts \\ []) do

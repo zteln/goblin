@@ -2,6 +2,7 @@ defmodule Goblin.Export do
   @moduledoc false
   alias Goblin.Manifest
 
+  @doc "Performs an export of the database files."
   @spec export(Path.t(), GenServer.server()) :: {:ok, Path.t()} | {:error, term()}
   def export(dir, manifest) do
     %{
