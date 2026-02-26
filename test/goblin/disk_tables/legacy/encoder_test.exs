@@ -1,4 +1,4 @@
-defmodule Goblin.DiskTables.Legacy.Legacy.EncoderTest do
+defmodule Goblin.DiskTables.Legacy.EncoderTest do
   use ExUnit.Case, async: true
 
   describe "encode_sst_block/2, decode_sst_header_block/1, decode_sst_block/1" do

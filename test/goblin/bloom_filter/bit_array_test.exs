@@ -1,7 +1,7 @@
 defmodule Goblin.BloomFilter.BitArrayTest do
   use ExUnit.Case, async: true
 
-  test "can update bit_array and check membershit" do
+  test "can update bit_array and check membership" do
     bit_array = Goblin.BloomFilter.BitArray.new(100, 0.01)
 
     refute Goblin.BloomFilter.BitArray.member?(bit_array, :key)
@@ -22,4 +22,3 @@ defmodule Goblin.BloomFilter.BitArrayTest do
     assert {:error, :full} == Goblin.BloomFilter.BitArray.add_key(bit_array, :key)
   end
 end
-

@@ -182,7 +182,7 @@ defmodule Goblin.DiskTables.Encoder do
   def decode_crc_block(<<crc::integer-32>>), do: {:ok, crc}
   def decode_crc_block(_), do: {:error, :invalid_crc_block}
 
-  @spec decode_size_block(binary()) :: {:ok, non_neg_integer()} | {:error, :invalid_crc_block}
+  @spec decode_size_block(binary()) :: {:ok, non_neg_integer()} | {:error, :invalid_size_block}
   def decode_size_block(<<size::integer-64>>), do: {:ok, size}
   def decode_size_block(_), do: {:error, :invalid_size_block}
 

@@ -42,7 +42,7 @@ defmodule Goblin.Broker.SnapshotRegistry do
     :ok
   end
 
-  @doc "Deincrement ready flag."
+  @doc "Decrement ready flag."
   @spec deinc_ready(t()) :: :ok
   def deinc_ready(snapshot_registry) do
     :ets.update_counter(snapshot_registry, :ready_flags, {2, -1, 0, 0}, {:ready_flags, 0})

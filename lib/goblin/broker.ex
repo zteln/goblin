@@ -147,7 +147,7 @@ defmodule Goblin.Broker do
   @spec inc_ready(:ets.table()) :: :ok
   def inc_ready(broker), do: SnapshotRegistry.inc_ready(broker)
 
-  @doc "Deincrement the ready flag."
+  @doc "Decrement the ready flag."
   @spec deinc_ready(:ets.table()) :: :ok
   def deinc_ready(broker), do: SnapshotRegistry.deinc_ready(broker)
 
