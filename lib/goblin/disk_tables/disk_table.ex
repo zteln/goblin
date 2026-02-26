@@ -16,41 +16,126 @@ defmodule Goblin.DiskTables.DiskTable do
 
   @type t :: %__MODULE__{}
 
+  @doc "Writes new disk tables from the provided stream."
   @spec write_new(
           Enumerable.t(Goblin.triple()),
           keyword()
         ) :: {:ok, [t()]} | {:error, term()}
   def write_new(data_stream, opts) do
-    opts = Enum.into(opts, %{})
+    max_sst_size = opts[:max_sst_size]
+    compress? = opts[:compress?]
 
-    Enum.reduce_while(data_stream, {nil, nil, [], []}, fn data, acc ->
-      case append_data(data, acc, opts) do
-        {:ok, acc} -> {:cont, acc}
-        error -> {:halt, {error, acc}}
+    data_stream
+    |> Stream.transform(
+      fn ->
+        nil
+      end,
+      fn
+        _triple, :halt ->
+          {:halt, nil}
+
+        triple, acc ->
+          {disk_table, handler, tmp_file} = acc || open_new_disk_table(opts)
+
+          case append_to_disk_table(triple, disk_table, handler, compress?) do
+            {:ok, %{size: size} = disk_table, handler} when size >= max_sst_size ->
+              case finalize_disk_table(disk_table, handler, tmp_file, compress?) do
+                {:ok, disk_table} -> {[{:ok, disk_table}], nil}
+                error -> {[error], :halt}
+              end
+
+            {:ok, disk_table, handler} ->
+              {[], {disk_table, handler, tmp_file}}
+
+            error ->
+              {[error], :halt}
+          end
+      end,
+      fn
+        nil ->
+          {[], nil}
+
+        {disk_table, handler, tmp_file} ->
+          case finalize_disk_table(disk_table, handler, tmp_file, compress?) do
+            {:ok, disk_table} -> {[{:ok, disk_table}], nil}
+            error -> {[error], nil}
+          end
+      end,
+      fn
+        nil -> :ok
+        :halt -> :ok
+        {_disk_table, handler, _tmp_file} -> Handler.close(handler)
       end
-    end)
-    |> then(fn
-      {{:error, _} = error, {_, _, files, _}} ->
-        Enum.each(files, fn {tmp_file, _file} -> File.rm(tmp_file) end)
-        error
-
-      {nil, nil, files, disk_tables} ->
-        with :ok <- mv_files(files) do
-          {:ok, Enum.reverse(disk_tables)}
-        end
-
-      {disk_table, handler, files, disk_tables} ->
-        with {:ok, disk_table} <- append_footer(disk_table, handler, opts[:compress?]),
-             :ok <- mv_files(files) do
-          {:ok, Enum.reverse([disk_table | disk_tables])}
-        else
-          error ->
-            Handler.close(handler)
-            error
-        end
+    )
+    |> Enum.reduce_while({:ok, []}, fn
+      {:ok, disk_table}, {:ok, acc} -> {:cont, {:ok, [disk_table | acc]}}
+      error, {:ok, _acc} -> {:halt, error}
     end)
   end
 
+  defp open_new_disk_table(opts) do
+    {tmp_file, file} = opts[:next_file_f].()
+    handler = Handler.open!(tmp_file, write?: true)
+
+    disk_table = %__MODULE__{
+      file: file,
+      level_key: opts[:level_key],
+      bloom_filter: BloomFilter.new(bit_array_size: opts[:bf_bit_array_size], fpp: opts[:bf_fpp])
+    }
+
+    {disk_table, handler, tmp_file}
+  end
+
+  defp append_to_disk_table({key, seq, _val} = triple, disk_table, handler, compress?) do
+    {sst_block, no_blocks} = Encoder.encode_sst_block(triple, compress?)
+
+    disk_table = %{
+      disk_table
+      | key_range: {elem(disk_table.key_range, 0) || key, key},
+        seq_range: {elem(disk_table.seq_range, 0) || seq, seq},
+        bloom_filter: BloomFilter.put(disk_table.bloom_filter, key),
+        crc: Encoder.update_crc(disk_table.crc, sst_block),
+        no_blocks: disk_table.no_blocks + no_blocks,
+        size: disk_table.size + no_blocks * Encoder.sst_block_unit_size()
+    }
+
+    case Handler.write(handler, sst_block) do
+      {:ok, handler} ->
+        {:ok, disk_table, handler}
+
+      error ->
+        Handler.close(handler)
+        error
+    end
+  end
+
+  defp finalize_disk_table(disk_table, handler, tmp_file, compress?) do
+    {footer_block, size, crc} =
+      Encoder.encode_footer_block(
+        disk_table.level_key,
+        disk_table.bloom_filter,
+        disk_table.key_range,
+        disk_table.seq_range,
+        handler.file_offset,
+        disk_table.no_blocks,
+        disk_table.crc,
+        disk_table.size,
+        compress?
+      )
+
+    with {:ok, handler} <- Handler.write(handler, footer_block),
+         :ok <- Handler.sync(handler),
+         :ok <- Handler.close(handler),
+         :ok <- File.rename(tmp_file, disk_table.file) do
+      {:ok, %{disk_table | size: size, crc: crc}}
+    else
+      error ->
+        Handler.close(handler)
+        error
+    end
+  end
+
+  @doc "Read and parse a path to a disk table, returning a disk table struct."
   @spec parse(Path.t()) :: {:ok, t()} | {:error, term()}
   def parse(file) do
     handler = Handler.open!(file)
@@ -89,17 +174,20 @@ defmodule Goblin.DiskTables.DiskTable do
     end
   end
 
+  @doc "Checks whether a key is within the minmax range of a disk table."
   @spec within_min_max?(t(), Goblin.db_key()) :: boolean()
   def within_min_max?(disk_table, key) do
     %{key_range: {min, max}} = disk_table
     min <= key and key <= max
   end
 
+  @doc "Checks whether a key is a member to a disk tables Bloom filter."
   @spec bloom_filter_member?(t(), Goblin.db_key()) :: boolean()
   def bloom_filter_member?(disk_table, key) do
     BloomFilter.member?(disk_table.bloom_filter, key)
   end
 
+  @doc "Checks whether a disk table overlaps the provided range."
   @spec within_bounds?(t(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: boolean()
   def within_bounds?(_disk_table, nil, nil), do: true
 
@@ -116,118 +204,6 @@ defmodule Goblin.DiskTables.DiskTable do
   def within_bounds?(disk_table, min, max) do
     %{key_range: {disk_table_min, disk_table_max}} = disk_table
     min <= disk_table_max and disk_table_min <= max
-  end
-
-  defp append_data(triple, {nil, nil, files, disk_tables}, opts) do
-    {tmp_file, file} = new_files = opts[:next_file_f].()
-    bloom_filter = BloomFilter.new(bit_array_size: opts[:bf_bit_array_size], fpp: opts[:bf_fpp])
-
-    disk_table = %__MODULE__{
-      file: file,
-      level_key: opts[:level_key],
-      bloom_filter: bloom_filter
-    }
-
-    handler = Handler.open!(tmp_file, write?: true)
-    append_data(triple, {disk_table, handler, [new_files | files], disk_tables}, opts)
-  end
-
-  defp append_data(
-         triple,
-         {disk_table, handler, files, disk_tables},
-         %{max_sst_size: :infinity} = opts
-       ) do
-    case append_sst_block(disk_table, handler, triple, opts[:compress?]) do
-      {:ok, disk_table, handler} ->
-        {:ok, {disk_table, handler, files, disk_tables}}
-
-      error ->
-        Handler.close(handler)
-        error
-    end
-  end
-
-  defp append_data(
-         triple,
-         {%{size: size} = disk_table, handler, files, disk_tables},
-         %{max_sst_size: max_sst_size} = opts
-       )
-       when size >= max_sst_size do
-    case append_footer(disk_table, handler, opts[:compress?]) do
-      {:ok, disk_table} ->
-        append_data(triple, {nil, nil, files, [disk_table | disk_tables]}, opts)
-
-      error ->
-        Handler.close(handler)
-        error
-    end
-  end
-
-  defp append_data(triple, {disk_table, handler, files, disk_tables}, opts) do
-    case append_sst_block(disk_table, handler, triple, opts[:compress?]) do
-      {:ok, disk_table, handler} ->
-        {:ok, {disk_table, handler, files, disk_tables}}
-
-      error ->
-        Handler.close(handler)
-        error
-    end
-  end
-
-  defp append_sst_block(disk_table, handler, {key, seq, _value} = triple, compress?) do
-    {sst_block, no_blocks} = Encoder.encode_sst_block(triple, compress?)
-
-    with {:ok, handler} <- Handler.write(handler, sst_block) do
-      disk_table =
-        disk_table
-        |> update_key_range(key)
-        |> update_seq_range(seq)
-        |> update_bloom_filter(key)
-        |> update_crc(Encoder.update_crc(disk_table.crc, sst_block))
-        |> update_no_blocks(no_blocks)
-        |> update_size(byte_size(sst_block))
-
-      {:ok, disk_table, handler}
-    end
-  end
-
-  defp append_footer(disk_table, handler, compress?) do
-    {footer_block, size, crc} =
-      Encoder.encode_footer_block(
-        disk_table.level_key,
-        disk_table.bloom_filter,
-        disk_table.key_range,
-        disk_table.seq_range,
-        handler.file_offset,
-        disk_table.no_blocks,
-        disk_table.crc,
-        disk_table.size,
-        compress?
-      )
-
-    with {:ok, handler} <- Handler.write(handler, footer_block),
-         :ok <- Handler.sync(handler),
-         :ok <- Handler.close(handler) do
-      disk_table =
-        disk_table
-        |> set_bloom_filter(disk_table.bloom_filter)
-        |> set_size(size)
-        |> update_crc(crc)
-
-      {:ok, disk_table}
-    else
-      error ->
-        Handler.close(handler)
-        error
-    end
-  end
-
-  defp mv_files([]), do: :ok
-
-  defp mv_files([{from, to} | files]) do
-    with :ok <- File.rename(from, to) do
-      mv_files(files)
-    end
   end
 
   defp verify_magic(handler) do
@@ -301,46 +277,6 @@ defmodule Goblin.DiskTables.DiskTable do
     with {:ok, seq_range_block} <- Handler.read(handler, pos, size) do
       Encoder.decode_seq_range_block(seq_range_block)
     end
-  end
-
-  defp update_key_range(%{key_range: {nil, nil}} = disk_table, key) do
-    %{disk_table | key_range: {key, key}}
-  end
-
-  defp update_key_range(disk_table, key) do
-    %{key_range: {min_key, _}} = disk_table
-    %{disk_table | key_range: {min_key, key}}
-  end
-
-  defp update_seq_range(disk_table, seq) do
-    %{seq_range: {min_seq, max_seq}} = disk_table
-    min_seq = if is_nil(min_seq), do: seq, else: min(min_seq, seq)
-    max_seq = max(max_seq, seq)
-    %{disk_table | seq_range: {min_seq, max_seq}}
-  end
-
-  defp update_bloom_filter(disk_table, key) do
-    %{disk_table | bloom_filter: BloomFilter.put(disk_table.bloom_filter, key)}
-  end
-
-  defp set_bloom_filter(disk_table, bloom_filter) do
-    %{disk_table | bloom_filter: bloom_filter}
-  end
-
-  defp update_crc(disk_table, crc) do
-    %{disk_table | crc: crc}
-  end
-
-  defp update_no_blocks(disk_table, no_blocks) do
-    %{disk_table | no_blocks: disk_table.no_blocks + no_blocks}
-  end
-
-  defp update_size(disk_table, size) do
-    %{disk_table | size: disk_table.size + size}
-  end
-
-  defp set_size(disk_table, size) do
-    %{disk_table | size: size}
   end
 end
 
