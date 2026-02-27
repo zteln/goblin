@@ -8,10 +8,7 @@ defmodule Goblin.Broker do
     SnapshotRegistry
   }
 
-  alias Goblin.{
-    MemTables,
-    PubSub
-  }
+  alias Goblin.MemTables
 
   import Goblin.Registry, only: [via: 2]
 
@@ -19,7 +16,6 @@ defmodule Goblin.Broker do
     :writer,
     :mem_tables,
     :snapshot_registry,
-    :pub_sub,
     :registry,
     write_queue: :queue.new()
   ]
@@ -32,7 +28,6 @@ defmodule Goblin.Broker do
       name: name,
       clean_up_interval: opts[:clean_up_interval],
       mem_tables: opts[:mem_tables],
-      pub_sub: opts[:pub_sub],
       registry: opts[:registry]
     ]
 
@@ -159,7 +154,6 @@ defmodule Goblin.Broker do
      %__MODULE__{
        snapshot_registry: snapshot_registry,
        mem_tables: args[:mem_tables],
-       pub_sub: args[:pub_sub],
        registry: args[:registry]
      }}
   end
@@ -184,15 +178,11 @@ defmodule Goblin.Broker do
     Process.demonitor(monitor_ref)
 
     %{writes: writes, seq: seq} = tx
-    %{pub_sub: pub_sub, mem_tables: mem_tables, registry: registry} = state
+    %{mem_tables: mem_tables, registry: registry} = state
 
     case MemTables.write(via(registry, mem_tables), seq, writes) do
-      :ok ->
-        publish_commit(pub_sub, writes)
-        {:reply, :ok, %{state | writer: nil}, {:continue, :dequeue_writer}}
-
-      {:error, reason} = error ->
-        {:stop, reason, error, state}
+      :ok -> {:reply, :ok, %{state | writer: nil}, {:continue, :dequeue_writer}}
+      {:error, reason} = error -> {:stop, reason, error, state}
     end
   end
 
@@ -266,19 +256,5 @@ defmodule Goblin.Broker do
 
   defp abort_transaction(broker) do
     GenServer.call(broker, :abort_transaction)
-  end
-
-  defp publish_commit(pub_sub, writes) do
-    Task.start(fn ->
-      writes =
-        Enum.map(writes, fn
-          {:put, _seq, {:"$goblin_tag", tag, key}, value} -> {:put, tag, key, value}
-          {:put, _seq, key, value} -> {:put, key, value}
-          {:remove, _seq, {:"$goblin_tag", tag, key}} -> {:remove, tag, key}
-          {:remove, _seq, key} -> {:remove, key}
-        end)
-
-      PubSub.publish(pub_sub, writes)
-    end)
   end
 end

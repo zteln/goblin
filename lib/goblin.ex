@@ -418,53 +418,6 @@ defmodule Goblin do
   end
 
   @doc """
-  Subscribes the calling process to write notifications.
-
-  After subscribing, the process receives `{:put, key, value}` or
-  `{:remove, key}` messages for each committed write. Batch writes
-  produce one message per key.
-
-  ## Parameters
-
-  - `db` - The database server (PID or registered name)
-
-  ## Returns
-
-  - `:ok`
-
-  ## Examples
-
-      Goblin.subscribe(db)
-      # => :ok
-
-      Goblin.put(db, :alice, "Alice")
-
-      receive do
-        {:put, :alice, value} -> value
-      end
-      # => "Alice"
-  """
-  @spec subscribe(Supervisor.supervisor()) :: :ok | {:error, term()}
-  def subscribe(db) do
-    namespace = namespace(db)
-    pub_sub = child_name(namespace, PubSub)
-
-    with {:ok, _} <- Goblin.PubSub.subscribe(pub_sub) do
-      :ok
-    end
-  end
-
-  @doc """
-  Unsubscribes the calling process from write notifications.
-  """
-  @spec unsubscribe(Supervisor.supervisor()) :: :ok | {:error, term()}
-  def unsubscribe(db) do
-    namespace = namespace(db)
-    pub_sub = child_name(namespace, PubSub)
-    Goblin.PubSub.unsubscribe(pub_sub)
-  end
-
-  @doc """
   Starts the database.
 
   Creates the `data_dir` if it does not exist.
@@ -509,19 +462,16 @@ defmodule Goblin do
     namespace = args[:name] || __MODULE__
     registry = child_name(namespace, Registry)
     sup = child_name(namespace, Supervisor)
-    pub_sub = child_name(namespace, PubSub)
 
     children =
       [
-        {Goblin.PubSub, name: pub_sub},
         {Goblin.Registry, name: registry},
         {Goblin.Supervisor,
          Keyword.merge(
            args,
            name: sup,
            namespace: namespace,
-           registry: registry,
-           pub_sub: pub_sub
+           registry: registry
          )}
       ]
 

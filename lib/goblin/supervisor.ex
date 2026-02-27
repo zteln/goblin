@@ -22,7 +22,6 @@ defmodule Goblin.Supervisor do
     level_base_size = args[:level_base_size] || @default_level_base_size
     level_size_multiplier = args[:level_size_multiplier] || @default_level_size_multiplier
     max_sst_size = args[:max_sst_size] || div(level_base_size, level_size_multiplier)
-    pub_sub = args[:pub_sub]
 
     manifest = Goblin.child_name(namespace, Manifest)
     broker = Goblin.child_name(namespace, Broker)
@@ -41,7 +40,6 @@ defmodule Goblin.Supervisor do
        Keyword.merge(args,
          name: broker,
          mem_tables: mem_tables,
-         pub_sub: pub_sub,
          registry: registry
        )},
       {Goblin.DiskTables,
