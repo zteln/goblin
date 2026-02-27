@@ -118,22 +118,6 @@ defmodule Goblin.BrokerTest do
       assert :val == Goblin.get(c.db, :key)
     end
 
-    test "commits are broadcast to subscribers", c do
-      Goblin.subscribe(c.db)
-
-      Goblin.transaction(c.db, fn tx ->
-        tx =
-          tx
-          |> Goblin.Tx.put(:key, :val)
-          |> Goblin.Tx.remove(:other_key)
-
-        {:commit, tx, :ok}
-      end)
-
-      assert_receive {:put, :key, :val}
-      assert_receive {:remove, :other_key}
-    end
-
     test "stops when MemTables fails to write", %{broker: broker} = c do
       Process.monitor(broker)
       Process.flag(:trap_exit, true)

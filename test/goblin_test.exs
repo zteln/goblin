@@ -46,7 +46,7 @@ defmodule GoblinTest do
       assert nil == Goblin.get(c.db, :key2)
       assert nil == Goblin.get(c.db, :key3)
       assert [] == Goblin.get_multi(c.db, [:key1, :key2, :key3])
-      assert [] == Goblin.select(c.db) |> Enum.to_list()
+      assert [] == Goblin.scan(c.db) |> Enum.to_list()
 
       writer =
         spawn(fn ->
@@ -76,7 +76,7 @@ defmodule GoblinTest do
       assert nil == Goblin.get(c.db, :key2)
       assert nil == Goblin.get(c.db, :key3)
       assert [] == Goblin.get_multi(c.db, [:key1, :key2, :key3])
-      assert [] == Goblin.select(c.db) |> Enum.to_list()
+      assert [] == Goblin.scan(c.db) |> Enum.to_list()
 
       send(writer, :cont)
 
@@ -86,7 +86,7 @@ defmodule GoblinTest do
       assert :val2 == Goblin.get(c.db, :key2)
       assert nil == Goblin.get(c.db, :key3)
       assert [{:key1, :val1}, {:key2, :val2}] == Goblin.get_multi(c.db, [:key1, :key2, :key3])
-      assert [{:key1, :val1}, {:key2, :val2}] == Goblin.select(c.db) |> Enum.to_list()
+      assert [{:key1, :val1}, {:key2, :val2}] == Goblin.scan(c.db) |> Enum.to_list()
     end
 
     test "aborted commits cannot be read", c do
@@ -181,15 +181,15 @@ defmodule GoblinTest do
   describe "queries" do
     setup_db()
 
-    test "select respects min/max bounds", c do
+    test "scan respects min/max bounds", c do
       Goblin.put_multi(c.db, [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}])
 
-      assert [{2, :b}, {3, :c}, {4, :d}] == Goblin.select(c.db, min: 2, max: 4) |> Enum.to_list()
-      assert [{3, :c}, {4, :d}, {5, :e}] == Goblin.select(c.db, min: 3) |> Enum.to_list()
-      assert [{1, :a}, {2, :b}] == Goblin.select(c.db, max: 2) |> Enum.to_list()
+      assert [{2, :b}, {3, :c}, {4, :d}] == Goblin.scan(c.db, min: 2, max: 4) |> Enum.to_list()
+      assert [{3, :c}, {4, :d}, {5, :e}] == Goblin.scan(c.db, min: 3) |> Enum.to_list()
+      assert [{1, :a}, {2, :b}] == Goblin.scan(c.db, max: 2) |> Enum.to_list()
 
       assert [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}] ==
-               Goblin.select(c.db) |> Enum.to_list()
+               Goblin.scan(c.db) |> Enum.to_list()
     end
 
     test "remove then put overwrites tombstone", c do
@@ -198,11 +198,11 @@ defmodule GoblinTest do
 
       Goblin.remove(c.db, :key)
       assert nil == Goblin.get(c.db, :key)
-      assert [] == Goblin.select(c.db) |> Enum.to_list()
+      assert [] == Goblin.scan(c.db) |> Enum.to_list()
 
       Goblin.put(c.db, :key, :second)
       assert :second == Goblin.get(c.db, :key)
-      assert [{:key, :second}] == Goblin.select(c.db) |> Enum.to_list()
+      assert [{:key, :second}] == Goblin.scan(c.db) |> Enum.to_list()
     end
   end
 
@@ -382,45 +382,6 @@ defmodule GoblinTest do
     end
   end
 
-  describe "subscribe/1, unsubscribe/1" do
-    setup_db()
-
-    setup c do
-      other_db_dir = Path.join(c.tmp_dir, "other")
-      File.mkdir!(other_db_dir)
-      %{other_db_dir: other_db_dir}
-    end
-
-    test "subscribes only to specific database instance", c do
-      assert {:ok, db1} = Goblin.start_link(name: Goblin1, data_dir: c.other_db_dir)
-
-      assert :ok == Goblin.subscribe(c.db)
-
-      Goblin.put(c.db, :k, :v)
-      assert_receive {:put, :k, :v}
-
-      Goblin.remove(c.db, :k)
-      assert_receive {:remove, :k}
-
-      Goblin.put(db1, :l, :w)
-      refute_receive {:put, :l, :w}
-    end
-
-    test "unsubscribes to topic", c do
-      assert :ok == Goblin.subscribe(c.db)
-
-      Goblin.put(c.db, :k, :v)
-
-      assert_receive {:put, :k, :v}
-
-      assert :ok == Goblin.unsubscribe(c.db)
-
-      Goblin.put(c.db, :k, :w)
-
-      refute_receive {:put, :k, :w}
-    end
-  end
-
   describe "property test" do
     setup_db(
       mem_limit: 2 * 1024,
@@ -499,7 +460,7 @@ defmodule GoblinTest do
       |> Enum.each(fn {tag, key, val} ->
         assert val == Goblin.get(c.db, key, tag: tag)
         assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
-        assert {key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
+        assert {key, val} in (Goblin.scan(c.db, tag: tag) |> Enum.to_list())
       end)
 
       trigger_flush(c)
@@ -512,7 +473,7 @@ defmodule GoblinTest do
       |> Enum.each(fn {tag, key, val} ->
         assert val == Goblin.get(c.db, key, tag: tag)
         assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
-        assert {key, val} in (Goblin.select(c.db, tag: tag) |> Enum.to_list())
+        assert {key, val} in (Goblin.scan(c.db, tag: tag) |> Enum.to_list())
       end)
     end
   end
