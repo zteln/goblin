@@ -70,9 +70,9 @@ defmodule Goblin.Broker do
   end
 
   @doc "Scans the database for keys matching in the provided range."
-  @spec select(:ets.table(), GenServer.server(), :ets.table(), keyword()) ::
+  @spec scan(:ets.table(), GenServer.server(), :ets.table(), keyword()) ::
           Enumerable.t(Goblin.pair())
-  def select(broker, server, mem_tables, opts) do
+  def scan(broker, server, mem_tables, opts) do
     min = opts[:min]
     max = opts[:max]
     tag = opts[:tag]

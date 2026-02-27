@@ -336,23 +336,23 @@ defmodule Goblin do
 
   ## Examples
 
-      Goblin.select(db) |> Enum.to_list()
+      Goblin.scan(db) |> Enum.to_list()
       # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
 
-      Goblin.select(db, min: :bob) |> Enum.to_list()
+      Goblin.scan(db, min: :bob) |> Enum.to_list()
       # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
 
-      Goblin.select(db, min: :alice, max: :bob) |> Enum.to_list()
+      Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
       # => [{:alice, "Alice"}, {:bob, "Bob"}]
   """
-  @spec select(Supervisor.supervisor(), keyword()) :: Enumerable.t({db_key(), db_value()})
-  def select(db, opts \\ []) do
+  @spec scan(Supervisor.supervisor(), keyword()) :: Enumerable.t({db_key(), db_value()})
+  def scan(db, opts \\ []) do
     namespace = namespace(db)
     registry = child_name(namespace, Registry)
     broker = child_name(namespace, Broker)
     mem_tables = child_name(namespace, MemTables)
 
-    Goblin.Broker.select(
+    Goblin.Broker.scan(
       broker,
       via(registry, broker),
       mem_tables,
