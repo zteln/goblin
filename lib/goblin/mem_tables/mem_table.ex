@@ -3,7 +3,8 @@ defmodule Goblin.MemTables.MemTable do
 
   defstruct [
     :wal_name,
-    :ref
+    :ref,
+    overhead_size: 0
   ]
 
   @type t :: %__MODULE__{}
@@ -12,7 +13,9 @@ defmodule Goblin.MemTables.MemTable do
   @spec new(Path.t()) :: t()
   def new(wal_name) do
     ref = :ets.new(:mem_table, [:ordered_set])
-    %__MODULE__{wal_name: wal_name, ref: ref}
+    mem_table = %__MODULE__{wal_name: wal_name, ref: ref}
+    overhead_size = size(mem_table)
+    %{mem_table | overhead_size: overhead_size}
   end
 
   @doc "Deletes the provided MemTable."
@@ -111,7 +114,7 @@ defmodule Goblin.MemTables.MemTable do
   @doc "Return the current size of the MemTable."
   @spec size(t()) :: non_neg_integer()
   def size(mem_table) do
-    :ets.info(mem_table.ref, :memory) * :erlang.system_info(:wordsize)
+    :ets.info(mem_table.ref, :memory) * :erlang.system_info(:wordsize) - mem_table.overhead_size
   end
 end
 
