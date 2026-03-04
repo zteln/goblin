@@ -17,7 +17,7 @@ Install by adding `:goblin` as a dependency:
 ```elixir
 def deps do
   [
-    {:goblin, "~> 0.6.0"}
+    {:goblin, "~> 0.7.0"}
   ]
 end
 ```

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.0 (2026-03-04)
+* Breaking changes
+    * PubSub functionality has been removed in order to simplify the codebase
+        * This change removes `Goblin.subscribe/1` and `Goblin.unsubscribe/1`
+    * `Goblin.select/2` has been renamed to `Goblin.scan/2`
+* Enhancements
+    * Added ARCHITECTURE.md which displays the inner workings of Goblin
+
 ## v0.6.0 (2026-02-20)
 * Breaking changes
     * Disk table format was updated to include a field stating whether the disk table is compressed or not
