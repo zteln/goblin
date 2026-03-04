@@ -89,10 +89,22 @@ defmodule Goblin.DiskTables.DiskTable do
   defp append_to_disk_table({key, seq, _val} = triple, disk_table, handler, compress?) do
     {sst_block, no_blocks} = Encoder.encode_sst_block(triple, compress?)
 
+    key_range =
+      case disk_table.key_range do
+        {nil, _max} -> {key, key}
+        {min, _max} -> {min, key}
+      end
+
+    seq_range =
+      case disk_table.seq_range do
+        {nil, _max} -> {seq, seq}
+        {min, _max} -> {min, seq}
+      end
+
     disk_table = %{
       disk_table
-      | key_range: {elem(disk_table.key_range, 0) || key, key},
-        seq_range: {elem(disk_table.seq_range, 0) || seq, seq},
+      | key_range: key_range,
+        seq_range: seq_range,
         bloom_filter: BloomFilter.put(disk_table.bloom_filter, key),
         crc: Encoder.update_crc(disk_table.crc, sst_block),
         no_blocks: disk_table.no_blocks + no_blocks,
