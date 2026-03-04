@@ -9,7 +9,7 @@ A lightweight, embedded database for Elixir.
 - **Crash recovery** via write-ahead logging
 - **Automatic background compaction**
 - **Bloom filters** for fast negative lookups
-- **Any Elixir term** as key or value
+- **Any Elixir term** as key (except `nil`) or value
 
 ## Usage
 
@@ -59,7 +59,7 @@ Goblin.remove(db, :alice)
 
 > #### Note {: .warning}
 >
-> A key can be any Elixir term, but avoid mixing floats and integers as keys
+> A key can be any Elixir term (except `nil`), but avoid mixing floats and integers as keys
 > (e.g. both `1` and `1.0`). This can cause unexpected reads.
 
 ### Batch operations
@@ -156,25 +156,6 @@ Goblin.get(db, :alice, tag: :admins)
 Goblin.remove(db, :alice, tag: :admins)
 Goblin.get(db, :alice, tag: :admins)
 # => nil
-```
-
-### PubSub
-
-Processes can subscribe to write notifications. On each committed write,
-subscribers receive `{:put, key, value}` or `{:remove, key}` messages.
-
-```elixir
-Goblin.subscribe(db)
-# => :ok
-
-Goblin.put(db, :alice, "Alice")
-# subscriber receives {:put, :alice, "Alice"}
-
-Goblin.remove(db, :alice)
-# subscriber receives {:remove, :alice}
-
-Goblin.unsubscribe(db)
-# => :ok
 ```
 
 ### Backups
