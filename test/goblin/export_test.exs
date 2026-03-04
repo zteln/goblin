@@ -31,13 +31,10 @@ defmodule Goblin.ExportTest do
       File.mkdir!(unpack_dir)
       :ok = :erl_tar.extract(~c"#{tar_name}", [:compressed, cwd: ~c"#{unpack_dir}"])
 
-      {_backup_db, _log} =
-        ExUnit.CaptureLog.with_log(fn ->
-          assert {:ok, backup_db} =
-                   Goblin.start_link(name: Goblin.ExportBackup, data_dir: unpack_dir)
+      assert {:ok, backup_db} =
+               Goblin.start_link(name: Goblin.ExportBackup, data_dir: unpack_dir)
 
-          backup_db
-        end)
+      backup_db
     end
   end
 end
