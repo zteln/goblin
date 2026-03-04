@@ -49,7 +49,7 @@ defmodule Goblin.TestHelper do
 
     [
       {_, proc_sup, _, _},
-      {registry, _, _, _},
+      {registry, _, _, _}
     ] = Supervisor.which_children(db)
 
     [
