@@ -78,13 +78,13 @@ Goblin.remove_multi(db, [:bob, :charlie])
 ### Range queries
 
 ```elixir
-Goblin.select(db) |> Enum.to_list()
+Goblin.scan(db) |> Enum.to_list()
 # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
 
-Goblin.select(db, min: :bob) |> Enum.to_list()
+Goblin.scan(db, min: :bob) |> Enum.to_list()
 # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
 
-Goblin.select(db, min: :alice, max: :bob) |> Enum.to_list()
+Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
 # => [{:alice, "Alice"}, {:bob, "Bob"}]
 ```
 
@@ -144,7 +144,7 @@ Goblin.get(db, :alice)
 Goblin.get(db, :alice, tag: :admins)
 # => "Alice"
 
-Goblin.select(db, tag: :admins) |> Enum.to_list()
+Goblin.scan(db, tag: :admins) |> Enum.to_list()
 # => [{:alice, "Alice"}]
 
 # Removing without a tag does not affect tagged data
