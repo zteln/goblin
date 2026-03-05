@@ -5,8 +5,6 @@ defmodule Goblin.DiskTablesTest do
   import ExUnit.CaptureLog
   alias Goblin.{DiskTables, Manifest}
 
-  @one_file_repo "#{File.cwd!()}/test/support/fixtures/one_file_repo"
-
   setup_db()
 
   @tag db_opts: [mem_limit: 5 * Goblin.DiskTables.Encoder.sst_block_unit_size()]
@@ -128,36 +126,6 @@ defmodule Goblin.DiskTablesTest do
     assert_eventually do
       assert %{disk_tables: [disk_table]} = Manifest.snapshot(c.manifest, [:disk_tables])
       assert {:ok, %{level_key: 1}} = DiskTables.DiskTable.parse(disk_table)
-    end
-  end
-
-  describe "migration" do
-    setup :set_mimic_global
-    setup :verify_on_exit!
-
-    @tag start_db?: false
-    test "automatically migrates on version mismatch", c do
-      # trigger migration
-      DiskTables.DiskTable
-      |> stub(:parse, fn _ ->
-        {:error, :invalid_magic}
-      end)
-
-      File.cp_r!(@one_file_repo, c.tmp_dir)
-
-      {disk_table_name, output} =
-        with_log(fn ->
-          %{manifest: manifest} = start_db(name: __MODULE__, data_dir: c.tmp_dir)
-
-          assert_eventually do
-            assert %{disk_tables: [disk_table_name]} = Manifest.snapshot(manifest, [:disk_tables])
-            disk_table_name
-          end
-        end)
-
-      # check that migration was successful
-      assert output =~ "Migrating #{disk_table_name} to newer version"
-      assert output =~ "Migrated #{disk_table_name} to newer version"
     end
   end
 end

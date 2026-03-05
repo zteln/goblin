@@ -135,7 +135,6 @@ end
 Mimic.copy(Goblin.DiskTables)
 Mimic.copy(Goblin.DiskTables.DiskTable)
 Mimic.copy(Goblin.DiskTables.Handler)
-Mimic.copy(Goblin.DiskTables.Legacy.Encoder)
 Mimic.copy(Goblin.Manifest.Log)
 Mimic.copy(Goblin.MemTables)
 Mimic.copy(Goblin.MemTables.WAL)

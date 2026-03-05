@@ -220,8 +220,8 @@ The footer contains metadata for efficient lookups:
 
 ### Migration
 
-If a previous version of the disk table format is detected on startup,
-the file is automatically migrated to the current version.
+Goblin does not perform automatic data migration between versions.
+To upgrade, stream entries from the old database into a new instance running the newer version.
 
 ## Too many open files?
 

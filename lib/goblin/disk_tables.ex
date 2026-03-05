@@ -12,8 +12,7 @@ defmodule Goblin.DiskTables do
 
   alias Goblin.DiskTables.{
     DiskTable,
-    StreamIterator,
-    Legacy
+    StreamIterator
   }
 
   @flush_level 0
@@ -334,38 +333,8 @@ defmodule Goblin.DiskTables do
       {:ok, disk_table} ->
         recover_disk_tables(disk_table_names, opts, [disk_table | acc])
 
-      {:error, :invalid_magic} ->
-        case migrate(disk_table_name, opts) do
-          {:ok, disk_table} ->
-            recover_disk_tables(disk_table_names, opts, [disk_table | acc])
-
-          error ->
-            error
-        end
-
       error ->
         error
-    end
-  end
-
-  defp migrate(name, opts) do
-    next_file_f = fn -> {tmp_file(name), name} end
-
-    Logger.info(fn -> "Migrating #{name} to newer version" end)
-
-    with {:ok, level_key, compressed?, iterator} <- Legacy.Iterator.new(name),
-         {:ok, [disk_table]} <-
-           DiskTable.write_new(
-             Goblin.Iterator.linear_stream(fn -> iterator end),
-             Keyword.merge(opts,
-               next_file_f: next_file_f,
-               level_key: level_key,
-               compress?: compressed?,
-               max_sst_size: :infinity
-             )
-           ) do
-      Logger.info(fn -> "Migrated #{name} to newer version" end)
-      {:ok, disk_table}
     end
   end
 
