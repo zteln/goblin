@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.1 (2026-03-05)
+* Changes
+    * Automatic migration of disk tables has been removed in order to simplify the codebase.
+
 ## v0.7.0 (2026-03-04)
 * Breaking changes
     * PubSub functionality has been removed in order to simplify the codebase
