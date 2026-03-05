@@ -25,7 +25,7 @@ defmodule Goblin.MemTables.WAL do
         false -> :read_only
       end
 
-    opts = [name: name, file: ~c"#{file}", mode: mode]
+    opts = [name: name, file: ~c"#{file}", mode: mode, quiet: true]
 
     case :disk_log.open(opts) do
       {:ok, name} -> {:ok, %__MODULE__{name: name, file: file}}

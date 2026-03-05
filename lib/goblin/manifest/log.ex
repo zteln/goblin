@@ -4,7 +4,7 @@ defmodule Goblin.Manifest.Log do
   @doc "Opens a new log."
   @spec open(atom(), Path.t()) :: {:ok, atom()} | {:error, term()}
   def open(name, file) do
-    opts = [name: name, file: ~c"#{file}"]
+    opts = [name: name, file: ~c"#{file}", quiet: true]
 
     case :disk_log.open(opts) do
       {:ok, _log} -> {:ok, name}
