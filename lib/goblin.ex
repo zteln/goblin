@@ -457,22 +457,44 @@ defmodule Goblin do
     Supervisor.stop(db, reason, timeout)
   end
 
+  @default_flush_level_file_limit 4
+  @default_mem_limit 64 * 1024 * 1024
+  @default_level_base_size 256 * 1024 * 1024
+  @default_level_size_multiplier 10
+
   @impl true
   def init(args) do
     namespace = args[:name] || __MODULE__
     registry = child_name(namespace, Registry)
-    sup = child_name(namespace, Supervisor)
+    manifest = child_name(namespace, Manifest)
+    broker = child_name(namespace, Broker)
+    disk_tables = child_name(namespace, DiskTables)
+    mem_tables = child_name(namespace, MemTables)
+
+    args =
+      args
+      |> Keyword.put_new(:flush_level_file_limit, @default_flush_level_file_limit)
+      |> Keyword.put_new(:mem_limit, @default_mem_limit)
+      |> Keyword.put_new(:level_base_size, @default_level_base_size)
+      |> Keyword.put_new(:level_size_multiplier, @default_level_size_multiplier)
+      |> Keyword.update(
+        :max_sst_size,
+        div(@default_level_base_size, @default_level_size_multiplier),
+        & &1
+      )
+      |> Keyword.put(:registry, registry)
+      |> Keyword.put(:manifest, manifest)
+      |> Keyword.put(:broker, broker)
+      |> Keyword.put(:disk_tables, disk_tables)
+      |> Keyword.put(:mem_tables, mem_tables)
 
     children =
       [
         {Goblin.Registry, name: registry},
-        {Goblin.Supervisor,
-         Keyword.merge(
-           args,
-           name: sup,
-           namespace: namespace,
-           registry: registry
-         )}
+        {Goblin.Manifest, [name: manifest] ++ args},
+        {Goblin.Broker, [name: broker] ++ args},
+        {Goblin.DiskTables, [name: disk_tables] ++ args},
+        {Goblin.MemTables, [name: mem_tables] ++ args},
       ]
 
     Supervisor.init(children, strategy: :rest_for_one)

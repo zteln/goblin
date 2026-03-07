@@ -48,17 +48,14 @@ defmodule Goblin.TestHelper do
       )
 
     [
-      {_, proc_sup, _, _},
-      {registry, _, _, _}
-    ] = Supervisor.which_children(db)
-
-    [
       {Goblin.MemTables, mem_tables, _, _},
       {Goblin.DiskTables, disk_tables, _, _},
       {Goblin.Broker, broker, _, _},
-      {Goblin.Manifest, manifest, _, _}
-    ] = Supervisor.which_children(proc_sup)
+      {Goblin.Manifest, manifest, _, _},
+      {registry, _, _, _}
+    ] = Supervisor.which_children(db)
 
+    # wait until ready...
     _new_ref = Goblin.Broker.SnapshotRegistry.new_ref(Module.concat(opts[:name], Broker))
 
     %{
