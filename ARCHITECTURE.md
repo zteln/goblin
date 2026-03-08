@@ -8,18 +8,16 @@ Goblin is an embedded LSM-Tree (Log-Structured Merge-Tree) key-value database fo
 graph TD
     G["Goblin (Supervisor)<br/>strategy: :rest_for_one"]
     R["Goblin.Registry<br/>(Elixir Registry)"]
-    S["Goblin.Supervisor<br/>strategy: :rest_for_one"]
     M["Goblin.Manifest<br/>(GenServer)"]
     B["Goblin.Broker<br/>(GenServer)"]
     D["Goblin.DiskTables<br/>(GenServer)"]
     MT["Goblin.MemTables<br/>(GenServer)"]
 
     G --> R
-    G --> S
-    S --> M
-    S --> B
-    S --> D
-    S --> MT
+    G --> M
+    G --> B
+    G --> D
+    G --> MT
 ```
 
 ## Core Components
