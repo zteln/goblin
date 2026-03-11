@@ -25,7 +25,7 @@ defmodule Goblin.Broker.WriteTx do
     }
   end
 
-  defimpl Goblin.Tx do
+  defimpl Goblin.Transactionable do
     def put(tx, key, value, opts) do
       key =
         case opts[:tag] do

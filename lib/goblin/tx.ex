@@ -1,6 +1,6 @@
-defprotocol Goblin.Tx do
+defmodule Goblin.Tx do
   @moduledoc """
-  Protocol for reading and writing within a transaction.
+  Module for reading and writing within a transaction.
 
   Used inside `Goblin.transaction/2` (read-write) and `Goblin.read/2` (read-only).
 
@@ -15,8 +15,7 @@ defprotocol Goblin.Tx do
       end)
   """
 
-  @type t :: t()
-  @type return :: {:commit, Goblin.Tx.t(), term()} | :abort
+  @type t :: Goblin.Transactionable.t()
 
   @doc """
   Writes a key-value pair within a transaction.
@@ -37,8 +36,9 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.put(tx, :alice, "Alice")
   """
-  @spec put(t(), Goblin.db_key(), Goblin.db_value(), keyword()) :: t()
-  def put(tx, key, value, opts \\ [])
+  @spec put(Goblin.Transactionable.t(), Goblin.db_key(), Goblin.db_value(), keyword()) ::
+          Goblin.Transactionable.t()
+  defdelegate put(tx, key, value, opts \\ []), to: Goblin.Transactionable
 
   @doc """
   Writes multiple key-value pairs within a transaction.
@@ -58,8 +58,12 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.put_multi(tx, [{:alice, "Alice"}, {:bob, "Bob"}])
   """
-  @spec put_multi(t(), list({Goblin.db_key(), Goblin.db_value()})) :: t()
-  def put_multi(tx, pairs, opts \\ [])
+  @spec put_multi(
+          Goblin.Transactionable.t(),
+          list({Goblin.db_key(), Goblin.db_value()}),
+          keyword()
+        ) :: Goblin.Transactionable.t()
+  defdelegate put_multi(tx, pairs, opts \\ []), to: Goblin.Transactionable
 
   @doc """
   Removes a key within a transaction.
@@ -79,8 +83,9 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.remove(tx, :alice)
   """
-  @spec remove(t(), Goblin.db_key(), keyword()) :: t()
-  def remove(tx, key, opts \\ [])
+  @spec remove(Goblin.Transactionable.t(), Goblin.db_key(), keyword()) ::
+          Goblin.Transactionable.t()
+  defdelegate remove(tx, key, opts \\ []), to: Goblin.Transactionable
 
   @doc """
   Removes multiple keys within a transaction.
@@ -100,8 +105,9 @@ defprotocol Goblin.Tx do
 
       tx = Goblin.Tx.remove_multi(tx, [:alice, :bob])
   """
-  @spec remove_multi(t(), list(Goblin.db_key()), keyword()) :: t()
-  def remove_multi(tx, keys, opts \\ [])
+  @spec remove_multi(Goblin.Transactionable.t(), list(Goblin.db_key()), keyword()) ::
+          Goblin.Transactionable.t()
+  defdelegate remove_multi(tx, keys, opts \\ []), to: Goblin.Transactionable
 
   @doc """
   Retrieves a value within a transaction.
@@ -126,8 +132,8 @@ defprotocol Goblin.Tx do
       Goblin.Tx.get(tx, :nonexistent, default: :not_found)
       # => :not_found
   """
-  @spec get(t(), Goblin.db_key(), keyword()) :: Goblin.db_value()
-  def get(tx, key, opts \\ [])
+  @spec get(Goblin.Transactionable.t(), Goblin.db_key(), keyword()) :: Goblin.db_value()
+  defdelegate get(tx, key, opts \\ []), to: Goblin.Transactionable
 
   @doc """
   Retrieves values for multiple keys within a transaction.
@@ -149,7 +155,48 @@ defprotocol Goblin.Tx do
 
       [{:alice, "Alice"}, {:bob, "Bob"}] = Goblin.Tx.get_multi(tx, [:alice, :bob])
   """
-  @spec get_multi(t(), list(Goblin.db_key()), keyword()) ::
+  @spec get_multi(Goblin.Transactionable.t(), list(Goblin.db_key()), keyword()) ::
           list({Goblin.db_key(), Goblin.db_value()})
-  def get_multi(tx, keys, opts \\ [])
+  defdelegate get_multi(tx, keys, opts \\ []), to: Goblin.Transactionable
+
+  @doc """
+  Pipeline-friendly helper function to commit the transaction.
+
+  ## Parameters
+
+  - `tx` - The transaction to commit
+  - `reply` - The reply after committing (default: `:ok`)
+
+  ## Returns
+
+  - The commit tuple, i.e. `{:commit, tx, reply}`.
+
+  ## Examples
+
+      tx
+      |> Goblin.Tx.put(:alice, "Alice")
+      |> Goblin.Tx.commit()
+  """
+  @spec commit(Goblin.Transactionable.t(), any()) :: {:commit, Goblin.Transactionable.t(), any()}
+  def commit(tx, reply \\ :ok), do: {:commit, tx, reply}
+
+  @doc """
+  Pipeline-friendly helper function to abort the transaction.
+
+  ## Parameters
+
+  - `tx` - The transaction to abort
+
+  ## Returns
+
+  - The abort atom, i.e. `:abort`.
+
+  ## Examples
+
+      tx
+      |> Goblin.Tx.put(:alice, "Alice")
+      |> Goblin.Tx.abort()
+  """
+  @spec abort(Goblin.Transactionable.t()) :: :abort
+  def abort(_tx), do: :abort
 end

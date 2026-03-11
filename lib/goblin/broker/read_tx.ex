@@ -63,7 +63,7 @@ defmodule Goblin.Broker.ReadTx do
     search(tables_f, keys, seq, max_level_key, level_key + 1, acc)
   end
 
-  defimpl Goblin.Tx do
+  defimpl Goblin.Transactionable do
     def put(_tx, _key, _value, _opts) do
       raise "Operation not allowed during read"
     end
