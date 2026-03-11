@@ -464,7 +464,7 @@ defmodule Goblin do
 
   @impl true
   def init(args) do
-    namespace = args[:name] 
+    namespace = args[:name]
     registry = child_name(namespace, Registry)
     manifest = child_name(namespace, Manifest)
     broker = child_name(namespace, Broker)
@@ -494,7 +494,7 @@ defmodule Goblin do
         {Goblin.Manifest, [name: manifest] ++ args},
         {Goblin.Broker, [name: broker] ++ args},
         {Goblin.DiskTables, [name: disk_tables] ++ args},
-        {Goblin.MemTables, [name: mem_tables] ++ args},
+        {Goblin.MemTables, [name: mem_tables] ++ args}
       ]
 
     Supervisor.init(children, strategy: :rest_for_one)
