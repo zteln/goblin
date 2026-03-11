@@ -443,10 +443,10 @@ defmodule Goblin do
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    data_dir = opts[:data_dir] || raise "no data_dir provided."
-    name = opts[:name] || __MODULE__
+    data_dir = Keyword.fetch!(opts, :data_dir)
+    name = Keyword.get(opts, :name, __MODULE__)
     File.exists?(data_dir) || File.mkdir_p!(data_dir)
-    Supervisor.start_link(__MODULE__, opts, name: name)
+    Supervisor.start_link(__MODULE__, Keyword.put(opts, :name, name), name: name)
   end
 
   @doc """
@@ -464,7 +464,7 @@ defmodule Goblin do
 
   @impl true
   def init(args) do
-    namespace = args[:name] || __MODULE__
+    namespace = args[:name] 
     registry = child_name(namespace, Registry)
     manifest = child_name(namespace, Manifest)
     broker = child_name(namespace, Broker)

@@ -36,7 +36,7 @@ defmodule Goblin.MemTables do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    name = opts[:name] || __MODULE__
+    name = Keyword.get(opts, :name, __MODULE__)
 
     args = [
       name: name,

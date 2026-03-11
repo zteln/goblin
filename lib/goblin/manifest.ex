@@ -26,8 +26,8 @@ defmodule Goblin.Manifest do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     registry = opts[:registry]
-    name = opts[:name] || __MODULE__
-    max_log_size = opts[:max_log_size] || @default_max_log_size
+    name = Keyword.get(opts, :name, __MODULE__)
+    max_log_size = Keyword.get(opts, :max_log_size, @default_max_log_size)
 
     args = [
       name: name,
