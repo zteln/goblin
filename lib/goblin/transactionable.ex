@@ -1,4 +1,5 @@
 defprotocol Goblin.Transactionable do
+  @moduledoc false
   @type t :: t()
   @type return :: {:commit, t(), term()} | :abort
 
