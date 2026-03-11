@@ -48,6 +48,7 @@ defmodule Goblin.Broker do
       end
     after
       SnapshotRegistry.unregister_snapshot(broker, snapshot_ref)
+      GenServer.cast(server, {:remove_writer, snapshot_ref})
       GenServer.cast(server, :try_clean_up)
     end
   end
@@ -159,22 +160,30 @@ defmodule Goblin.Broker do
   end
 
   @impl GenServer
-  def handle_call(:start_transaction, {pid, _ref}, %{writer: nil} = state) do
+  def handle_call({:start_transaction, snapshot_ref}, {pid, _ref}, %{writer: nil} = state) do
     monitor_ref = Process.monitor(pid)
     seq = MemTables.get_sequence(state.mem_tables)
-    {:reply, {:ok, seq}, %{state | writer: {pid, monitor_ref}}}
+    {:reply, {:ok, seq}, %{state | writer: {pid, monitor_ref, snapshot_ref}}}
   end
 
-  def handle_call(:start_transaction, {pid, _ref}, %{writer: {pid, _monitor_ref}} = state) do
+  def handle_call(
+        {:start_transaction, _snapshot_ref},
+        {pid, _ref},
+        %{writer: {pid, _monitor_ref, _writer_snapshot_ref}} = state
+      ) do
     {:reply, {:error, :already_in_tx}, state}
   end
 
-  def handle_call(:start_transaction, from, state) do
-    write_queue = :queue.in(from, state.write_queue)
+  def handle_call({:start_transaction, snapshot_ref}, from, state) do
+    write_queue = :queue.in({from, snapshot_ref}, state.write_queue)
     {:noreply, %{state | write_queue: write_queue}}
   end
 
-  def handle_call({:commit_transaction, tx}, {pid, _ref}, %{writer: {pid, monitor_ref}} = state) do
+  def handle_call(
+        {:commit_transaction, tx},
+        {pid, _ref},
+        %{writer: {pid, monitor_ref, _snapshot_ref}} = state
+      ) do
     Process.demonitor(monitor_ref)
 
     %{writes: writes, seq: seq} = tx
@@ -190,7 +199,11 @@ defmodule Goblin.Broker do
     {:reply, {:error, :not_writer}, state}
   end
 
-  def handle_call(:abort_transaction, {pid, _ref}, %{writer: {pid, _monitor_ref}} = state) do
+  def handle_call(
+        :abort_transaction,
+        {pid, _ref},
+        %{writer: {pid, _monitor_ref, _snapshot_ref}} = state
+      ) do
     {:reply, :ok, %{state | writer: nil}, {:continue, :dequeue_writer}}
   end
 
@@ -204,15 +217,27 @@ defmodule Goblin.Broker do
       {:empty, _write_queue} ->
         {:noreply, state}
 
-      {{:value, {pid, _ref} = from}, write_queue} ->
+      {{:value, {{pid, _ref} = from, snapshot_ref}}, write_queue} ->
         monitor_ref = Process.monitor(pid)
         seq = MemTables.get_sequence(state.mem_tables)
         GenServer.reply(from, {:ok, seq})
-        {:noreply, %{state | write_queue: write_queue, writer: {pid, monitor_ref}}}
+        {:noreply, %{state | write_queue: write_queue, writer: {pid, monitor_ref, snapshot_ref}}}
     end
   end
 
   @impl GenServer
+  def handle_cast(
+        {:remove_writer, snapshot_ref},
+        %{writer: {_pid, monitor_ref, snapshot_ref}} = state
+      ) do
+    Process.demonitor(monitor_ref)
+    {:noreply, %{state | writer: nil}, {:continue, :dequeue_writer}}
+  end
+
+  def handle_cast({:remove_writer, _snapshot_ref}, state) do
+    {:noreply, state}
+  end
+
   def handle_cast(:try_clean_up, state) do
     case SnapshotRegistry.hard_delete(state.snapshot_registry) do
       :ok -> {:noreply, state}
@@ -221,14 +246,17 @@ defmodule Goblin.Broker do
   end
 
   @impl GenServer
-  def handle_info({:DOWN, monitor_ref, _, pid, _}, %{writer: {pid, monitor_ref}} = state) do
+  def handle_info(
+        {:DOWN, monitor_ref, _, pid, _},
+        %{writer: {pid, monitor_ref, _snapshot_ref}} = state
+      ) do
     {:noreply, %{state | writer: nil}, {:continue, :dequeue_writer}}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
   defp start_transaction(broker, server, snapshot_ref) do
-    with {:ok, seq} <- GenServer.call(server, :start_transaction) do
+    with {:ok, seq} <- GenServer.call(server, {:start_transaction, snapshot_ref}) do
       max_level_key = SnapshotRegistry.register_snapshot(broker, snapshot_ref)
       tx = WriteTx.new(broker, snapshot_ref, seq, max_level_key)
       {:ok, tx}

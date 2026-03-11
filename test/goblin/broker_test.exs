@@ -75,6 +75,25 @@ defmodule Goblin.BrokerTest do
 
       assert nil == Goblin.get(c.db, :key)
     end
+
+    test "writers that throw are cleaned up afterwards", c do
+      try do
+        # become writer
+        Goblin.transaction(c.db, fn _tx ->
+          # throw inside transaction
+          throw(:foo)
+        end)
+      catch
+        _e, :foo -> :ok
+      end
+
+      # new writer can write
+      assert :ok ==
+               Goblin.transaction(c.db, fn tx ->
+                 tx
+                 |> Goblin.Tx.commit()
+               end)
+    end
   end
 
   describe "failure handling" do
