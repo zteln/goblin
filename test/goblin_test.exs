@@ -1,11 +1,22 @@
 defmodule GoblinTest do
   use ExUnit.Case, async: true
-  use Goblin.TestHelper
   import ExUnit.CaptureLog
 
-  describe "start_link/1" do
-    @describetag :tmp_dir
+  @moduletag :tmp_dir
 
+  @default_opts [mem_limit: 2 * 1024, bf_bit_array_size: 1000]
+
+  setup c do
+    db =
+      start_supervised!(
+        {Goblin, [data_dir: c.tmp_dir] ++ @default_opts},
+        id: __MODULE__
+      )
+
+    %{db: db}
+  end
+
+  describe "start_link/1" do
     test "can start multiple independent databases simultaneously", c do
       dir1 = Path.join(c.tmp_dir, "dir1")
       dir2 = Path.join(c.tmp_dir, "dir2")
@@ -27,18 +38,13 @@ defmodule GoblinTest do
   end
 
   describe "stop/3" do
-    @describetag :tmp_dir
-
     test "stops started database", c do
-      {:ok, db} = Goblin.start_link(data_dir: c.tmp_dir)
-      assert :ok == Goblin.stop(db)
-      refute Process.alive?(db)
+      assert :ok == Goblin.stop(c.db)
+      refute Process.alive?(c.db)
     end
   end
 
   describe "atomicity" do
-    setup_db()
-
     test "writes are only visible after commit", c do
       parent = self()
 
@@ -99,6 +105,21 @@ defmodule GoblinTest do
       assert nil == Goblin.get(c.db, :key)
     end
 
+    test "exception in callback releases write lock", c do
+      assert_raise RuntimeError, "boom", fn ->
+        Goblin.transaction(c.db, fn tx ->
+          Goblin.Tx.put(tx, :key, :val)
+          raise "boom"
+        end)
+      end
+
+      assert nil == Goblin.get(c.db, :key)
+
+      # Verify the database is still functional
+      assert :ok == Goblin.put(c.db, :after_crash, :works)
+      assert :works == Goblin.get(c.db, :after_crash)
+    end
+
     test "concurrent reads cannot read from writing transaction", c do
       parent = self()
 
@@ -150,8 +171,6 @@ defmodule GoblinTest do
   end
 
   describe "consistency" do
-    setup_db()
-
     test "can maintain a business rule", c do
       Goblin.put(c.db, :counter, 10)
 
@@ -179,8 +198,6 @@ defmodule GoblinTest do
   end
 
   describe "queries" do
-    setup_db()
-
     test "scan respects min/max bounds", c do
       Goblin.put_multi(c.db, [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}])
 
@@ -204,11 +221,69 @@ defmodule GoblinTest do
       assert :second == Goblin.get(c.db, :key)
       assert [{:key, :second}] == Goblin.scan(c.db) |> Enum.to_list()
     end
+
+    test "remove_multi removes multiple keys", c do
+      Goblin.put_multi(c.db, [{:a, 1}, {:b, 2}, {:c, 3}, {:d, 4}])
+
+      Goblin.remove_multi(c.db, [:b, :c])
+
+      assert 1 == Goblin.get(c.db, :a)
+      assert nil == Goblin.get(c.db, :b)
+      assert nil == Goblin.get(c.db, :c)
+      assert 4 == Goblin.get(c.db, :d)
+
+      assert [{:a, 1}, {:d, 4}] == Goblin.scan(c.db) |> Enum.to_list()
+    end
+
+    test "get returns default when key is missing", c do
+      assert nil == Goblin.get(c.db, :missing)
+      assert :fallback == Goblin.get(c.db, :missing, default: :fallback)
+
+      Goblin.put(c.db, :exists, :val)
+      assert :val == Goblin.get(c.db, :exists, default: :fallback)
+    end
+
+    test "scan respects tag with min/max bounds", c do
+      for n <- 1..5 do
+        Goblin.put(c.db, n, "users_#{n}", tag: :users)
+        Goblin.put(c.db, n, "orders_#{n}", tag: :orders)
+      end
+
+      Goblin.put_multi(c.db, [{1, "untagged_1"}, {2, "untagged_2"}])
+
+      # tag + min + max
+      result = Goblin.scan(c.db, tag: :users, min: 2, max: 4) |> Enum.to_list()
+      assert [{2, "users_2"}, {3, "users_3"}, {4, "users_4"}] == result
+
+      # tag + min only
+      result = Goblin.scan(c.db, tag: :users, min: 4) |> Enum.to_list()
+      assert [{4, "users_4"}, {5, "users_5"}] == result
+
+      # tag + max only
+      result = Goblin.scan(c.db, tag: :users, max: 2) |> Enum.to_list()
+      assert [{1, "users_1"}, {2, "users_2"}] == result
+
+      # tag without bounds returns all entries for that tag
+      result = Goblin.scan(c.db, tag: :orders) |> Enum.to_list()
+      assert length(result) == 5
+    end
+
+    test "read transaction supports tags", c do
+      Goblin.put(c.db, :key, :tagged_val, tag: :ns)
+      Goblin.put(c.db, :key, :plain_val)
+
+      Goblin.read(c.db, fn tx ->
+        assert :tagged_val == Goblin.Tx.get(tx, :key, tag: :ns)
+        assert :plain_val == Goblin.Tx.get(tx, :key)
+        assert nil == Goblin.Tx.get(tx, :key, tag: :other)
+
+        assert [{:key, :tagged_val}] == Goblin.Tx.get_multi(tx, [:key], tag: :ns)
+        assert [{:key, :plain_val}] == Goblin.Tx.get_multi(tx, [:key])
+      end)
+    end
   end
 
   describe "isolated" do
-    setup_db()
-
     test "transaction wait upon each other (truly serializable)", c do
       parent = self()
 
@@ -323,8 +398,6 @@ defmodule GoblinTest do
   end
 
   describe "durable" do
-    setup_db()
-
     test "can get same values on restart", c do
       assert :ok ==
                Goblin.transaction(c.db, fn tx ->
@@ -339,8 +412,8 @@ defmodule GoblinTest do
       assert :v == Goblin.get(c.db, :k)
       assert :w == Goblin.get(c.db, :l)
 
-      stop_db(name: __MODULE__)
-      %{db: db} = start_db(data_dir: c.tmp_dir, name: __MODULE__)
+      stop_supervised(__MODULE__)
+      {:ok, db} = start_supervised({Goblin, [data_dir: c.tmp_dir] ++ @default_opts})
 
       assert :v == Goblin.get(db, :k)
       assert :w == Goblin.get(db, :l)
@@ -348,8 +421,6 @@ defmodule GoblinTest do
   end
 
   describe "export/2" do
-    setup_db()
-
     setup c do
       export_dir = Path.join(c.tmp_dir, "exports")
       unpack_dir = Path.join(c.tmp_dir, "unpack")
@@ -374,6 +445,9 @@ defmodule GoblinTest do
           backup_db
         end)
 
+      # Wait for handle_continue chains to complete before reading
+      _ = Goblin.flushing?(backup_db)
+
       assert :v1 == Goblin.get(backup_db, :k1)
       assert :v2 == Goblin.get(backup_db, :k2)
 
@@ -383,11 +457,6 @@ defmodule GoblinTest do
   end
 
   describe "property test" do
-    setup_db(
-      mem_limit: 2 * 1024,
-      bf_bit_array_size: 1000
-    )
-
     test "can write and read any term as key or value", c do
       len = 100
 
@@ -410,20 +479,7 @@ defmodule GoblinTest do
 
       assert output_pairs == Goblin.get_multi(c.db, keys)
 
-      data = trigger_flush(c)
-
-      output_pairs =
-        (output_pairs ++ data)
-        |> Enum.with_index(fn {key, val}, seq -> {key, seq, val} end)
-        |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-        |> Goblin.TestHelper.uniq_by_value(&elem(&1, 0))
-        |> Enum.map(fn {key, _seq, val} -> {key, val} end)
-
       keys = Enum.map(output_pairs, &elem(&1, 0))
-
-      assert_eventually do
-        refute Goblin.flushing?(c.db)
-      end
 
       assert output_pairs == Goblin.get_multi(c.db, keys)
     end
@@ -435,18 +491,17 @@ defmodule GoblinTest do
         StreamData.term()
         |> Stream.chunk_every(3)
         |> Stream.map(fn
-          [key, val, tag] -> {tag, key, val}
+          [tag, key, val] -> {tag, key, val}
         end)
         |> Enum.take(len)
 
       assert :ok ==
                Goblin.transaction(c.db, fn tx ->
-                 tx =
-                   Enum.reduce(data, tx, fn {tag, key, value}, acc ->
-                     Goblin.Tx.put(acc, key, value, tag: tag)
-                   end)
-
-                 {:commit, tx, :ok}
+                 data
+                 |> Enum.reduce(tx, fn {tag, key, value}, acc ->
+                   Goblin.Tx.put(acc, key, value, tag: tag)
+                 end)
+                 |> Goblin.Tx.commit()
                end)
 
       data =
@@ -462,19 +517,108 @@ defmodule GoblinTest do
         assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
         assert {key, val} in (Goblin.scan(c.db, tag: tag) |> Enum.to_list())
       end)
+    end
+  end
 
-      trigger_flush(c)
+  describe "flush and compaction" do
+    test "data survives flush to disk", c do
+      pairs = for n <- 1..200, do: {:"key_#{n}", "value_#{n}"}
+      Goblin.put_multi(c.db, pairs)
 
-      assert_eventually do
-        refute Goblin.flushing?(c.db)
+      trigger_flush(c.db)
+      assert :ok == wait_until_idle(c.db)
+
+      sst_files = Path.wildcard(Path.join(c.tmp_dir, "*.goblin"))
+      assert length(sst_files) > 0
+
+      for {key, val} <- pairs do
+        assert val == Goblin.get(c.db, key)
       end
 
-      data
-      |> Enum.each(fn {tag, key, val} ->
-        assert val == Goblin.get(c.db, key, tag: tag)
-        assert [{key, val}] == Goblin.get_multi(c.db, [key], tag: tag)
-        assert {key, val} in (Goblin.scan(c.db, tag: tag) |> Enum.to_list())
-      end)
+      keys = Enum.map(pairs, &elem(&1, 0))
+      result = Goblin.get_multi(c.db, keys)
+      assert length(result) == length(pairs)
+
+      scan_result = Goblin.scan(c.db) |> Enum.to_list()
+
+      for pair <- pairs do
+        assert pair in scan_result
+      end
+    end
+
+    test "data survives compaction", c do
+      all_pairs =
+        for wave <- 1..5, reduce: [] do
+          acc ->
+            pairs = for n <- 1..50, do: {:"w#{wave}_k#{n}", "w#{wave}_v#{n}"}
+            Goblin.put_multi(c.db, pairs)
+            trigger_flush(c.db)
+            assert :ok == wait_until_idle(c.db)
+            acc ++ pairs
+        end
+
+      Goblin.put(c.db, :shared_key, :old_value)
+      trigger_flush(c.db)
+      assert :ok == wait_until_idle(c.db)
+
+      Goblin.put(c.db, :shared_key, :new_value)
+      trigger_flush(c.db)
+      assert :ok == wait_until_idle(c.db)
+
+      assert :new_value == Goblin.get(c.db, :shared_key)
+
+      for {key, val} <- all_pairs do
+        assert val == Goblin.get(c.db, key)
+      end
+    end
+
+    test "data survives flush, compaction, and restart", c do
+      pairs =
+        for wave <- 1..5, reduce: [] do
+          acc ->
+            pairs = for n <- 1..50, do: {:"w#{wave}_k#{n}", "w#{wave}_v#{n}"}
+            Goblin.put_multi(c.db, pairs)
+            trigger_flush(c.db)
+            assert :ok == wait_until_idle(c.db)
+            acc ++ pairs
+        end
+
+      Goblin.put(c.db, :deleted_key, :should_be_gone)
+      Goblin.remove(c.db, :deleted_key)
+      trigger_flush(c.db)
+      assert :ok == wait_until_idle(c.db)
+
+      stop_supervised(__MODULE__)
+      {:ok, db} = start_supervised({Goblin, [data_dir: c.tmp_dir] ++ @default_opts})
+
+      _ = Goblin.flushing?(db)
+
+      for {key, val} <- pairs do
+        assert val == Goblin.get(db, key)
+      end
+
+      assert nil == Goblin.get(db, :deleted_key)
+    end
+  end
+
+  defp trigger_flush(db) do
+    StreamData.term()
+    |> Stream.chunk_every(2)
+    |> Stream.map(fn [k, v] -> {k, v} end)
+    |> Stream.each(fn {k, v} -> Goblin.put(db, k, v) end)
+    |> Stream.drop_while(fn _ -> not Goblin.flushing?(db) end)
+    |> Enum.take(1)
+  end
+
+  defp wait_until_idle(db, timeout \\ 2000, step \\ 50)
+  defp wait_until_idle(_db, timeout, _step) when timeout <= 0, do: :timeout
+
+  defp wait_until_idle(db, timeout, step) do
+    if Goblin.flushing?(db) or Goblin.compacting?(db) do
+      Process.sleep(step)
+      wait_until_idle(db, timeout - step, step)
+    else
+      :ok
     end
   end
 end

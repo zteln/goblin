@@ -41,25 +41,90 @@ defmodule Goblin do
 
   See `start_link/1` for configuration options.
   """
-  use Supervisor
-  import Goblin.Registry, only: [via: 2]
 
-  @typedoc false
-  @type level_key :: -1 | non_neg_integer()
-  @typedoc false
-  @type seq_no :: non_neg_integer()
-  @typedoc false
-  @type pair :: {Goblin.db_key(), Goblin.db_value()}
-  @typedoc false
-  @type triple :: {Goblin.db_key(), Goblin.seq_no(), Goblin.db_value()}
-  @typedoc false
-  @type server :: pid() | module() | {:via, Registry, {module(), module()}}
-  @typedoc false
-  @type write_term :: {:put, seq_no(), db_key(), db_value()} | {:remove, seq_no(), db_key()}
+  use GenServer
 
-  @type db_tag :: term()
-  @type db_key :: term()
-  @type db_value :: term()
+  @wal_suffix "wal"
+  @disk_table_suffix "goblin"
+  @default_flush_level_file_limit 4
+  @default_mem_limit 64 * 1024 * 1024
+  @default_level_base_size 256 * 1024 * 1024
+  @default_level_size_multiplier 10
+
+  alias Goblin.{
+    Manifest,
+    WAL,
+    DiskTable,
+    MemTable,
+    Compactor,
+    Snapshots,
+    Flusher,
+    Tx,
+    Export
+  }
+
+  defstruct [
+    :name,
+    :data_dir,
+    :writer,
+    :snapshots,
+    :mem_table,
+    :manifest,
+    :wal,
+    :file_counter,
+    :flusher,
+    :compactor,
+    :mem_limit,
+    write_queue: :queue.new(),
+    wal_counter: 0
+  ]
+
+  @doc """
+  Starts the database.
+
+  Creates the `data_dir` if it does not exist.
+
+  ## Options
+
+  - `:name` - Registered name for the database (optional, defaults to `Goblin`)
+  - `:data_dir` - Directory path for database files (required)
+  - `:mem_limit` - Bytes to buffer in memory before flushing to disk (default: 64 MB)
+  - `:bf_fpp` - Bloom filter false positive probability (default: 0.01)
+
+  ## Returns
+
+  - `{:ok, pid}` - On successful start
+  - `{:error, reason}` - On failure
+
+  ## Examples
+
+      {:ok, db} = Goblin.start_link(
+        name: MyApp.DB,
+        data_dir: "/var/lib/myapp/db"
+      )
+  """
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) do
+    opts = Keyword.put_new(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: opts[:name])
+  end
+
+  @doc """
+  Starts the database, see `start_link/1` for more details.
+  """
+  @spec start(keyword()) :: GenServer.on_start()
+  def start(opts) do
+    opts = Keyword.put_new(opts, :name, __MODULE__)
+    GenServer.start(__MODULE__, opts, name: opts[:name])
+  end
+
+  @doc """
+  Stops the database.
+  """
+  @spec stop(GenServer.server()) :: :ok
+  def stop(db) do
+    GenServer.stop(db)
+  end
 
   @doc """
   Executes a function within a write transaction.
@@ -67,39 +132,52 @@ defmodule Goblin do
   Transactions are executed serially and are ACID-compliant.
   The provided function receives a transaction struct and must return
   `{:commit, tx, reply}` to commit, or `:abort` to abort.
-  Returning anything else raises.
 
   ## Parameters
 
   - `db` - The database server (PID or registered name)
-  - `f` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
+  - `callback` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
 
   ## Returns
 
-  - `reply` - The value from `{:commit, tx, reply}` when committed
+  - `reply` - The reply from `{:commit, tx, reply}` when committed
   - `{:error, :aborted}` - When the transaction is aborted
 
   ## Examples
 
       Goblin.transaction(db, fn tx ->
         counter = Goblin.Tx.get(tx, :counter, default: 0)
-        tx = Goblin.Tx.put(tx, :counter, counter + 1)
-        {:commit, tx, :ok}
+        tx
+        |> Goblin.Tx.put(:counter, counter + 1)
+        |> Goblin.Tx.commit()
       end)
       # => :ok
 
-      Goblin.transaction(db, fn _tx ->
-        :abort
+      Goblin.transaction(db, fn tx ->
+        tx
+        |> Goblin.Tx.abort()
       end)
       # => {:error, :aborted}
   """
-  @spec transaction(Supervisor.supervisor(), (Goblin.Tx.t() -> Goblin.Tx.return())) ::
-          any() | {:error, :aborted | :already_in_tx | :not_writer}
-  def transaction(db, f) do
-    namespace = namespace(db)
-    registry = child_name(namespace, Registry)
-    broker = child_name(namespace, Broker)
-    Goblin.Broker.write_transaction(broker, via(registry, broker), f)
+  @spec transaction(GenServer.server(), (Goblin.Tx.t() ->
+                                           {:commit, Goblin.Tx.t(), any()} | :abort)) :: any()
+  def transaction(db, callback) do
+    ref = ext_ref(db)
+    tx_key = make_ref()
+
+    try do
+      with :ok <- start_transaction(db, tx_key),
+           {max_level_key, seq} <- Snapshots.register_tx(ref, tx_key),
+           {:ok, tx, reply} <-
+             run_transaction(db, Tx.Write.new(ref, tx_key, seq, max_level_key), callback),
+           :ok <- commit_transaction(db, tx) do
+        reply
+      end
+    after
+      Snapshots.unregister_tx(ref, tx_key)
+      GenServer.cast(db, {:clear_writer, tx_key})
+      GenServer.cast(db, :try_clean_up)
+    end
   end
 
   @doc """
@@ -125,10 +203,12 @@ defmodule Goblin do
       Goblin.put(db, :alice, "Alice", tag: :admins)
       # => :ok
   """
-  @spec put(Supervisor.supervisor(), db_key(), db_value()) :: :ok
+  @spec put(GenServer.server(), term(), term(), keyword()) :: :ok
   def put(db, key, value, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.put(tx, key, value, Keyword.take(opts, [:tag])), :ok}
+      tx
+      |> Goblin.Tx.put(key, value, opts)
+      |> Goblin.Tx.commit()
     end)
   end
 
@@ -151,10 +231,12 @@ defmodule Goblin do
       Goblin.put_multi(db, [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}])
       # => :ok
   """
-  @spec put_multi(Supervisor.supervisor(), [{db_key(), db_value()}], keyword()) :: :ok
+  @spec put_multi(GenServer.server(), list({term(), term()}), keyword()) :: :ok
   def put_multi(db, pairs, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.put_multi(tx, pairs, Keyword.take(opts, [:tag])), :ok}
+      tx
+      |> Goblin.Tx.put_multi(pairs, opts)
+      |> Goblin.Tx.commit()
     end)
   end
 
@@ -180,10 +262,12 @@ defmodule Goblin do
       Goblin.get(db, :alice)
       # => nil
   """
-  @spec remove(Supervisor.supervisor(), db_key(), keyword()) :: :ok
+  @spec remove(GenServer.server(), term(), keyword()) :: :ok
   def remove(db, key, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.remove(tx, key, Keyword.take(opts, [:tag])), :ok}
+      tx
+      |> Goblin.Tx.remove(key, opts)
+      |> Goblin.Tx.commit()
     end)
   end
 
@@ -206,10 +290,12 @@ defmodule Goblin do
       Goblin.remove_multi(db, [:alice, :bob, :charlie])
       # => :ok
   """
-  @spec remove_multi(Supervisor.supervisor(), [db_key()], keyword()) :: :ok
+  @spec remove_multi(GenServer.server(), list(term()), keyword()) :: :ok
   def remove_multi(db, keys, opts \\ []) do
     transaction(db, fn tx ->
-      {:commit, Goblin.Tx.remove_multi(tx, keys, Keyword.take(opts, [:tag])), :ok}
+      tx
+      |> Goblin.Tx.remove_multi(keys, opts)
+      |> Goblin.Tx.commit()
     end)
   end
 
@@ -238,13 +324,20 @@ defmodule Goblin do
       end)
       # => {"Alice", "Bob"}
   """
-  @spec read(Supervisor.supervisor(), (Goblin.Tx.t() -> any())) :: any()
-  def read(db, f) do
-    namespace = namespace(db)
-    registry = child_name(namespace, Registry)
-    broker = child_name(namespace, Broker)
-    mem_tables = child_name(namespace, MemTables)
-    Goblin.Broker.read_transaction(broker, via(registry, broker), mem_tables, f)
+  @spec read(GenServer.server(), (Goblin.Tx.t() -> any())) :: any()
+  def read(db, callback) do
+    ref = ext_ref(db)
+    tx_key = make_ref()
+
+    try do
+      {max_level_key, seq} = Snapshots.register_tx(ref, tx_key)
+
+      Tx.Read.new(ref, tx_key, seq, max_level_key)
+      |> callback.()
+    after
+      Snapshots.unregister_tx(ref, tx_key)
+      GenServer.cast(db, :try_clean_up)
+    end
   end
 
   @doc """
@@ -278,10 +371,10 @@ defmodule Goblin do
       Goblin.get(db, :alice, tag: :admins)
       # => "Alice"
   """
-  @spec get(Supervisor.supervisor(), db_key(), keyword()) :: db_value() | nil
+  @spec get(GenServer.server(), term(), keyword()) :: any()
   def get(db, key, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.get(tx, key, Keyword.take(opts, [:tag, :default]))
+      Goblin.Tx.get(tx, key, opts)
     end)
   end
 
@@ -309,10 +402,10 @@ defmodule Goblin do
       Goblin.get_multi(db, [:alice, :nonexistent])
       # => [{:alice, "Alice"}]
   """
-  @spec get_multi(Supervisor.supervisor(), [db_key()], keyword()) :: [{db_key(), db_value()}]
+  @spec get_multi(GenServer.server(), list(term()), keyword()) :: list({term(), term()})
   def get_multi(db, keys, opts \\ []) do
     read(db, fn tx ->
-      Goblin.Tx.get_multi(tx, keys, Keyword.take(opts, [:tag]))
+      Goblin.Tx.get_multi(tx, keys, opts)
     end)
   end
 
@@ -345,19 +438,50 @@ defmodule Goblin do
       Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
       # => [{:alice, "Alice"}, {:bob, "Bob"}]
   """
-  @spec scan(Supervisor.supervisor(), keyword()) :: Enumerable.t({db_key(), db_value()})
+  @spec scan(GenServer.server(), keyword()) :: Enumerable.t({term(), term()})
   def scan(db, opts \\ []) do
-    namespace = namespace(db)
-    registry = child_name(namespace, Registry)
-    broker = child_name(namespace, Broker)
-    mem_tables = child_name(namespace, MemTables)
+    ref = ext_ref(db)
+    tx_key = make_ref()
+    min = opts[:min]
+    max = opts[:max]
+    tag = opts[:tag]
 
-    Goblin.Broker.scan(
-      broker,
-      via(registry, broker),
-      mem_tables,
-      Keyword.take(opts, [:min, :max, :tag])
+    {min, max} =
+      cond do
+        is_nil(tag) -> {min, max}
+        is_nil(min) and is_nil(max) -> {min, max}
+        is_nil(max) -> {{:"$goblin_tag", tag, min}, max}
+        is_nil(min) -> {min, {:"$goblin_tag", tag, max}}
+        true -> {{:"$goblin_tag", tag, min}, {:"$goblin_tag", tag, max}}
+      end
+
+    Goblin.Iterator.k_merge_stream(
+      fn ->
+        {_max_level_key, seq} = Snapshots.register_tx(ref, tx_key)
+
+        Snapshots.filter_tables(ref, tx_key)
+        |> Enum.map(&Goblin.Queryable.stream(&1, min, max, seq))
+      end,
+      after: fn ->
+        Snapshots.unregister_tx(ref, tx_key)
+        GenServer.cast(db, :try_clean_up)
+      end,
+      min: min,
+      max: max
     )
+    |> Stream.flat_map(fn
+      {{:"$goblin_tag", ^tag, key}, _seq, value} ->
+        [{key, value}]
+
+      {{:"$goblin_tag", _tag, _key}, _seq, _value} when is_nil(tag) ->
+        []
+
+      {key, _seq, value} when is_nil(tag) ->
+        [{key, value}]
+
+      _ ->
+        []
+    end)
   end
 
   @doc """
@@ -366,8 +490,8 @@ defmodule Goblin do
   The archive can be unpacked and used as the `data_dir` for a new
   database instance, acting as a backup.
 
-  The export runs inside a read transaction, preventing file deletion
-  while the snapshot is being created.
+  The export is run inside the server,
+  thus blocking file deletion and writes until completed.
 
   ## Parameters
 
@@ -384,97 +508,39 @@ defmodule Goblin do
       Goblin.export(db, "/backups")
       # => {:ok, "/backups/goblin_20260220T120000Z.tar.gz"}
   """
-  @spec export(Supervisor.supervisor(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
+  @spec export(GenServer.server(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
   def export(db, export_dir) do
-    namespace = namespace(db)
-    registry = child_name(namespace, Registry)
-    manifest_server = via(registry, child_name(namespace, Manifest))
-
-    read(db, fn _tx ->
-      Goblin.Export.export(export_dir, manifest_server)
-    end)
-  end
-
-  @doc """
-  Returns whether background compaction is currently running.
-  """
-  @spec compacting?(Supervisor.supervisor()) :: boolean()
-  def compacting?(db) do
-    namespace = namespace(db)
-    registry = child_name(namespace, Registry)
-    disk_tables = child_name(namespace, DiskTables)
-    Goblin.DiskTables.compacting?(via(registry, disk_tables))
+    GenServer.call(db, {:export, export_dir})
   end
 
   @doc """
   Returns whether a memory-to-disk flush is currently running.
   """
-  @spec flushing?(Supervisor.supervisor()) :: boolean()
+  @spec flushing?(GenServer.server()) :: boolean()
   def flushing?(db) do
-    namespace = namespace(db)
-    registry = child_name(namespace, Registry)
-    mem_tables = child_name(namespace, MemTables)
-    Goblin.MemTables.flushing?(via(registry, mem_tables))
+    GenServer.call(db, :flushing?)
   end
 
   @doc """
-  Starts the database.
-
-  Creates the `data_dir` if it does not exist.
-
-  ## Options
-
-  - `:name` - Registered name for the database (optional, defaults to `Goblin`)
-  - `:data_dir` - Directory path for database files (required)
-  - `:mem_limit` - Bytes to buffer in memory before flushing to disk (default: 64 MB)
-  - `:bf_fpp` - Bloom filter false positive probability (default: 0.01)
-
-  ## Returns
-
-  - `{:ok, pid}` - On successful start
-  - `{:error, reason}` - On failure
-
-  ## Examples
-
-      {:ok, db} = Goblin.start_link(
-        name: MyApp.DB,
-        data_dir: "/var/lib/myapp/db"
-      )
+  Returns whether background compaction is currently running.
   """
-  @spec start_link(keyword()) :: Supervisor.on_start()
-  def start_link(opts) do
-    data_dir = Keyword.fetch!(opts, :data_dir)
-    name = Keyword.get(opts, :name, __MODULE__)
-    File.exists?(data_dir) || File.mkdir_p!(data_dir)
-    Supervisor.start_link(__MODULE__, Keyword.put(opts, :name, name), name: name)
+  @spec compacting?(GenServer.server()) :: boolean()
+  def compacting?(db) do
+    GenServer.call(db, :compacting?)
   end
 
-  @doc """
-  Stops the database.
-  """
-  @spec stop(Supervisor.supervisor(), term(), non_neg_integer | :infinity) :: :ok
-  def stop(db, reason \\ :normal, timeout \\ :infinity) do
-    Supervisor.stop(db, reason, timeout)
-  end
-
-  @default_flush_level_file_limit 4
-  @default_mem_limit 64 * 1024 * 1024
-  @default_level_base_size 256 * 1024 * 1024
-  @default_level_size_multiplier 10
-
-  @impl true
+  @impl GenServer
   def init(args) do
-    namespace = args[:name]
-    registry = child_name(namespace, Registry)
-    manifest = child_name(namespace, Manifest)
-    broker = child_name(namespace, Broker)
-    disk_tables = child_name(namespace, DiskTables)
-    mem_tables = child_name(namespace, MemTables)
+    name = args[:name]
+    data_dir = args[:data_dir] || raise ":data_dir not provided"
+    snapshots = Snapshots.new()
+    file_counter = :atomics.new(1, signed: false)
 
-    args =
+    File.exists?(data_dir) || File.mkdir_p!(data_dir)
+
+    opts =
       args
       |> Keyword.put_new(:flush_level_file_limit, @default_flush_level_file_limit)
-      |> Keyword.put_new(:mem_limit, @default_mem_limit)
       |> Keyword.put_new(:level_base_size, @default_level_base_size)
       |> Keyword.put_new(:level_size_multiplier, @default_level_size_multiplier)
       |> Keyword.update(
@@ -482,32 +548,551 @@ defmodule Goblin do
         div(@default_level_base_size, @default_level_size_multiplier),
         & &1
       )
-      |> Keyword.put(:registry, registry)
-      |> Keyword.put(:manifest, manifest)
-      |> Keyword.put(:broker, broker)
-      |> Keyword.put(:disk_tables, disk_tables)
-      |> Keyword.put(:mem_tables, mem_tables)
+      |> Keyword.put(:next_file_f, fn -> next_file_pair(file_counter, data_dir) end)
 
-    children =
-      [
-        {Goblin.Registry, name: registry},
-        {Goblin.Manifest, [name: manifest] ++ args},
-        {Goblin.Broker, [name: broker] ++ args},
-        {Goblin.DiskTables, [name: disk_tables] ++ args},
-        {Goblin.MemTables, [name: mem_tables] ++ args}
-      ]
-
-    Supervisor.init(children, strategy: :rest_for_one)
-  end
-
-  def child_name(namespace, suffix), do: Module.concat(namespace, suffix)
-
-  defp namespace(pid) when is_pid(pid) do
-    case Process.info(pid, :registered_name) do
-      {:registered_name, []} -> __MODULE__
-      {:registered_name, namespace} -> namespace
+    with {:ok, manifest} <- Manifest.open(name, data_dir) do
+      {:ok,
+       %__MODULE__{
+         name: name,
+         data_dir: data_dir,
+         snapshots: snapshots,
+         manifest: manifest,
+         flusher:
+           Flusher.new(
+             Keyword.take(opts, [
+               :max_sst_size,
+               :next_file_f,
+               :bf_fpp,
+               :bf_bit_array_size
+             ])
+           ),
+         compactor:
+           Compactor.new(
+             Keyword.take(opts, [
+               :max_sst_size,
+               :next_file_f,
+               :flush_level_file_limit,
+               :level_base_size,
+               :level_size_multiplier,
+               :bf_fpp,
+               :bf_bit_array_size
+             ])
+           ),
+         mem_limit: Keyword.get(args, :mem_limit, @default_mem_limit),
+         file_counter: file_counter
+       }, {:continue, :restore_mem_table}}
     end
   end
 
-  defp namespace(namespace), do: namespace
+  @impl GenServer
+  def handle_call(
+        {:start_tx, _},
+        {pid, _},
+        %{writer: {{pid, _}, _, _}} = state
+      ) do
+    {:reply, {:error, :already_in_tx}, state}
+  end
+
+  def handle_call({:start_tx, tx_key}, {pid, _} = from, state) do
+    monitor_ref = Process.monitor(pid)
+
+    case schedule_write(state, tx_key, from, monitor_ref) do
+      {:noop, state} -> {:noreply, state}
+      {:write, state} -> {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:commit_tx, tx}, {pid, _}, %{writer: {{pid, _}, _, monitor_ref}} = state) do
+    Process.demonitor(monitor_ref)
+    %{writes: writes, seq: seq} = tx
+
+    with {:ok, wal} <- WAL.append(state.wal, writes),
+         {:ok, manifest} <- Manifest.update(state.manifest, seq: seq) do
+      Enum.each(writes, &apply_write(state.mem_table, &1))
+      Snapshots.put_seq(state.snapshots, seq)
+      {:reply, :ok, %{state | wal: wal, manifest: manifest}, {:continue, :next_writer}}
+    else
+      {:error, reason} = error -> {:stop, reason, error, state}
+    end
+  end
+
+  def handle_call({:commit_tx, _tx}, _from, state) do
+    {:reply, {:error, :not_writer}, state}
+  end
+
+  def handle_call(:abort_tx, {pid, _}, %{writer: {{pid, _}, _, monitor_ref}} = state) do
+    Process.demonitor(monitor_ref)
+    state = %{state | writer: nil}
+    {:reply, :ok, state, {:continue, :next_writer}}
+  end
+
+  def handle_call(:abort_tx, _from, state) do
+    {:reply, {:error, :not_writer}, state}
+  end
+
+  def handle_call({:export, export_dir}, _from, state) do
+    %{
+      disk_tables: disk_tables,
+      retired_wals: retired_wals,
+      wal: wal
+    } = Manifest.snapshot(state.manifest, [:disk_tables, :retired_wals, :wal])
+
+    filelist = List.flatten([state.manifest.log_file, wal, disk_tables, retired_wals])
+
+    case Export.into_tar(export_dir, filelist) do
+      {:ok, output} -> {:reply, {:ok, output}, state}
+      {:error, reason} = error -> {:stop, reason, error, state}
+    end
+  end
+
+  def handle_call(:flushing?, _from, state) do
+    {:reply, state.flusher.ref != nil, state}
+  end
+
+  def handle_call(:compacting?, _from, state) do
+    {:reply, state.compactor.ref != nil, state}
+  end
+
+  @impl GenServer
+  def handle_cast({:clear_writer, tx_key}, %{writer: {_, tx_key, monitor_ref}} = state) do
+    Process.demonitor(monitor_ref)
+    state = %{state | writer: nil}
+    {:noreply, state, {:continue, :next_writer}}
+  end
+
+  def handle_cast({:clear_writer, _}, state) do
+    {:noreply, state}
+  end
+
+  def handle_cast(:try_clean_up, state) do
+    {:noreply, state, {:continue, :clean_store}}
+  end
+
+  @impl GenServer
+  def handle_info({ref, {:ok, disk_tables, wal}}, %{flusher: %{ref: ref}} = state) do
+    with {:ok, manifest} <-
+           Manifest.update(state.manifest,
+             add_disk_tables: Enum.map(disk_tables, & &1.file),
+             remove_wals: [wal.log_file]
+           ),
+         :ok <- WAL.rm(wal) do
+      Snapshots.soft_delete_table(state.snapshots, wal.log_file)
+      flusher = Flusher.set_ref(state.flusher, nil)
+
+      compactor =
+        Enum.reduce(
+          disk_tables,
+          state.compactor,
+          fn disk_table, acc ->
+            Snapshots.add_table(
+              state.snapshots,
+              disk_table.file,
+              disk_table.level_key,
+              disk_table,
+              &File.rm(&1.file)
+            )
+
+            Compactor.put_into_level(acc, disk_table)
+          end
+        )
+
+      state = %{state | manifest: manifest, flusher: flusher, compactor: compactor}
+      {:noreply, state, {:continue, :next_flush}}
+    else
+      {:error, reason} ->
+        {:stop, reason, state}
+    end
+  end
+
+  def handle_info({ref, {:error, reason}}, %{flusher: %{ref: ref}} = state) do
+    {:stop, reason, state}
+  end
+
+  def handle_info(
+        {ref, {:ok, disk_tables, old_disk_tables}},
+        %{compactor: %{ref: ref}} = state
+      ) do
+    with {:ok, manifest} <-
+           Manifest.update(state.manifest,
+             add_disk_tables: Enum.map(disk_tables, & &1.file),
+             remove_disk_tables: Enum.map(old_disk_tables, & &1.file)
+           ) do
+      compactor =
+        Enum.reduce(
+          disk_tables,
+          state.compactor,
+          fn disk_table, acc ->
+            Snapshots.add_table(
+              state.snapshots,
+              disk_table.file,
+              disk_table.level_key,
+              disk_table,
+              &File.rm(&1.file)
+            )
+
+            Compactor.put_into_level(acc, disk_table)
+          end
+        )
+        |> Compactor.set_ref(nil)
+
+      compactor =
+        Enum.reduce(
+          old_disk_tables,
+          compactor,
+          fn disk_table, acc ->
+            Snapshots.soft_delete_table(state.snapshots, disk_table.file)
+            Compactor.remove_from_level(acc, disk_table)
+          end
+        )
+
+      {:noreply, %{state | manifest: manifest, compactor: compactor},
+       {:continue, :next_compaction}}
+    else
+      {:error, reason} ->
+        {:stop, reason, state}
+    end
+  end
+
+  def handle_info({ref, {:error, reason}}, %{compactor: %{ref: ref}} = state) do
+    {:stop, reason, state}
+  end
+
+  def handle_info({:DOWN, monitor_ref, _, pid, _}, %{writer: {{pid, _}, _, monitor_ref}} = state) do
+    state = %{state | writer: nil}
+    {:noreply, state, {:continue, :next_writer}}
+  end
+
+  def handle_info({:DOWN, ref, _, _, reason}, %{flusher: %{ref: ref}} = state) do
+    {:stop, reason, state}
+  end
+
+  def handle_info({:DOWN, ref, _, _, reason}, %{compactor: %{ref: ref}} = state) do
+    {:stop, reason, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl GenServer
+  def handle_continue(:next_writer, state) do
+    case :queue.out(state.write_queue) do
+      {:empty, _write_queue} ->
+        {:noreply, state, {:continue, :flush?}}
+
+      {{:value, {from, _tx_key, _monitor_ref} = writer}, write_queue} ->
+        GenServer.reply(from, :ok)
+        state = %{state | writer: writer, write_queue: write_queue}
+        {:noreply, state, {:continue, :flush?}}
+    end
+  end
+
+  def handle_continue(:next_flush, state) do
+    flusher =
+      case Flusher.pop(state.flusher) do
+        {:noop, flusher} ->
+          flusher
+
+        {:flush, mem_table, wal, flusher} ->
+          start_flush(flusher, mem_table, wal)
+      end
+
+    {:noreply, %{state | flusher: flusher}, {:continue, :compact?}}
+  end
+
+  def handle_continue(:next_compaction, state) do
+    compactor =
+      case Compactor.pop(state.compactor) do
+        {:noop, compactor} ->
+          compactor
+
+        {:compact, level_key, compactor} ->
+          start_compaction(compactor, level_key)
+      end
+
+    {:noreply, %{state | compactor: compactor}, {:continue, :compact?}}
+  end
+
+  def handle_continue(:flush?, state) do
+    if MemTable.size(state.mem_table) >= state.mem_limit do
+      state = schedule_flush(state)
+
+      case rotate_mem(state) do
+        {:ok, state} -> {:noreply, state, {:continue, :clean_store}}
+        {:error, reason} -> {:stop, reason, state}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_continue(:compact?, state) do
+    state = schedule_compaction(state)
+    {:noreply, state, {:continue, :clean_store}}
+  end
+
+  def handle_continue(:clean_store, state) do
+    case Snapshots.hard_delete(state.snapshots) do
+      :ok -> {:noreply, state}
+      {:error, reason} -> {:stop, reason, state}
+    end
+  end
+
+  def handle_continue(:restore_mem_table, state) do
+    %{
+      wal: wal,
+      retired_wals: wals,
+      seq: seq
+    } = Manifest.snapshot(state.manifest, [:wal, :retired_wals, :seq])
+
+    Snapshots.put_seq(state.snapshots, seq)
+    state = %{state | wal_counter: parse_counter(wal)}
+
+    wals
+    |> Enum.reduce_while({:ok, state}, fn wal, {:ok, acc} ->
+      with {:ok, acc} <- replay_wal(acc, wal, seq, write?: false),
+           :ok <- WAL.close(acc.wal) do
+        {:cont, {:ok, schedule_flush(acc)}}
+      else
+        error -> {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, state} ->
+        case replay_wal(state, wal, seq, write?: true) do
+          {:ok, state} ->
+            {:noreply, state, {:continue, :restore_disk_tables}}
+
+          {:error, reason} ->
+            {:stop, reason, state}
+        end
+
+      {:error, reason} ->
+        {:stop, reason, state}
+    end)
+  end
+
+  def handle_continue(:restore_disk_tables, state) do
+    %{
+      disk_tables: disk_tables
+    } = Manifest.snapshot(state.manifest, [:disk_tables])
+
+    set_file_counter(disk_tables, state.file_counter)
+
+    Enum.reduce_while(disk_tables, {:ok, state}, fn disk_table, {:ok, acc} ->
+      case DiskTable.from_file(disk_table) do
+        {:ok, disk_table} ->
+          compactor = Compactor.put_into_level(acc.compactor, disk_table)
+
+          Snapshots.add_table(
+            acc.snapshots,
+            disk_table.file,
+            disk_table.level_key,
+            disk_table,
+            &File.rm(&1.file)
+          )
+
+          {:cont, {:ok, %{acc | compactor: compactor}}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+    |> then(fn
+      {:ok, state} ->
+        Process.put(:"$goblin_ext_ref", state.snapshots)
+        {:noreply, state, {:continue, :compact?}}
+
+      {:error, reason} ->
+        {:stop, reason, state}
+    end)
+  end
+
+  @impl GenServer
+  def terminate(_reason, state) do
+    if state.wal, do: WAL.close(state.wal)
+    Manifest.close(state.manifest)
+    :ok
+  end
+
+  defp schedule_write(state, tx_key, from, monitor_ref) do
+    cond do
+      is_nil(state.writer) and :queue.is_empty(state.write_queue) ->
+        {:write, %{state | writer: {from, tx_key, monitor_ref}}}
+
+      true ->
+        write_queue = :queue.in({from, tx_key, monitor_ref}, state.write_queue)
+        {:noop, %{state | write_queue: write_queue}}
+    end
+  end
+
+  defp schedule_flush(state) do
+    case Flusher.push(state.flusher, state.mem_table, state.wal) do
+      {:noop, flusher} ->
+        %{state | flusher: flusher}
+
+      {:flush, mem_table, wal, flusher} ->
+        flusher = start_flush(flusher, mem_table, wal)
+        %{state | flusher: flusher}
+    end
+  end
+
+  defp schedule_compaction(state) do
+    case Compactor.push(state.compactor) do
+      {:noop, compactor} ->
+        %{state | compactor: compactor}
+
+      {:compact, level_key, compactor} ->
+        compactor = start_compaction(compactor, level_key)
+        %{state | compactor: compactor}
+    end
+  end
+
+  defp rotate_mem(state) do
+    wal_filename = new_file(state.data_dir, state.wal_counter, @wal_suffix)
+
+    with :ok <- WAL.close(state.wal),
+         {:ok, wal} <- WAL.open(state.name, wal_filename, true),
+         {:ok, manifest} <-
+           Manifest.update(state.manifest,
+             set_wal: wal.log_file,
+             retire_wals: [state.wal.log_file]
+           ) do
+      mem_table = MemTable.new()
+      Snapshots.add_table(state.snapshots, wal.log_file, -1, mem_table, &MemTable.delete/1)
+
+      {:ok,
+       %{
+         state
+         | mem_table: mem_table,
+           wal: wal,
+           manifest: manifest,
+           wal_counter: state.wal_counter + 1
+       }}
+    end
+  end
+
+  defp replay_wal(state, nil, _max_seq, _opts) do
+    wal = new_file(state.data_dir, state.wal_counter, @wal_suffix)
+    mem_table = MemTable.new()
+    Snapshots.add_table(state.snapshots, wal, -1, mem_table, &MemTable.delete/1)
+
+    with {:ok, manifest} <- Manifest.update(state.manifest, set_wal: wal),
+         {:ok, wal} <- WAL.open(state.name, wal, true) do
+      state = %{
+        state
+        | mem_table: mem_table,
+          wal: wal,
+          manifest: manifest,
+          wal_counter: state.wal_counter + 1
+      }
+
+      {:ok, state}
+    end
+  end
+
+  defp replay_wal(state, wal, max_seq, opts) do
+    mem_table = MemTable.new()
+    Snapshots.add_table(state.snapshots, wal, -1, mem_table, &MemTable.delete/1)
+
+    with {:ok, wal} <- WAL.open(state.name, wal, opts[:write?]) do
+      WAL.replay(wal)
+      |> Stream.filter(fn
+        {:put, seq, _key, _value} when seq <= max_seq -> true
+        {:remove, seq, _key} when seq <= max_seq -> true
+        _ -> false
+      end)
+      |> Enum.each(&apply_write(mem_table, &1))
+
+      {:ok, %{state | mem_table: mem_table, wal: wal}}
+    end
+  end
+
+  defp start_flush(flusher, mem_table, wal) do
+    %{ref: ref} = Task.async(fn -> Flusher.flush(flusher, mem_table, wal) end)
+    Flusher.set_ref(flusher, ref)
+  end
+
+  defp start_compaction(compactor, level_key) do
+    %{ref: ref} = Task.async(fn -> Compactor.compact(compactor, level_key) end)
+    Compactor.set_ref(compactor, ref)
+  end
+
+  defp start_transaction(db, tx_key) do
+    GenServer.call(db, {:start_tx, tx_key})
+  end
+
+  defp run_transaction(db, tx, callback) do
+    case callback.(tx) do
+      {:commit, tx, reply} ->
+        {:ok, Tx.Write.complete(tx), reply}
+
+      :abort ->
+        abort_transaction(db)
+        {:error, :aborted}
+    end
+  end
+
+  defp commit_transaction(db, tx) do
+    GenServer.call(db, {:commit_tx, tx})
+  end
+
+  defp abort_transaction(db) do
+    GenServer.call(db, :abort_tx)
+  end
+
+  defp apply_write(mem_table, {:put, seq, key, value}),
+    do: MemTable.insert(mem_table, key, seq, value)
+
+  defp apply_write(mem_table, {:remove, seq, key}),
+    do: MemTable.remove(mem_table, key, seq)
+
+  defp set_file_counter([], _ref), do: :ok
+
+  defp set_file_counter([latest | _], ref) do
+    counter = parse_counter(latest)
+    :atomics.put(ref, 1, counter)
+  end
+
+  defp new_file(dir, count, suffix) do
+    prefix =
+      count
+      |> Integer.to_string(16)
+      |> String.pad_leading(20, "0")
+
+    Path.join(dir, "#{prefix}.#{suffix}")
+  end
+
+  defp parse_counter(nil), do: 0
+
+  defp parse_counter(path) do
+    [n, _suffix] =
+      path
+      |> Path.basename()
+      |> String.split(".")
+
+    String.to_integer(n, 16)
+  end
+
+  defp next_file_pair(ref, dir) do
+    count = :atomics.add_get(ref, 1, 1)
+    file = new_file(dir, count, @disk_table_suffix)
+    {"#{file}.tmp", file}
+  end
+
+  defp ext_ref(pid_or_name, retries \\ 30)
+  defp ext_ref(_, 0), do: raise("no reference found")
+
+  defp ext_ref(pid, retries) when is_pid(pid) do
+    {:dictionary, dictionary} = Process.info(pid, :dictionary)
+
+    case Keyword.get(dictionary, :"$goblin_ext_ref") do
+      nil ->
+        Process.sleep(50)
+        ext_ref(pid, retries - 1)
+
+      ext_ref ->
+        ext_ref
+    end
+  end
+
+  defp ext_ref(name, retries), do: ext_ref(Process.whereis(name), retries - 1)
 end
