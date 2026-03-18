@@ -1,11 +1,11 @@
 defmodule Goblin.BloomFilter.BitArray do
   @moduledoc false
 
-  @derive {Inspect, except: [:array]}
   defstruct [
     :size,
-    :hash_params,
-    :array
+    :no_bits,
+    :no_hashes,
+    :bits
   ]
 
   @type t :: %__MODULE__{}
@@ -15,9 +15,8 @@ defmodule Goblin.BloomFilter.BitArray do
   def new(size, fpp) do
     no_bits = no_bits(size, fpp)
     no_hashes = no_hashes(size, no_bits)
-    hash_params = hash_params(no_hashes, no_bits)
-    array = :array.new(no_bits, default: 0)
-    %__MODULE__{size: size, hash_params: hash_params, array: array}
+    bits = :binary.copy(<<0>>, div(no_bits + 7, 8))
+    %__MODULE__{size: size, no_bits: no_bits, no_hashes: no_hashes, bits: bits}
   end
 
   @doc "Add key to bit array if not already full."
@@ -25,21 +24,31 @@ defmodule Goblin.BloomFilter.BitArray do
   def add_key(%{size: size}, _key) when size <= 0, do: {:error, :full}
 
   def add_key(bit_array, key) do
-    array =
-      Enum.reduce(bit_array.hash_params, bit_array.array, fn hash_param, acc ->
-        hash = hash(hash_param, key)
-        :array.set(hash, 1, acc)
+    bits =
+      key
+      |> hashes(bit_array.no_hashes, bit_array.no_bits)
+      |> Enum.reduce(bit_array.bits, fn hash, acc ->
+        byte_pos = div(hash, 8)
+        bit_offset = rem(hash, 8)
+        <<left::binary-size(byte_pos), byte::8, right::binary>> = acc
+        <<left::binary, Bitwise.bor(byte, Bitwise.bsl(1, bit_offset))::8, right::binary>>
       end)
 
-    {:ok, %{bit_array | array: array, size: bit_array.size - 1}}
+    {:ok, %{bit_array | bits: bits, size: bit_array.size - 1}}
   end
 
   @doc "Check if key is a member in the bit array."
   @spec member?(t(), Goblin.db_key()) :: boolean()
   def member?(bit_array, key) do
-    Enum.all?(bit_array.hash_params, fn hash_param ->
-      hash = hash(hash_param, key)
-      1 == :array.get(hash, bit_array.array)
+    %{bits: bits} = bit_array
+
+    key
+    |> hashes(bit_array.no_hashes, bit_array.no_bits)
+    |> Enum.all?(fn hash ->
+      byte_pos = div(hash, 8)
+      bit_offset = rem(hash, 8)
+      byte = :binary.at(bits, byte_pos)
+      Bitwise.band(byte, Bitwise.bsl(1, bit_offset)) != 0
     end)
   end
 
@@ -47,19 +56,19 @@ defmodule Goblin.BloomFilter.BitArray do
     floor(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
   end
 
+  defp hashes(key, no_hashes, range) do
+    h1 = hash1(key, range)
+    h2 = hash2(key, range)
+
+    for i <- 0..(no_hashes - 1) do
+      rem(h1 + i * h2, range)
+    end
+  end
+
+  defp hash1(x, range), do: :erlang.phash2({x, 1}, range)
+  defp hash2(x, range), do: :erlang.phash2({x, 2}, range)
+
   defp no_hashes(size, no_bits) do
     round(no_bits / size * :math.log(2))
   end
-
-  defp hash_params(salt, range, params \\ [])
-  defp hash_params(0, _range, params), do: params
-
-  defp hash_params(salt, range, params) do
-    hash_params(salt - 1, range, [{salt, range} | params])
-  end
-
-  defp hash({salt, range}, key) do
-    :erlang.phash2({key, salt}, range)
-  end
 end
-

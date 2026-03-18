@@ -10,14 +10,16 @@ defmodule Goblin.BloomFilter do
 
   @default_bit_array_size 10_000
   @default_fpp 0.01
+  @tightening_ratio 0.5
   @type t :: %__MODULE__{}
 
   @doc "Generates a new scalable Bloom filter struct."
   @spec new(keyword()) :: t()
   def new(opts) do
     fpp = opts[:fpp] || @default_fpp
+    segment_fpp = calculate_fpp([], fpp)
     bit_array_size = opts[:bit_array_size] || @default_bit_array_size
-    bit_array = BitArray.new(bit_array_size, fpp)
+    bit_array = BitArray.new(bit_array_size, segment_fpp)
     %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
   end
 
@@ -31,7 +33,8 @@ defmodule Goblin.BloomFilter do
         %{bf | bit_arrays: [bit_array | bit_arrays]}
 
       {:error, :full} ->
-        bit_array = BitArray.new(bf.bit_array_size, bf.fpp)
+        segment_fpp = calculate_fpp(bf.bit_arrays, bf.fpp)
+        bit_array = BitArray.new(bf.bit_array_size, segment_fpp)
 
         %{bf | bit_arrays: [bit_array | bf.bit_arrays]}
         |> put(key)
@@ -42,5 +45,9 @@ defmodule Goblin.BloomFilter do
   @spec member?(t(), term()) :: boolean()
   def member?(bf, key) do
     Enum.any?(bf.bit_arrays, &BitArray.member?(&1, key))
+  end
+
+  defp calculate_fpp(bit_arrays, fpp) do
+    fpp * (1 - @tightening_ratio) * :math.pow(@tightening_ratio, length(bit_arrays))
   end
 end
