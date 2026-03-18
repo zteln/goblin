@@ -3,8 +3,8 @@ defmodule Goblin.Manifest.Snapshot do
 
   defstruct [
     :wal,
-    wal_rotations: [],
-    disk_tables: MapSet.new(),
+    retired_wals: [],
+    disk_tables: [],
     tracked: [],
     count: 0,
     seq: 0
@@ -14,9 +14,9 @@ defmodule Goblin.Manifest.Snapshot do
   @type update_term ::
           {:disk_table_added, Path.t()}
           | {:disk_table_removed, Path.t()}
-          | {:wal_added, Path.t()}
+          | {:wal_retired, Path.t()}
           | {:wal_removed, Path.t()}
-          | {:wal_created, Path.t()}
+          | {:wal_set, Path.t()}
           | {:seq, non_neg_integer()}
 
   @doc "Update the manifest snapshot with term(s)."
@@ -34,28 +34,28 @@ defmodule Goblin.Manifest.Snapshot do
   end
 
   def update(snapshot, {:disk_table_added, disk_table}) do
-    disk_tables = MapSet.put(snapshot.disk_tables, disk_table)
+    disk_tables = [disk_table | snapshot.disk_tables]
     %{snapshot | disk_tables: disk_tables, count: snapshot.count + 1}
   end
 
   def update(snapshot, {:disk_table_removed, disk_table}) do
-    disk_tables = MapSet.delete(snapshot.disk_tables, disk_table)
+    disk_tables = Enum.reject(snapshot.disk_tables, &(&1 == disk_table))
     tracked = [disk_table | snapshot.tracked]
     %{snapshot | disk_tables: disk_tables, tracked: tracked}
   end
 
-  def update(snapshot, {:wal_added, wal}) do
-    wal_rotations = [wal | snapshot.wal_rotations]
-    %{snapshot | wal_rotations: wal_rotations}
+  def update(snapshot, {:wal_retired, wal}) do
+    retired_wals = [wal | snapshot.retired_wals]
+    %{snapshot | retired_wals: retired_wals}
   end
 
   def update(snapshot, {:wal_removed, wal}) do
-    wal_rotations = Enum.reject(snapshot.wal_rotations, &(&1 == wal))
+    retired_wals = Enum.reject(snapshot.retired_wals, &(&1 == wal))
     tracked = [wal | snapshot.tracked]
-    %{snapshot | wal_rotations: wal_rotations, tracked: tracked}
+    %{snapshot | retired_wals: retired_wals, tracked: tracked}
   end
 
-  def update(snapshot, {:wal_created, wal}) do
+  def update(snapshot, {:wal_set, wal}) do
     %{snapshot | wal: wal}
   end
 
