@@ -1,40 +1,51 @@
 defmodule Goblin.ExportTest do
   use ExUnit.Case, async: true
-  use Goblin.TestHelper
 
-  setup_db()
+  alias Goblin.Export
 
-  setup c do
-    export_dir = Path.join(c.tmp_dir, "exports")
-    File.mkdir!(export_dir)
-    %{export_dir: export_dir}
+  @moduletag :tmp_dir
+
+  defp create_file(dir, name, content \\ "data") do
+    path = Path.join(dir, name)
+    File.write!(path, content)
+    path
   end
 
-  describe "export/2" do
-    @tag db_opts: [mem_limit: 2 * 1024]
-    test "exports a .tar.gz snapshot from manifest", c do
-      trigger_flush(c)
+  describe "into_tar/2" do
+    test "creates a tar.gz from a list of files", c do
+      file_a = create_file(c.tmp_dir, "a.goblin")
+      file_b = create_file(c.tmp_dir, "b.goblin")
 
-      assert_eventually do
-        refute Goblin.flushing?(c.db)
-      end
+      export_dir = Path.join(c.tmp_dir, "exports")
+      File.mkdir!(export_dir)
 
-      assert {:ok, tar_name} = Goblin.Export.export(c.export_dir, c.manifest)
-      assert File.exists?(tar_name)
+      assert {:ok, tar_path} = Export.into_tar(export_dir, [file_a, file_b])
+      assert File.exists?(tar_path)
+      assert String.ends_with?(tar_path, ".tar.gz")
 
-      # verify we can extract the tar and it contains files
-      {:ok, tar_content} = :erl_tar.extract(~c"#{tar_name}", [:memory, :compressed])
-      assert length(tar_content) > 0
+      {:ok, entries} = :erl_tar.extract(~c"#{tar_path}", [:memory, :compressed])
+      names = Enum.map(entries, fn {name, _data} -> to_string(name) end) |> Enum.sort()
 
-      # verify we can open a fresh database from the export
-      unpack_dir = Path.join(c.tmp_dir, "unpack")
-      File.mkdir!(unpack_dir)
-      :ok = :erl_tar.extract(~c"#{tar_name}", [:compressed, cwd: ~c"#{unpack_dir}"])
+      assert names == ["a.goblin", "b.goblin"]
+    end
 
-      assert {:ok, backup_db} =
-               Goblin.start_link(name: Goblin.ExportBackup, data_dir: unpack_dir)
+    test "returns error for non-existent files", c do
+      export_dir = Path.join(c.tmp_dir, "exports")
+      File.mkdir!(export_dir)
 
-      backup_db
+      assert {:error, _reason} =
+               Export.into_tar(export_dir, ["/no/such/file.goblin"])
+    end
+
+    test "handles empty file list", c do
+      export_dir = Path.join(c.tmp_dir, "exports")
+      File.mkdir!(export_dir)
+
+      assert {:ok, tar_path} = Export.into_tar(export_dir, [])
+      assert File.exists?(tar_path)
+
+      {:ok, entries} = :erl_tar.extract(~c"#{tar_path}", [:memory, :compressed])
+      assert entries == []
     end
   end
 end
