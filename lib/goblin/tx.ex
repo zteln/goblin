@@ -6,8 +6,10 @@ defmodule Goblin.Tx do
 
       Goblin.transaction(db, fn tx ->
         counter = Goblin.Tx.get(tx, :counter, default: 0)
-        tx = Goblin.Tx.put(tx, :counter, counter + 1)
-        {:commit, tx, :ok}
+
+        tx
+        |> Goblin.Tx.put(:counter, counter + 1)
+        |> Goblin.Tx.commit()
       end)
 
       Goblin.read(db, fn tx ->
