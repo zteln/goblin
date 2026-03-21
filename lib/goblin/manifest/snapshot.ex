@@ -2,22 +2,23 @@ defmodule Goblin.Manifest.Snapshot do
   @moduledoc false
 
   defstruct [
-    :wal,
+    :active_wal,
     retired_wals: [],
-    disk_tables: [],
-    tracked: [],
+    active_disk_tables: [],
+    dirt: [],
     count: 0,
     seq: 0
   ]
 
   @type t :: %__MODULE__{}
   @type update_term ::
-          {:disk_table_added, Path.t()}
+          {:disk_table_activated, Path.t()}
           | {:disk_table_removed, Path.t()}
+          | {:wal_activated, Path.t()}
           | {:wal_retired, Path.t()}
           | {:wal_removed, Path.t()}
-          | {:wal_set, Path.t()}
-          | {:seq, non_neg_integer()}
+          | {:seq_set, non_neg_integer()}
+          | :sweeped
 
   @doc "Update the manifest snapshot with term(s)."
   @spec update(t(), update_term() | [update_term()]) :: t()
@@ -33,15 +34,15 @@ defmodule Goblin.Manifest.Snapshot do
     snapshot
   end
 
-  def update(snapshot, {:disk_table_added, disk_table}) do
-    disk_tables = [disk_table | snapshot.disk_tables]
-    %{snapshot | disk_tables: disk_tables, count: snapshot.count + 1}
+  def update(snapshot, {:disk_table_activated, disk_table}) do
+    disk_tables = [disk_table | snapshot.active_disk_tables]
+    %{snapshot | active_disk_tables: disk_tables, count: snapshot.count + 1}
   end
 
   def update(snapshot, {:disk_table_removed, disk_table}) do
-    disk_tables = Enum.reject(snapshot.disk_tables, &(&1 == disk_table))
-    tracked = [disk_table | snapshot.tracked]
-    %{snapshot | disk_tables: disk_tables, tracked: tracked}
+    disk_tables = Enum.reject(snapshot.active_disk_tables, &(&1 == disk_table))
+    dirt = [disk_table | snapshot.dirt]
+    %{snapshot | active_disk_tables: disk_tables, dirt: dirt}
   end
 
   def update(snapshot, {:wal_retired, wal}) do
@@ -51,15 +52,19 @@ defmodule Goblin.Manifest.Snapshot do
 
   def update(snapshot, {:wal_removed, wal}) do
     retired_wals = Enum.reject(snapshot.retired_wals, &(&1 == wal))
-    tracked = [wal | snapshot.tracked]
-    %{snapshot | retired_wals: retired_wals, tracked: tracked}
+    dirt = [wal | snapshot.dirt]
+    %{snapshot | retired_wals: retired_wals, dirt: dirt}
   end
 
-  def update(snapshot, {:wal_set, wal}) do
-    %{snapshot | wal: wal}
+  def update(snapshot, {:wal_activated, wal}) do
+    %{snapshot | active_wal: wal}
   end
 
-  def update(snapshot, {:seq, seq}) do
+  def update(snapshot, {:seq_set, seq}) do
     %{snapshot | seq: seq}
+  end
+
+  def update(snapshot, :sweeped) do
+    %{snapshot | dirt: []}
   end
 end

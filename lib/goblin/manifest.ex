@@ -76,16 +76,33 @@ defmodule Goblin.Manifest do
     updates =
       actions
       |> Enum.flat_map(fn
-        {:add_disk_tables, disk_tables} -> Enum.map(disk_tables, &{:disk_table_added, &1})
-        {:remove_disk_tables, disk_tables} -> Enum.map(disk_tables, &{:disk_table_removed, &1})
-        {:retire_wals, wals} -> Enum.map(wals, &{:wal_retired, &1})
-        {:remove_wals, wals} -> Enum.map(wals, &{:wal_removed, &1})
-        {:set_wal, wal} -> [{:wal_set, wal}]
-        {:seq, seq} -> [{:seq, seq}]
-        _ -> []
+        {:activate_disk_tables, disk_tables} ->
+          Enum.map(disk_tables, &{:disk_table_activated, &1})
+
+        {:remove_disk_tables, disk_tables} ->
+          Enum.map(disk_tables, &{:disk_table_removed, &1})
+
+        {:retire_wals, wals} ->
+          Enum.map(wals, &{:wal_retired, &1})
+
+        {:remove_wals, wals} ->
+          Enum.map(wals, &{:wal_removed, &1})
+
+        {:activate_wal, wal} ->
+          [{:wal_activated, wal}]
+
+        {:set_seq, seq} ->
+          [{:seq_set, seq}]
+
+        :sweep ->
+          [:sweeped]
+
+        _ ->
+          []
       end)
       |> Enum.map(fn
-        {:seq, seq} -> {:seq, seq}
+        {:seq_set, seq} -> {:seq_set, seq}
+        :sweeped -> :sweeped
         {update, file} -> {update, trim_dir(file)}
       end)
 
@@ -100,14 +117,17 @@ defmodule Goblin.Manifest do
   def snapshot(manifest, keys) do
     manifest.snapshot
     |> Map.take(keys)
-    |> Map.replace_lazy(:wal, &(&1 && Path.join(manifest.data_dir, &1)))
-    |> Map.replace_lazy(:disk_tables, fn disk_tables ->
+    |> Map.replace_lazy(:active_wal, &(&1 && Path.join(manifest.data_dir, &1)))
+    |> Map.replace_lazy(:active_disk_tables, fn disk_tables ->
       Enum.map(disk_tables, &Path.join(manifest.data_dir, &1))
     end)
     |> Map.replace_lazy(:retired_wals, fn retired_wals ->
       retired_wals
       |> Enum.map(&Path.join(manifest.data_dir, &1))
       |> Enum.reverse()
+    end)
+    |> Map.replace_lazy(:dirt, fn dirt ->
+      Enum.map(dirt, &Path.join(manifest.data_dir, &1))
     end)
   end
 

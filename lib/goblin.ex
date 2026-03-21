@@ -600,7 +600,7 @@ defmodule Goblin do
     %{writes: writes, seq: seq} = tx
 
     with {:ok, wal} <- WAL.append(state.wal, writes),
-         {:ok, manifest} <- Manifest.update(state.manifest, seq: seq) do
+         {:ok, manifest} <- Manifest.update(state.manifest, set_seq: seq) do
       Enum.each(writes, &apply_write(state.mem_table, &1))
       Snapshots.put_seq(state.snapshots, seq)
       {:reply, :ok, %{state | wal: wal, manifest: manifest}, {:continue, :next_writer}}
@@ -625,10 +625,10 @@ defmodule Goblin do
 
   def handle_call({:export, export_dir}, _from, state) do
     %{
-      disk_tables: disk_tables,
-      retired_wals: retired_wals,
-      wal: wal
-    } = Manifest.snapshot(state.manifest, [:disk_tables, :retired_wals, :wal])
+      active_disk_tables: disk_tables,
+      active_wal: wal,
+      retired_wals: retired_wals
+    } = Manifest.snapshot(state.manifest, [:active_disk_tables, :active_wal, :retired_wals])
 
     filelist = List.flatten([state.manifest.log_file, wal, disk_tables, retired_wals])
 
@@ -665,7 +665,7 @@ defmodule Goblin do
   def handle_info({ref, {:ok, disk_tables, wal}}, %{flusher: %{ref: ref}} = state) do
     with {:ok, manifest} <-
            Manifest.update(state.manifest,
-             add_disk_tables: Enum.map(disk_tables, & &1.file),
+             activate_disk_tables: Enum.map(disk_tables, & &1.file),
              remove_wals: [wal.log_file]
            ),
          :ok <- WAL.rm(wal) do
@@ -707,7 +707,7 @@ defmodule Goblin do
       ) do
     with {:ok, manifest} <-
            Manifest.update(state.manifest,
-             add_disk_tables: Enum.map(disk_tables, & &1.file),
+             activate_disk_tables: Enum.map(disk_tables, & &1.file),
              remove_disk_tables: Enum.map(retired_disk_tables, & &1.file)
            ) do
       compactor =
@@ -823,19 +823,27 @@ defmodule Goblin do
   end
 
   def handle_continue(:clean_store, state) do
-    case Snapshots.hard_delete(state.snapshots) do
-      :ok -> {:noreply, state}
+    %{dirt: dirt} = Manifest.snapshot(state.manifest, [:dirt])
+
+    Enum.each(dirt, fn file ->
+      File.exists?(file) && File.rm!(file)
+    end)
+
+    with {:ok, manifest} <- Manifest.update(state.manifest, [:sweep]),
+         :ok <- Snapshots.hard_delete(state.snapshots) do
+      {:noreply, %{state | manifest: manifest}}
+    else
       {:error, reason} -> {:stop, reason, state}
     end
   end
 
   def handle_continue(:restore_mem_table, state) do
     %{
-      disk_tables: disk_tables,
-      wal: wal,
+      active_disk_tables: disk_tables,
+      active_wal: wal,
       retired_wals: wals,
       seq: seq
-    } = Manifest.snapshot(state.manifest, [:disk_tables, :wal, :retired_wals, :seq])
+    } = Manifest.snapshot(state.manifest, [:active_disk_tables, :active_wal, :retired_wals, :seq])
 
     max_file_count =
       disk_tables
@@ -874,8 +882,8 @@ defmodule Goblin do
 
   def handle_continue(:restore_disk_tables, state) do
     %{
-      disk_tables: disk_tables
-    } = Manifest.snapshot(state.manifest, [:disk_tables])
+      active_disk_tables: disk_tables
+    } = Manifest.snapshot(state.manifest, [:active_disk_tables])
 
     Enum.reduce_while(disk_tables, {:ok, state}, fn disk_table, {:ok, acc} ->
       case DiskTable.from_file(disk_table) do
@@ -953,7 +961,7 @@ defmodule Goblin do
          {:ok, wal} <- WAL.open(state.name, wal_filename, true),
          {:ok, manifest} <-
            Manifest.update(state.manifest,
-             set_wal: wal.log_file,
+             activate_wal: wal.log_file,
              retire_wals: [state.wal.log_file]
            ) do
       mem_table = MemTable.new()
@@ -975,7 +983,7 @@ defmodule Goblin do
     mem_table = MemTable.new()
     Snapshots.add_table(state.snapshots, wal, -1, mem_table, &MemTable.delete/1)
 
-    with {:ok, manifest} <- Manifest.update(state.manifest, set_wal: wal),
+    with {:ok, manifest} <- Manifest.update(state.manifest, activate_wal: wal),
          {:ok, wal} <- WAL.open(state.name, wal, true) do
       state = %{
         state
