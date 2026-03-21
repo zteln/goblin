@@ -160,6 +160,7 @@ defmodule Goblin.DiskTable do
 
   defp open_new_disk_table(opts) do
     {tmp_file, file} = opts[:next_file_f].()
+    File.exists?(tmp_file) && File.rm!(tmp_file)
     handler = Handler.open!(tmp_file, write?: true)
 
     disk_table = %__MODULE__{
