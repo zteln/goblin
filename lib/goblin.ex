@@ -470,17 +470,10 @@ defmodule Goblin do
       max: max
     )
     |> Stream.flat_map(fn
-      {{:"$goblin_tag", ^tag, key}, _seq, value} ->
-        [{key, value}]
-
-      {{:"$goblin_tag", _tag, _key}, _seq, _value} when is_nil(tag) ->
-        []
-
-      {key, _seq, value} when is_nil(tag) ->
-        [{key, value}]
-
-      _ ->
-        []
+      {{:"$goblin_tag", ^tag, key}, _seq, value} -> [{key, value}]
+      {{:"$goblin_tag", _tag, _key}, _seq, _value} when is_nil(tag) -> []
+      {key, _seq, value} when is_nil(tag) -> [{key, value}]
+      _ -> []
     end)
   end
 
@@ -709,13 +702,13 @@ defmodule Goblin do
   end
 
   def handle_info(
-        {ref, {:ok, disk_tables, old_disk_tables}},
+        {ref, {:ok, disk_tables, retired_disk_tables}},
         %{compactor: %{ref: ref}} = state
       ) do
     with {:ok, manifest} <-
            Manifest.update(state.manifest,
              add_disk_tables: Enum.map(disk_tables, & &1.file),
-             remove_disk_tables: Enum.map(old_disk_tables, & &1.file)
+             remove_disk_tables: Enum.map(retired_disk_tables, & &1.file)
            ) do
       compactor =
         Enum.reduce(
@@ -734,16 +727,16 @@ defmodule Goblin do
           end
         )
         |> Compactor.set_ref(nil)
-
-      compactor =
-        Enum.reduce(
-          old_disk_tables,
-          compactor,
-          fn disk_table, acc ->
-            Snapshots.soft_delete_table(state.snapshots, disk_table.file)
-            Compactor.remove_from_level(acc, disk_table)
-          end
-        )
+        |> then(fn compactor ->
+          Enum.reduce(
+            retired_disk_tables,
+            compactor,
+            fn disk_table, acc ->
+              Snapshots.soft_delete_table(state.snapshots, disk_table.file)
+              Compactor.remove_from_level(acc, disk_table)
+            end
+          )
+        end)
 
       {:noreply, %{state | manifest: manifest, compactor: compactor},
        {:continue, :next_compaction}}
@@ -838,10 +831,18 @@ defmodule Goblin do
 
   def handle_continue(:restore_mem_table, state) do
     %{
+      disk_tables: disk_tables,
       wal: wal,
       retired_wals: wals,
       seq: seq
-    } = Manifest.snapshot(state.manifest, [:wal, :retired_wals, :seq])
+    } = Manifest.snapshot(state.manifest, [:disk_tables, :wal, :retired_wals, :seq])
+
+    max_file_count =
+      disk_tables
+      |> Enum.map(&parse_counter/1)
+      |> Enum.max(fn -> 0 end)
+
+    :atomics.put(state.file_counter, 1, max_file_count)
 
     Snapshots.put_seq(state.snapshots, seq)
     state = %{state | wal_counter: parse_counter(wal)}
@@ -859,7 +860,8 @@ defmodule Goblin do
       {:ok, state} ->
         case replay_wal(state, wal, seq, write?: true) do
           {:ok, state} ->
-            {:noreply, state, {:continue, :restore_disk_tables}}
+            {:noreply, %{state | wal_counter: state.wal_counter + 1},
+             {:continue, :restore_disk_tables}}
 
           {:error, reason} ->
             {:stop, reason, state}
@@ -874,8 +876,6 @@ defmodule Goblin do
     %{
       disk_tables: disk_tables
     } = Manifest.snapshot(state.manifest, [:disk_tables])
-
-    set_file_counter(disk_tables, state.file_counter)
 
     Enum.reduce_while(disk_tables, {:ok, state}, fn disk_table, {:ok, acc} ->
       case DiskTable.from_file(disk_table) do
@@ -981,8 +981,7 @@ defmodule Goblin do
         state
         | mem_table: mem_table,
           wal: wal,
-          manifest: manifest,
-          wal_counter: state.wal_counter + 1
+          manifest: manifest
       }
 
       {:ok, state}
@@ -1045,13 +1044,6 @@ defmodule Goblin do
   defp apply_write(mem_table, {:remove, seq, key}),
     do: MemTable.remove(mem_table, key, seq)
 
-  defp set_file_counter([], _ref), do: :ok
-
-  defp set_file_counter([latest | _], ref) do
-    counter = parse_counter(latest)
-    :atomics.put(ref, 1, counter)
-  end
-
   defp new_file(dir, count, suffix) do
     prefix =
       count
@@ -1078,21 +1070,21 @@ defmodule Goblin do
     {"#{file}.tmp", file}
   end
 
-  defp ext_ref(pid_or_name, retries \\ 30)
-  defp ext_ref(_, 0), do: raise("no reference found")
+  defp ext_ref(pid_or_name, timeout \\ 20000)
+  defp ext_ref(_, timeout) when timeout <= 0, do: raise("no reference found")
 
-  defp ext_ref(pid, retries) when is_pid(pid) do
+  defp ext_ref(pid, timeout) when is_pid(pid) do
     {:dictionary, dictionary} = Process.info(pid, :dictionary)
 
     case Keyword.get(dictionary, :"$goblin_ext_ref") do
       nil ->
         Process.sleep(50)
-        ext_ref(pid, retries - 1)
+        ext_ref(pid, timeout - 50)
 
       ext_ref ->
         ext_ref
     end
   end
 
-  defp ext_ref(name, retries), do: ext_ref(Process.whereis(name), retries - 1)
+  defp ext_ref(name, timeout), do: ext_ref(Process.whereis(name), timeout - 50)
 end
