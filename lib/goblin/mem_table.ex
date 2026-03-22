@@ -10,29 +10,35 @@ defmodule Goblin.MemTable do
 
   @type t :: %__MODULE__{}
 
+  @spec new() :: t()
   def new() do
     table = :ets.new(@mem_table_name, [:ordered_set])
     %__MODULE__{table: table, overhead_size: size_of(table)}
   end
 
+  @spec size(t()) :: non_neg_integer()
   def size(mem_table) do
     size_of(mem_table.table) - mem_table.overhead_size
   end
 
+  @spec delete(t()) :: :ok
   def delete(mem_table) do
     :ets.delete(mem_table.table)
     :ok
   end
 
+  @spec insert(t(), term(), term(), keyword()) :: :ok
   def insert(mem_table, key, seq, value) do
     :ets.insert(mem_table.table, {{key, -seq}, value})
     :ok
   end
 
+  @spec remove(t(), term(), non_neg_integer()) :: :ok
   def remove(mem_table, key, seq) do
     insert(mem_table, key, seq, :"$goblin_tombstone")
   end
 
+  @spec get(t(), term(), non_neg_integer()) :: {term(), non_neg_integer(), term()} | :not_found
   def get(mem_table, key, seq) do
     case :ets.lookup(mem_table.table, {key, -seq}) do
       [] -> :not_found
@@ -40,6 +46,7 @@ defmodule Goblin.MemTable do
     end
   end
 
+  @spec search(t(), term(), non_neg_integer()) :: {term(), non_neg_integer(), term()} | :not_found
   def search(mem_table, key, seq) do
     ms = [
       {
@@ -54,6 +61,7 @@ defmodule Goblin.MemTable do
     |> Enum.max_by(fn {_key, seq, _value} -> seq end, fn -> :not_found end)
   end
 
+  @spec has_key?(t(), term()) :: boolean()
   def has_key?(mem_table, key) do
     ms = [
       {
@@ -69,6 +77,9 @@ defmodule Goblin.MemTable do
     end
   end
 
+  @spec iterate(t()) :: {term(), non_neg_integer()} | :end_of_iteration
+  @spec iterate(t(), {term(), non_neg_integer()}) ::
+          {term(), non_neg_integer()} | :end_of_iteration
   def iterate(mem_table) do
     idx = :ets.first(mem_table.table)
     handle_iteration(mem_table, idx)
