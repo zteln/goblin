@@ -544,6 +544,9 @@ defmodule Goblin do
       |> Keyword.put(:next_file_f, fn -> next_file_pair(file_counter, data_dir) end)
 
     with {:ok, manifest} <- Manifest.open(name, data_dir) do
+      %{dirt: dirt} = Manifest.snapshot(manifest, [:dirt])
+      Enum.each(dirt, fn file -> File.exists?(file) && File.rm!(file) end)
+
       {:ok,
        %__MODULE__{
          name: name,
@@ -669,7 +672,6 @@ defmodule Goblin do
              remove_wals: [wal.log_file]
            ),
          :ok <- WAL.rm(wal) do
-      Snapshots.soft_delete_table(state.snapshots, wal.log_file)
       flusher = Flusher.set_ref(state.flusher, nil)
 
       compactor =
@@ -689,6 +691,7 @@ defmodule Goblin do
           end
         )
 
+      Snapshots.soft_delete_table(state.snapshots, wal.log_file)
       state = %{state | manifest: manifest, flusher: flusher, compactor: compactor}
       {:noreply, state, {:continue, :next_flush}}
     else
@@ -748,6 +751,13 @@ defmodule Goblin do
 
   def handle_info({ref, {:error, reason}}, %{compactor: %{ref: ref}} = state) do
     {:stop, reason, state}
+  end
+
+  def handle_info({:retry_hard_delete, id}, state) do
+    case Snapshots.hard_delete_table(state.snapshots, id) do
+      :ok -> {:noreply, state}
+      {:error, reason} -> {:stop, reason, state}
+    end
   end
 
   def handle_info({:DOWN, monitor_ref, _, pid, _}, %{writer: {{pid, _}, _, monitor_ref}} = state) do
@@ -823,18 +833,8 @@ defmodule Goblin do
   end
 
   def handle_continue(:clean_store, state) do
-    %{dirt: dirt} = Manifest.snapshot(state.manifest, [:dirt])
-
-    Enum.each(dirt, fn file ->
-      File.exists?(file) && File.rm!(file)
-    end)
-
-    with {:ok, manifest} <- Manifest.update(state.manifest, [:sweep]),
-         :ok <- Snapshots.hard_delete(state.snapshots) do
-      {:noreply, %{state | manifest: manifest}}
-    else
-      {:error, reason} -> {:stop, reason, state}
-    end
+    Snapshots.hard_delete_tables(state.snapshots)
+    {:noreply, state}
   end
 
   def handle_continue(:restore_mem_table, state) do
