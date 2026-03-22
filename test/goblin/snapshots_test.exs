@@ -41,13 +41,13 @@ defmodule Goblin.SnapshotsTest do
     end
   end
 
-  describe "soft_delete_table/2 and hard_delete/1" do
+  describe "soft_delete_table/2 and hard_delete_table/2" do
     test "hard_delete invokes callback when no snapshots reference table", c do
       parent = self()
       Snapshots.add_table(c.ref, :t1, 0, :data, fn _ -> send(parent, :deleted) end)
 
       Snapshots.soft_delete_table(c.ref, :t1)
-      assert :ok == Snapshots.hard_delete(c.ref)
+      assert :ok == Snapshots.hard_delete_table(c.ref, :t1)
 
       assert_receive :deleted
     end
@@ -60,13 +60,13 @@ defmodule Goblin.SnapshotsTest do
       Snapshots.register_tx(c.ref, tx_key)
 
       Snapshots.soft_delete_table(c.ref, :t1)
-      assert :ok == Snapshots.hard_delete(c.ref)
+      assert :ok == Snapshots.hard_delete_table(c.ref, :t1)
 
       refute_receive :deleted
 
       # After unregistering, hard_delete should succeed
       Snapshots.unregister_tx(c.ref, tx_key)
-      assert :ok == Snapshots.hard_delete(c.ref)
+      assert :ok == Snapshots.hard_delete_table(c.ref, :t1)
 
       assert_receive :deleted
     end
@@ -82,14 +82,47 @@ defmodule Goblin.SnapshotsTest do
 
       # Retry 61 times to exceed the @max_retries (60) limit
       for _ <- 1..61 do
-        Snapshots.hard_delete(c.ref)
+        Snapshots.hard_delete_table(c.ref, :t1)
       end
 
-      assert {:error, :too_many_retries} == Snapshots.hard_delete(c.ref)
+      assert {:error, :too_many_retries} == Snapshots.hard_delete_table(c.ref, :t1)
     end
 
     test "soft_delete of nonexistent table is a no-op", c do
       assert :ok == Snapshots.soft_delete_table(c.ref, :nonexistent)
+    end
+  end
+
+  describe "hard_delete_tables/1" do
+    test "deletes all eligible soft-deleted tables", c do
+      parent = self()
+      Snapshots.add_table(c.ref, :t1, 0, :data1, fn _ -> send(parent, :deleted_t1) end)
+      Snapshots.add_table(c.ref, :t2, 0, :data2, fn _ -> send(parent, :deleted_t2) end)
+
+      Snapshots.soft_delete_table(c.ref, :t1)
+      Snapshots.soft_delete_table(c.ref, :t2)
+
+      Snapshots.hard_delete_tables(c.ref)
+
+      assert_receive :deleted_t1
+      assert_receive :deleted_t2
+    end
+
+    test "skips tables held by active transaction", c do
+      parent = self()
+      Snapshots.add_table(c.ref, :t1, 0, :data1, fn _ -> send(parent, :deleted_t1) end)
+      Snapshots.add_table(c.ref, :t2, 0, :data2, fn _ -> send(parent, :deleted_t2) end)
+
+      tx_key = make_ref()
+      Snapshots.register_tx(c.ref, tx_key)
+
+      Snapshots.soft_delete_table(c.ref, :t1)
+      Snapshots.soft_delete_table(c.ref, :t2)
+
+      Snapshots.hard_delete_tables(c.ref)
+
+      refute_receive :deleted_t1
+      refute_receive :deleted_t2
     end
   end
 
@@ -118,7 +151,7 @@ defmodule Goblin.SnapshotsTest do
 
       Snapshots.unregister_tx(c.ref, tx_key)
 
-      assert [] == Snapshots.filter_tables(c.ref, tx_key)
+      assert_raise MatchError, fn -> Snapshots.filter_tables(c.ref, tx_key) end
     end
   end
 
