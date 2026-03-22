@@ -59,13 +59,18 @@ defmodule Goblin.Tx.Read do
 
   def search(tables_f, keys, seq, max_level_key, level_key, acc) do
     {acc, keys} =
-      Iterator.k_merge_stream(fn ->
-        Enum.map(tables_f.(level_key), &Queryable.search(&1, keys, seq))
-      end)
-      # |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
-      # |> Enum.uniq()
-      |> Enum.reduce({acc, keys}, fn {key, _seq, val}, {acc, keys} ->
-        {[{key, val} | acc], Enum.reject(keys, &(&1 == key))}
+      Iterator.k_merge_stream(
+        fn ->
+          Enum.map(tables_f.(level_key), &Queryable.search(&1, keys, seq))
+        end,
+        filter_tombstones: false
+      )
+      |> Enum.reduce({acc, keys}, fn
+        {key, _seq, :"$goblin_tombstone"}, {acc, keys} ->
+          {acc, Enum.reject(keys, &(&1 == key))}
+
+        {key, _seq, val}, {acc, keys} ->
+          {[{key, val} | acc], Enum.reject(keys, &(&1 == key))}
       end)
 
     search(tables_f, keys, seq, max_level_key, level_key + 1, acc)
