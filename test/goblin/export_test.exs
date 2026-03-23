@@ -12,11 +12,11 @@ defmodule Goblin.ExportTest do
   end
 
   describe "into_tar/2" do
-    test "creates a tar.gz from a list of files", c do
-      file_a = create_file(c.tmp_dir, "a.goblin")
-      file_b = create_file(c.tmp_dir, "b.goblin")
+    test "creates a tar.gz from a list of files", ctx do
+      file_a = create_file(ctx.tmp_dir, "a.goblin")
+      file_b = create_file(ctx.tmp_dir, "b.goblin")
 
-      export_dir = Path.join(c.tmp_dir, "exports")
+      export_dir = Path.join(ctx.tmp_dir, "exports")
       File.mkdir!(export_dir)
 
       assert {:ok, tar_path} = Export.into_tar(export_dir, [file_a, file_b])
@@ -29,16 +29,16 @@ defmodule Goblin.ExportTest do
       assert names == ["a.goblin", "b.goblin"]
     end
 
-    test "returns error for non-existent files", c do
-      export_dir = Path.join(c.tmp_dir, "exports")
+    test "returns error for non-existent files", ctx do
+      export_dir = Path.join(ctx.tmp_dir, "exports")
       File.mkdir!(export_dir)
 
       assert {:error, _reason} =
                Export.into_tar(export_dir, ["/no/such/file.goblin"])
     end
 
-    test "handles empty file list", c do
-      export_dir = Path.join(c.tmp_dir, "exports")
+    test "handles empty file list", ctx do
+      export_dir = Path.join(ctx.tmp_dir, "exports")
       File.mkdir!(export_dir)
 
       assert {:ok, tar_path} = Export.into_tar(export_dir, [])

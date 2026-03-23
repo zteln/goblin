@@ -2,13 +2,13 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
   use ExUnit.Case, async: true
   @moduletag :tmp_dir
 
-  setup c do
+  setup ctx do
     counter = :counters.new(1, [])
 
     next_file_f = fn ->
       count = :counters.get(counter, 1)
       :counters.add(counter, 1, 1)
-      file = Path.join(c.tmp_dir, "#{count}.goblin")
+      file = Path.join(ctx.tmp_dir, "#{count}.goblin")
       {"#{file}.tmp", file}
     end
 
@@ -32,9 +32,9 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
     %{disk_table: disk_table, opts: opts}
   end
 
-  test "is iterable", c do
+  test "is iterable", ctx do
     assert %Goblin.DiskTable.StreamIterator{} =
-             iterator = Goblin.DiskTable.StreamIterator.new(c.disk_table)
+             iterator = Goblin.DiskTable.StreamIterator.new(ctx.disk_table)
 
     assert %Goblin.DiskTable.StreamIterator{} =
              iterator = Goblin.Iterable.init(iterator)
@@ -53,9 +53,9 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
     assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
-  test "does not iterate past provided sequence number", c do
+  test "does not iterate past provided sequence number", ctx do
     assert %Goblin.DiskTable.StreamIterator{} =
-             iterator = Goblin.DiskTable.StreamIterator.new(c.disk_table, 25)
+             iterator = Goblin.DiskTable.StreamIterator.new(ctx.disk_table, 25)
 
     assert %Goblin.DiskTable.StreamIterator{} =
              iterator = Goblin.Iterable.init(iterator)
@@ -74,14 +74,14 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
     assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
-  test "handles any term", c do
+  test "handles any term", ctx do
     opts = [
       level_key: 0,
       compress?: false,
       max_sst_size: :infinity,
       bf_fpp: 0.01,
       bf_bit_array_size: 100,
-      next_file_f: c.opts[:next_file_f]
+      next_file_f: ctx.opts[:next_file_f]
     ]
 
     data =

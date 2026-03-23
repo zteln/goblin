@@ -5,36 +5,36 @@ defmodule Goblin.ManifestTest do
 
   @moduletag :tmp_dir
 
-  defp manifest_name(c), do: :"#{c.test}"
+  defp manifest_name(ctx), do: :"#{ctx.test}"
 
-  defp open_manifest(c) do
-    {:ok, manifest} = Manifest.open(manifest_name(c), c.tmp_dir)
+  defp open_manifest(ctx) do
+    {:ok, manifest} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
     manifest
   end
 
   describe "open/2" do
-    test "opens a fresh manifest with empty snapshot", c do
-      manifest = open_manifest(c)
+    test "opens a fresh manifest with empty snapshot", ctx do
+      manifest = open_manifest(ctx)
 
       assert %{seq: 0} = Manifest.snapshot(manifest, [:seq])
       assert %{active_wal: nil} = Manifest.snapshot(manifest, [:active_wal])
       assert %{active_disk_tables: []} = Manifest.snapshot(manifest, [:active_disk_tables])
     end
 
-    test "recovers state from an existing manifest log", c do
-      manifest = open_manifest(c)
+    test "recovers state from an existing manifest log", ctx do
+      manifest = open_manifest(ctx)
       {:ok, manifest} = Manifest.update(manifest, set_seq: 42)
       :ok = Manifest.close(manifest)
 
-      {:ok, recovered} = Manifest.open(manifest_name(c), c.tmp_dir)
+      {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
 
       assert %{seq: 42} = Manifest.snapshot(recovered, [:seq])
     end
   end
 
   describe "update/2" do
-    test "persists actions and updates the snapshot", c do
-      manifest = open_manifest(c)
+    test "persists actions and updates the snapshot", ctx do
+      manifest = open_manifest(ctx)
 
       {:ok, manifest} =
         Manifest.update(manifest,
@@ -52,8 +52,8 @@ defmodule Goblin.ManifestTest do
   end
 
   describe "snapshot/2" do
-    test "returns only requested keys with resolved paths", c do
-      manifest = open_manifest(c)
+    test "returns only requested keys with resolved paths", ctx do
+      manifest = open_manifest(ctx)
       {:ok, manifest} = Manifest.update(manifest, set_seq: 10, activate_wal: "wal.goblin")
 
       seq_only = Manifest.snapshot(manifest, [:seq])
@@ -62,14 +62,14 @@ defmodule Goblin.ManifestTest do
 
       wal_only = Manifest.snapshot(manifest, [:active_wal])
       assert %{active_wal: wal} = wal_only
-      assert wal == Path.join(c.tmp_dir, "wal.goblin")
+      assert wal == Path.join(ctx.tmp_dir, "wal.goblin")
       refute Map.has_key?(wal_only, :seq)
     end
   end
 
   describe "rotate?/1" do
-    test "returns false when log is small", c do
-      manifest = open_manifest(c)
+    test "returns false when log is small", ctx do
+      manifest = open_manifest(ctx)
 
       refute Manifest.rotate?(manifest)
     end

@@ -15,8 +15,8 @@ defmodule Goblin.CompactorTest do
     Compactor.new(Keyword.merge(@opts, overrides))
   end
 
-  defp new_compactor_with_disk_opts(c, overrides \\ []) do
-    Compactor.new(Keyword.merge(@opts ++ disk_table_opts(c), overrides))
+  defp new_compactor_with_disk_opts(ctx, overrides \\ []) do
+    Compactor.new(Keyword.merge(@opts ++ disk_table_opts(ctx), overrides))
   end
 
   defp fake_disk_table(attrs) do
@@ -32,13 +32,13 @@ defmodule Goblin.CompactorTest do
     )
   end
 
-  defp disk_table_opts(c) do
-    counter = Map.get(c, :counter, :counters.new(1, []))
+  defp disk_table_opts(ctx) do
+    counter = Map.get(ctx, :counter, :counters.new(1, []))
 
     next_file_f = fn ->
       count = :counters.get(counter, 1)
       :counters.add(counter, 1, 1)
-      file = Path.join(c.tmp_dir, "#{count}.goblin")
+      file = Path.join(ctx.tmp_dir, "#{count}.goblin")
       {"#{file}.tmp", file}
     end
 
@@ -50,9 +50,9 @@ defmodule Goblin.CompactorTest do
     ]
   end
 
-  defp create_disk_table(c, level_key, triples) do
+  defp create_disk_table(ctx, level_key, triples) do
     opts =
-      [level_key: level_key, compress?: false] ++ disk_table_opts(c)
+      [level_key: level_key, compress?: false] ++ disk_table_opts(ctx)
 
     {:ok, [disk_table]} = DiskTable.into(triples, opts)
     disk_table
@@ -195,26 +195,26 @@ defmodule Goblin.CompactorTest do
   end
 
   describe "compact/2" do
-    test "returns {:ok, [], []} when source level is empty", c do
+    test "returns {:ok, [], []} when source level is empty", ctx do
       # Simulate a stale queue entry: level 0 is empty, level 1 has tables
-      dt = create_disk_table(c, 1, [{1, 0, "v1"}, {2, 1, "v2"}])
+      dt = create_disk_table(ctx, 1, [{1, 0, "v1"}, {2, 1, "v2"}])
 
       compactor =
-        new_compactor_with_disk_opts(c)
+        new_compactor_with_disk_opts(ctx)
         |> Compactor.put_into_level(dt)
 
       assert {:ok, [], []} = Compactor.compact(compactor, 0)
     end
 
-    test "merges level 0 sources into level 1", c do
+    test "merges level 0 sources into level 1", ctx do
       counter = :counters.new(1, [])
-      c = Map.put(c, :counter, counter)
+      ctx = Map.put(ctx, :counter, counter)
 
-      dt1 = create_disk_table(c, 0, [{1, 0, "a"}, {3, 1, "c"}])
-      dt2 = create_disk_table(c, 0, [{2, 2, "b"}, {4, 3, "d"}])
+      dt1 = create_disk_table(ctx, 0, [{1, 0, "a"}, {3, 1, "c"}])
+      dt2 = create_disk_table(ctx, 0, [{2, 2, "b"}, {4, 3, "d"}])
 
       compactor =
-        new_compactor_with_disk_opts(c)
+        new_compactor_with_disk_opts(ctx)
         |> Compactor.put_into_level(dt1)
         |> Compactor.put_into_level(dt2)
 

@@ -54,14 +54,14 @@ defmodule Goblin.QueryableTest do
       %{mem_table: mem_table}
     end
 
-    test "has_key?/2 delegates to MemTable", c do
-      assert Queryable.has_key?(c.mem_table, :a)
-      assert Queryable.has_key?(c.mem_table, :b)
-      refute Queryable.has_key?(c.mem_table, :c)
+    test "has_key?/2 delegates to MemTable", ctx do
+      assert Queryable.has_key?(ctx.mem_table, :a)
+      assert Queryable.has_key?(ctx.mem_table, :b)
+      refute Queryable.has_key?(ctx.mem_table, :c)
     end
 
-    test "search/3 returns matching triples", c do
-      result = Queryable.search(c.mem_table, [:a, :b], 3)
+    test "search/3 returns matching triples", ctx do
+      result = Queryable.search(ctx.mem_table, [:a, :b], 3)
 
       # search returns the latest version below seq for each key
       assert {:a, 2, "v2"} in result
@@ -69,8 +69,8 @@ defmodule Goblin.QueryableTest do
       assert length(result) == 2
     end
 
-    test "stream/4 returns a MemTable.Iterator", c do
-      result = Queryable.stream(c.mem_table, nil, nil, 10)
+    test "stream/4 returns a MemTable.Iterator", ctx do
+      result = Queryable.stream(ctx.mem_table, nil, nil, 10)
 
       assert %MemTable.Iterator{} = result
       assert result.max_seq == 10

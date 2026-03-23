@@ -5,31 +5,31 @@ defmodule Goblin.WALTest do
 
   @moduletag :tmp_dir
 
-  defp wal_name(c), do: :"#{c.test}"
-  defp wal_path(c), do: Path.join(c.tmp_dir, "wal.goblin")
+  defp wal_name(ctx), do: :"#{ctx.test}"
+  defp wal_path(ctx), do: Path.join(ctx.tmp_dir, "wal.goblin")
 
   describe "open/3" do
-    test "opens a WAL file successfully", c do
-      assert {:ok, wal} = WAL.open(wal_name(c), wal_path(c))
+    test "opens a WAL file successfully", ctx do
+      assert {:ok, wal} = WAL.open(wal_name(ctx), wal_path(ctx))
 
       assert %WAL{} = wal
-      assert wal.log_file == wal_path(c)
+      assert wal.log_file == wal_path(ctx)
     end
 
-    test "opens in read-only mode", c do
-      path = wal_path(c)
+    test "opens in read-only mode", ctx do
+      path = wal_path(ctx)
       # create the file first in write mode, then re-open read-only
-      {:ok, wal} = WAL.open(wal_name(c), path)
+      {:ok, wal} = WAL.open(wal_name(ctx), path)
       :ok = WAL.close(wal)
 
-      assert {:ok, _wal} = WAL.open(wal_name(c), path, false)
+      assert {:ok, _wal} = WAL.open(wal_name(ctx), path, false)
     end
   end
 
   describe "append/2" do
-    test "appends writes and syncs to disk", c do
-      path = wal_path(c)
-      {:ok, wal} = WAL.open(wal_name(c), path)
+    test "appends writes and syncs to disk", ctx do
+      path = wal_path(ctx)
+      {:ok, wal} = WAL.open(wal_name(ctx), path)
       %{size: size_before} = File.stat!(path)
 
       assert {:ok, ^wal} = WAL.append(wal, [{:put, 0, :key, :val}])
@@ -40,8 +40,8 @@ defmodule Goblin.WALTest do
   end
 
   describe "replay/1" do
-    test "streams back all appended entries", c do
-      {:ok, wal} = WAL.open(wal_name(c), wal_path(c))
+    test "streams back all appended entries", ctx do
+      {:ok, wal} = WAL.open(wal_name(ctx), wal_path(ctx))
 
       writes = [{:put, 0, :key, :val}, {:remove, 1, :key}]
       {:ok, wal} = WAL.append(wal, writes)
@@ -51,17 +51,17 @@ defmodule Goblin.WALTest do
   end
 
   describe "close/1" do
-    test "closes the WAL", c do
-      {:ok, wal} = WAL.open(wal_name(c), wal_path(c))
+    test "closes the WAL", ctx do
+      {:ok, wal} = WAL.open(wal_name(ctx), wal_path(ctx))
 
       assert :ok = WAL.close(wal)
     end
   end
 
   describe "rm/1" do
-    test "deletes the WAL file", c do
-      path = wal_path(c)
-      {:ok, wal} = WAL.open(wal_name(c), path)
+    test "deletes the WAL file", ctx do
+      path = wal_path(ctx)
+      {:ok, wal} = WAL.open(wal_name(ctx), path)
       :ok = WAL.close(wal)
 
       assert File.exists?(path)

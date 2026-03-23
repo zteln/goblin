@@ -2,13 +2,13 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
   use ExUnit.Case, async: true
   @moduletag :tmp_dir
 
-  setup c do
+  setup ctx do
     counter = :counters.new(1, [])
 
     next_file_f = fn ->
       count = :counters.get(counter, 1)
       :counters.add(counter, 1, 1)
-      file = Path.join(c.tmp_dir, "#{count}.goblin")
+      file = Path.join(ctx.tmp_dir, "#{count}.goblin")
       {"#{file}.tmp", file}
     end
 
@@ -24,14 +24,14 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     %{opts: opts}
   end
 
-  test "is iterable", c do
+  test "is iterable", ctx do
     data =
       for n <- 1..100 do
         {n, n - 1, "v-#{n}"}
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, c.opts)
+      Goblin.DiskTable.into(data, ctx.opts)
 
     assert %Goblin.DiskTable.BinarySearchIterator{} =
              iterator =
@@ -46,14 +46,14 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
-  test "can search in SST block spanning many blocks", c do
+  test "can search in SST block spanning many blocks", ctx do
     opts = [
       level_key: 0,
       compress?: false,
       max_sst_size: 100 * Goblin.DiskTable.Encoder.sst_block_unit_size(),
       bf_fpp: 0.01,
       bf_bit_array_size: 100,
-      next_file_f: c.opts[:next_file_f]
+      next_file_f: ctx.opts[:next_file_f]
     ]
 
     triple1 =
@@ -90,7 +90,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
-  test "keys of same value (i.e. key1 == key2) can be found", c do
+  test "keys of same value (i.e. key1 == key2) can be found", ctx do
     data =
       Stream.cycle([0, 0.0, 1.0, 1])
       |> Stream.take(4)
@@ -98,7 +98,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
       |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
 
     {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, c.opts)
+      Goblin.DiskTable.into(data, ctx.opts)
 
     iterator =
       disk_table
@@ -133,14 +133,14 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     assert {^one_key_triple, _iterator} = Goblin.Iterable.next(iterator)
   end
 
-  test "does not iterate higher than provided sequence number", c do
+  test "does not iterate higher than provided sequence number", ctx do
     data =
       for n <- 1..100 do
         {n, n - 1, "v-#{n}"}
       end
 
     {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, c.opts)
+      Goblin.DiskTable.into(data, ctx.opts)
 
     assert %Goblin.DiskTable.BinarySearchIterator{} =
              iterator =
@@ -154,7 +154,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     assert :ok == Goblin.Iterable.deinit(iterator)
   end
 
-  test "can handle any term", c do
+  test "can handle any term", ctx do
     data =
       StreamData.term()
       |> Stream.take(100)
@@ -167,7 +167,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     keys = Enum.map(data, &elem(&1, 0))
 
     {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, c.opts)
+      Goblin.DiskTable.into(data, ctx.opts)
 
     iterator =
       disk_table
