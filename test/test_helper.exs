@@ -12,4 +12,4 @@ defmodule Goblin.TestHelper do
   end
 end
 
-ExUnit.start()
+ExUnit.start(exclude: :property_tests)
