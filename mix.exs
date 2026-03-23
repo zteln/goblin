@@ -13,7 +13,7 @@ defmodule Goblin.MixProject do
       package: package(),
       description: description(),
       docs: &docs/0,
-      source_url: "https://github.com/zteln/goblin"
+      source_url: "https://codeberg.com/zteln/goblin"
     ]
   end
 
@@ -25,7 +25,6 @@ defmodule Goblin.MixProject do
 
   defp deps do
     [
-      {:benchee, "~> 1.5", only: :dev},
       {:stream_data, "~> 1.2", only: :test},
       {:ex_doc, "~> 0.40.0", only: :dev, runtime: false, warn_if_outdated: true}
     ]
@@ -36,7 +35,7 @@ defmodule Goblin.MixProject do
       name: "goblin",
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/zteln/goblin"}
+      links: %{"Codeberg" => "https://codeberg.com/zteln/goblin"}
     ]
   end
 
