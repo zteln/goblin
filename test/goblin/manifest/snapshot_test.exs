@@ -5,62 +5,72 @@ defmodule Goblin.Manifest.SnapshotTest do
   describe "update/2" do
     test "adding disk tables increases count" do
       snapshot = %Snapshot{}
-      assert %{count: 0} = snapshot
-      assert %{count: 1} = Snapshot.update(snapshot, {:disk_table_activated, "foo"})
+      assert %{disk_table_count: 0} = snapshot
+      assert %{disk_table_count: 1} = Snapshot.update(snapshot, {:disk_table_added, "foo"})
     end
 
-    test "removing files adds them to dirt" do
+    test "removing disk tables adds them to dirt" do
       snapshot = %Snapshot{}
       assert %{dirt: []} = snapshot
 
-      assert %{dirt: ["foo"]} =
-               snapshot = Snapshot.update(snapshot, {:disk_table_removed, "foo"})
-
-      assert %{dirt: ["wal", "foo"]} = Snapshot.update(snapshot, {:wal_removed, "wal"})
+      snapshot = Snapshot.update(snapshot, {:disk_table_added, "foo"})
+      assert %{dirt: ["foo"]} = Snapshot.update(snapshot, {:disk_table_removed, "foo"})
     end
 
-    test "setting seq updates the seq field" do
+    test "setting sequence updates the sequence field" do
       snapshot = %Snapshot{}
-      assert %{seq: 0} = snapshot
+      assert %{sequence: 0} = snapshot
 
-      assert %{seq: 42} = Snapshot.update(snapshot, {:seq_set, 42})
+      assert %{sequence: 42} = Snapshot.update(snapshot, {:sequence, 42})
     end
 
     test "setting wal updates the wal field" do
       snapshot = %Snapshot{}
-      assert %{active_wal: nil} = snapshot
+      assert %{wal: nil} = snapshot
 
-      assert %{active_wal: "wal_0.goblin"} =
-               Snapshot.update(snapshot, {:wal_activated, "wal_0.goblin"})
+      assert %{wal: "wal_0.goblin"} =
+               Snapshot.update(snapshot, {:wal, "wal_0.goblin"})
     end
 
-    test "retiring a wal adds it to retired_wals" do
+    test "adding a new wal moves the current wal to wals" do
       snapshot = %Snapshot{}
-      assert %{retired_wals: []} = snapshot
+      assert %{wals: []} = snapshot
 
-      snapshot = Snapshot.update(snapshot, {:wal_retired, "wal_0.goblin"})
-      assert %{retired_wals: ["wal_0.goblin"]} = snapshot
+      snapshot = Snapshot.update(snapshot, {:wal, "wal_0.goblin"})
+      assert %{wal: "wal_0.goblin", wals: []} = snapshot
 
-      snapshot = Snapshot.update(snapshot, {:wal_retired, "wal_1.goblin"})
-      assert %{retired_wals: ["wal_1.goblin", "wal_0.goblin"]} = snapshot
+      snapshot = Snapshot.update(snapshot, {:wal, "wal_1.goblin"})
+      assert %{wal: "wal_1.goblin", wals: ["wal_0.goblin"]} = snapshot
+    end
+
+    test "wal_removed removes from wals list" do
+      snapshot =
+        %Snapshot{}
+        |> Snapshot.update({:wal, "wal_0.goblin"})
+        |> Snapshot.update({:wal, "wal_1.goblin"})
+
+      assert %{wals: ["wal_0.goblin"]} = snapshot
+
+      snapshot = Snapshot.update(snapshot, {:wal_removed, "wal_0.goblin"})
+      assert %{wals: []} = snapshot
     end
 
     test "applying a list of updates processes all" do
       snapshot =
         Snapshot.update(%Snapshot{}, [
-          {:seq_set, 10},
-          {:wal_activated, "wal.goblin"},
-          {:disk_table_activated, "sst_0.goblin"}
+          {:sequence, 10},
+          {:wal, "wal.goblin"},
+          {:disk_table_added, "sst_0.goblin"}
         ])
 
-      assert %{seq: 10, active_wal: "wal.goblin", active_disk_tables: ["sst_0.goblin"], count: 1} =
+      assert %{sequence: 10, wal: "wal.goblin", disk_tables: ["sst_0.goblin"], disk_table_count: 1} =
                snapshot
     end
 
     test "snapshot term replaces the entire snapshot" do
-      original = Snapshot.update(%Snapshot{}, {:seq_set, 99})
+      original = Snapshot.update(%Snapshot{}, {:sequence, 99})
 
-      replacement = %Snapshot{seq: 5, active_wal: "other.goblin"}
+      replacement = %Snapshot{sequence: 5, wal: "other.goblin"}
       result = Snapshot.update(original, {:snapshot, replacement})
 
       assert result == replacement

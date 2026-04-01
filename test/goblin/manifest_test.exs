@@ -16,37 +16,53 @@ defmodule Goblin.ManifestTest do
     test "opens a fresh manifest with empty snapshot", ctx do
       manifest = open_manifest(ctx)
 
-      assert %{seq: 0} = Manifest.snapshot(manifest, [:seq])
-      assert %{active_wal: nil} = Manifest.snapshot(manifest, [:active_wal])
-      assert %{active_disk_tables: []} = Manifest.snapshot(manifest, [:active_disk_tables])
+      assert %{sequence: 0} = Manifest.snapshot(manifest, [:sequence])
+      assert %{wal: nil} = Manifest.snapshot(manifest, [:wal])
+      assert %{disk_tables: []} = Manifest.snapshot(manifest, [:disk_tables])
     end
 
     test "recovers state from an existing manifest log", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update(manifest, set_seq: 42)
+      {:ok, manifest} = Manifest.update_sequence(manifest, 42)
       :ok = Manifest.close(manifest)
 
       {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
 
-      assert %{seq: 42} = Manifest.snapshot(recovered, [:seq])
+      assert %{sequence: 42} = Manifest.snapshot(recovered, [:sequence])
     end
   end
 
-  describe "update/2" do
-    test "persists actions and updates the snapshot", ctx do
+  describe "update_sequence/2" do
+    test "persists sequence and updates the snapshot", ctx do
       manifest = open_manifest(ctx)
 
-      {:ok, manifest} =
-        Manifest.update(manifest,
-          set_seq: 5,
-          activate_wal: "wal.goblin",
-          activate_disk_tables: ["sst_0.goblin"]
-        )
+      {:ok, manifest} = Manifest.update_sequence(manifest, 5)
 
-      assert %{seq: 5} = Manifest.snapshot(manifest, [:seq])
-      assert %{active_wal: wal} = Manifest.snapshot(manifest, [:active_wal])
+      assert %{sequence: 5} = Manifest.snapshot(manifest, [:sequence])
+    end
+  end
+
+  describe "add_wal/2" do
+    test "persists wal path and updates the snapshot", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      assert %{wal: wal} = Manifest.snapshot(manifest, [:wal])
       assert String.ends_with?(wal, "wal.goblin")
-      assert %{active_disk_tables: [dt]} = Manifest.snapshot(manifest, [:active_disk_tables])
+    end
+  end
+
+  describe "add_flush/3" do
+    test "adds disk tables and removes wal", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(manifest, [Path.join(ctx.tmp_dir, "sst_0.goblin")], Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      assert %{disk_tables: [dt]} = Manifest.snapshot(manifest, [:disk_tables])
       assert String.ends_with?(dt, "sst_0.goblin")
     end
   end
@@ -54,46 +70,17 @@ defmodule Goblin.ManifestTest do
   describe "snapshot/2" do
     test "returns only requested keys with resolved paths", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update(manifest, set_seq: 10, activate_wal: "wal.goblin")
+      {:ok, manifest} = Manifest.update_sequence(manifest, 10)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
-      seq_only = Manifest.snapshot(manifest, [:seq])
-      assert seq_only == %{seq: 10}
-      refute Map.has_key?(seq_only, :active_wal)
+      seq_only = Manifest.snapshot(manifest, [:sequence])
+      assert seq_only == %{sequence: 10}
+      refute Map.has_key?(seq_only, :wal)
 
-      wal_only = Manifest.snapshot(manifest, [:active_wal])
-      assert %{active_wal: wal} = wal_only
+      wal_only = Manifest.snapshot(manifest, [:wal])
+      assert %{wal: wal} = wal_only
       assert wal == Path.join(ctx.tmp_dir, "wal.goblin")
-      refute Map.has_key?(wal_only, :seq)
-    end
-  end
-
-  describe "rotate?/1" do
-    test "returns false when log is small", ctx do
-      manifest = open_manifest(ctx)
-
-      refute Manifest.rotate?(manifest)
-    end
-  end
-
-  describe "rotate/1" do
-    test "compacts the log and preserves state", c do
-      manifest = open_manifest(c)
-
-      {:ok, manifest} = Manifest.update(manifest, set_seq: 1)
-      {:ok, manifest} = Manifest.update(manifest, set_seq: 2)
-      {:ok, manifest} = Manifest.update(manifest, set_seq: 3, activate_wal: "wal.goblin")
-
-      {:ok, rotated} = Manifest.rotate(manifest)
-
-      assert rotated.log_size > 0
-      assert %{seq: 3} = Manifest.snapshot(rotated, [:seq])
-      assert %{active_wal: wal} = Manifest.snapshot(rotated, [:active_wal])
-      assert String.ends_with?(wal, "wal.goblin")
-
-      # State survives close + re-open after rotation
-      :ok = Manifest.close(rotated)
-      {:ok, recovered} = Manifest.open(manifest_name(c), c.tmp_dir)
-      assert %{seq: 3} = Manifest.snapshot(recovered, [:seq])
+      refute Map.has_key?(wal_only, :sequence)
     end
   end
 

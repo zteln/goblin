@@ -3,90 +3,114 @@ defmodule Goblin.MemTableTest do
 
   alias Goblin.MemTable
 
-  setup do
-    %{mem_table: MemTable.new()}
+  @moduletag :tmp_dir
+
+  defp wal_path(ctx), do: Path.join(ctx.tmp_dir, "test.wal")
+
+  defp open_mem_table(ctx, opts \\ []) do
+    opts = Keyword.merge([sequence: :infinity, write?: true], opts)
+    {:ok, mem_table} = MemTable.open(:"#{ctx.test}", wal_path(ctx), opts)
+    mem_table
   end
 
-  describe "insert/4 and get/3" do
-    test "inserts and retrieves a value", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 0, "value")
+  describe "open/3" do
+    test "opens and returns a MemTable struct", ctx do
+      mem_table = open_mem_table(ctx)
 
-      assert {:key, 0, "value"} == MemTable.get(ctx.mem_table, :key, 0)
+      assert %MemTable{wal: wal, store: store} = mem_table
+      assert wal != nil
+      assert store != nil
     end
 
-    test "multiple versions of the same key are independently retrievable", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 0, "v0")
-      :ok = MemTable.insert(ctx.mem_table, :key, 1, "v1")
-      :ok = MemTable.insert(ctx.mem_table, :key, 2, "v2")
+    test "replays WAL on re-open", ctx do
+      mem_table = open_mem_table(ctx)
+      :ok = MemTable.append_commits(mem_table, [{:put, 0, :a, "v1"}, {:put, 1, :b, "v2"}])
+      :ok = MemTable.close(mem_table)
 
-      assert {:key, 0, "v0"} == MemTable.get(ctx.mem_table, :key, 0)
-      assert {:key, 1, "v1"} == MemTable.get(ctx.mem_table, :key, 1)
-      assert {:key, 2, "v2"} == MemTable.get(ctx.mem_table, :key, 2)
-    end
+      mem_table = open_mem_table(ctx)
 
-    test "returns :not_found for missing key", ctx do
-      assert :not_found == MemTable.get(ctx.mem_table, :missing, 0)
-    end
-  end
-
-  describe "remove/3" do
-    test "inserts a tombstone marker", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 0, "value")
-      :ok = MemTable.remove(ctx.mem_table, :key, 1)
-
-      assert {:key, 1, :"$goblin_tombstone"} == MemTable.get(ctx.mem_table, :key, 1)
+      results = Goblin.Queryable.search(mem_table, [:a, :b], :infinity)
+      assert {:a, 0, "v1"} in results
+      assert {:b, 1, "v2"} in results
     end
   end
 
-  describe "search/3" do
-    test "finds the latest version before the given seq", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 0, "v0")
-      :ok = MemTable.insert(ctx.mem_table, :key, 1, "v1")
-      :ok = MemTable.insert(ctx.mem_table, :key, 5, "v5")
+  describe "append_commits/2" do
+    test "appends put commits and makes data queryable", ctx do
+      mem_table = open_mem_table(ctx)
 
-      # seq acts as exclusive upper bound
-      assert {:key, 1, "v1"} == MemTable.search(ctx.mem_table, :key, 5)
-      assert {:key, 0, "v0"} == MemTable.search(ctx.mem_table, :key, 1)
+      :ok = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
+
+      assert [{:key, 0, "value"}] = Goblin.Queryable.search(mem_table, [:key], :infinity)
     end
 
-    test "returns :not_found when no version exists below seq", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 5, "v5")
+    test "appends remove commits as tombstones", ctx do
+      mem_table = open_mem_table(ctx)
 
-      assert :not_found == MemTable.search(ctx.mem_table, :key, 5)
-      assert :not_found == MemTable.search(ctx.mem_table, :missing, 10)
-    end
-  end
+      :ok = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
+      :ok = MemTable.append_commits(mem_table, [{:remove, 1, :key}])
 
-  describe "has_key?/2" do
-    test "returns true for inserted key", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 0, "value")
-
-      assert MemTable.has_key?(ctx.mem_table, :key)
-    end
-
-    test "returns false for missing key", ctx do
-      refute MemTable.has_key?(ctx.mem_table, :missing)
+      assert [{:key, 1, :"$goblin_tombstone"}] =
+               Goblin.Queryable.search(mem_table, [:key], :infinity)
     end
   end
 
-  describe "size/1" do
-    test "starts at zero for a fresh table", ctx do
-      assert 0 == MemTable.size(ctx.mem_table)
+  describe "rotate?/2" do
+    test "returns false when store is small", ctx do
+      mem_table = open_mem_table(ctx)
+
+      refute MemTable.rotate?(mem_table, 1024)
     end
 
-    test "increases after inserting data", ctx do
-      :ok = MemTable.insert(ctx.mem_table, :key, 0, String.duplicate("x", 100))
+    test "returns true when store exceeds limit", ctx do
+      mem_table = open_mem_table(ctx)
 
-      assert MemTable.size(ctx.mem_table) > 0
+      commits =
+        Enum.map(0..100, fn i ->
+          {:put, i, :"key_#{i}", String.duplicate("x", 100)}
+        end)
+
+      :ok = MemTable.append_commits(mem_table, commits)
+
+      assert MemTable.rotate?(mem_table, 1)
     end
   end
 
-  describe "delete/1" do
+  describe "wal_path/1" do
+    test "returns the WAL file path", ctx do
+      mem_table = open_mem_table(ctx)
+
+      assert MemTable.wal_path(mem_table) == wal_path(ctx)
+    end
+  end
+
+  describe "close/1" do
+    test "closes the mem_table", ctx do
+      mem_table = open_mem_table(ctx)
+
+      assert :ok = MemTable.close(mem_table)
+    end
+  end
+
+  describe "remove_wal/1" do
+    test "removes the WAL file from disk", ctx do
+      mem_table = open_mem_table(ctx)
+      :ok = MemTable.close(mem_table)
+
+      assert File.exists?(wal_path(ctx))
+      assert :ok = MemTable.remove_wal(mem_table)
+      refute File.exists?(wal_path(ctx))
+    end
+  end
+
+  describe "delete_table/1" do
     test "deletes the underlying ETS table", ctx do
-      table_id = ctx.mem_table.table
+      mem_table = open_mem_table(ctx)
+      table_id = mem_table.store.ref
+
       assert :ets.info(table_id) != :undefined
 
-      :ok = MemTable.delete(ctx.mem_table)
+      :ok = MemTable.delete_table(mem_table)
 
       assert :ets.info(table_id) == :undefined
     end

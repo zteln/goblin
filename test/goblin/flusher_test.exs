@@ -10,92 +10,52 @@ defmodule Goblin.FlusherTest do
   ]
 
   describe "new/1" do
-    test "creates a flusher with empty queue and nil ref" do
+    test "creates a flusher with empty queue" do
       flusher = Flusher.new(@opts)
 
-      assert flusher.ref == nil
       assert :queue.is_empty(flusher.queue)
-      assert flusher.flush_opts == @opts
+      assert flusher.opts[:level_key] == 0
+      assert flusher.opts[:compress?] == false
     end
   end
 
-  describe "push/3" do
-    test "returns {:flush, ...} when ref is nil" do
-      flusher = Flusher.new(@opts)
-
-      assert {:flush, :mem_table, :wal, flusher} =
-               Flusher.push(flusher, :mem_table, :wal)
-
-      assert :queue.is_empty(flusher.queue)
-    end
-
-    test "returns {:noop, ...} when ref is set" do
+  describe "enqueue/2" do
+    test "adds a mem_table to the queue" do
       flusher =
         Flusher.new(@opts)
-        |> Flusher.set_ref(make_ref())
-
-      assert {:noop, flusher} = Flusher.push(flusher, :mem_table, :wal)
+        |> Flusher.enqueue(:mem_table)
 
       refute :queue.is_empty(flusher.queue)
     end
   end
 
-  describe "pop/1" do
+  describe "dequeue/1" do
     test "returns {:noop, ...} on empty queue" do
       flusher = Flusher.new(@opts)
 
-      assert {:noop, _flusher} = Flusher.pop(flusher)
+      assert {:noop, _flusher} = Flusher.dequeue(flusher)
     end
 
     test "dequeues the next flush job" do
-      # Push with ref set so it queues without dequeuing
       flusher =
         Flusher.new(@opts)
-        |> Flusher.set_ref(make_ref())
+        |> Flusher.enqueue(:mem_table)
 
-      {:noop, flusher} = Flusher.push(flusher, :mem_table, :wal)
-
-      # Clear ref, then pop
-      flusher = Flusher.set_ref(flusher, nil)
-
-      assert {:flush, :mem_table, :wal, _flusher} = Flusher.pop(flusher)
+      assert {:flush, :mem_table, flusher} = Flusher.dequeue(flusher)
+      assert :queue.is_empty(flusher.queue)
     end
 
     test "drains multiple queued jobs in FIFO order" do
       flusher =
         Flusher.new(@opts)
-        |> Flusher.set_ref(make_ref())
+        |> Flusher.enqueue(:mem1)
+        |> Flusher.enqueue(:mem2)
+        |> Flusher.enqueue(:mem3)
 
-      {:noop, flusher} = Flusher.push(flusher, :mem1, :wal1)
-      {:noop, flusher} = Flusher.push(flusher, :mem2, :wal2)
-      {:noop, flusher} = Flusher.push(flusher, :mem3, :wal3)
-
-      flusher = Flusher.set_ref(flusher, nil)
-
-      assert {:flush, :mem1, :wal1, flusher} = Flusher.pop(flusher)
-
-      # Simulate completing the flush by clearing ref
-      flusher = Flusher.set_ref(flusher, nil)
-      assert {:flush, :mem2, :wal2, flusher} = Flusher.pop(flusher)
-
-      flusher = Flusher.set_ref(flusher, nil)
-      assert {:flush, :mem3, :wal3, flusher} = Flusher.pop(flusher)
-
-      flusher = Flusher.set_ref(flusher, nil)
-      assert {:noop, _flusher} = Flusher.pop(flusher)
-    end
-  end
-
-  describe "set_ref/2" do
-    test "sets and clears the ref" do
-      flusher = Flusher.new(@opts)
-      ref = make_ref()
-
-      flusher = Flusher.set_ref(flusher, ref)
-      assert flusher.ref == ref
-
-      flusher = Flusher.set_ref(flusher, nil)
-      assert flusher.ref == nil
+      assert {:flush, :mem1, flusher} = Flusher.dequeue(flusher)
+      assert {:flush, :mem2, flusher} = Flusher.dequeue(flusher)
+      assert {:flush, :mem3, flusher} = Flusher.dequeue(flusher)
+      assert {:noop, _flusher} = Flusher.dequeue(flusher)
     end
   end
 end

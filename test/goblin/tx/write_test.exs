@@ -19,7 +19,7 @@ defmodule Goblin.Tx.WriteTest do
 
       assert %Write{} = tx
       assert tx.name == :db
-      assert tx.seq == 5
+      assert tx.sequence == 5
       assert tx.max_level_key == 2
       assert tx.writes == []
     end
@@ -31,7 +31,7 @@ defmodule Goblin.Tx.WriteTest do
         new_tx(seq: 0)
         |> Transactionable.put(:key, :val, [])
 
-      assert tx.seq == 1
+      assert tx.sequence == 1
       assert tx.writes == [{:put, 0, :key, :val}]
     end
   end
@@ -42,7 +42,7 @@ defmodule Goblin.Tx.WriteTest do
         new_tx(seq: 0)
         |> Transactionable.put_multi([{:a, 1}, {:b, 2}], [])
 
-      assert tx.seq == 2
+      assert tx.sequence == 2
       # writes are prepended, so reversed order
       assert tx.writes == [{:put, 1, :b, 2}, {:put, 0, :a, 1}]
     end
@@ -54,7 +54,7 @@ defmodule Goblin.Tx.WriteTest do
         new_tx(seq: 0)
         |> Transactionable.remove(:key, [])
 
-      assert tx.seq == 1
+      assert tx.sequence == 1
       assert tx.writes == [{:remove, 0, :key}]
     end
   end
@@ -65,7 +65,7 @@ defmodule Goblin.Tx.WriteTest do
         new_tx(seq: 0)
         |> Transactionable.remove_multi([:a, :b], [])
 
-      assert tx.seq == 2
+      assert tx.sequence == 2
       assert tx.writes == [{:remove, 1, :b}, {:remove, 0, :a}]
     end
   end

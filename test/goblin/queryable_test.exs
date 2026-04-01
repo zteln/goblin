@@ -3,6 +3,7 @@ defmodule Goblin.QueryableTest do
 
   alias Goblin.Queryable
   alias Goblin.MemTable
+  alias Goblin.MemTable.Store
 
   describe "List implementation" do
     test "has_key?/2 checks for key presence" do
@@ -46,11 +47,12 @@ defmodule Goblin.QueryableTest do
 
   describe "MemTable implementation" do
     setup do
-      mem_table = MemTable.new()
-      MemTable.insert(mem_table, :a, 0, "v0")
-      MemTable.insert(mem_table, :b, 1, "v1")
-      MemTable.insert(mem_table, :a, 2, "v2")
+      store = Store.new()
+      Store.insert(store, :a, 0, "v0")
+      Store.insert(store, :b, 1, "v1")
+      Store.insert(store, :a, 2, "v2")
 
+      mem_table = %MemTable{store: store, wal: nil}
       %{mem_table: mem_table}
     end
 

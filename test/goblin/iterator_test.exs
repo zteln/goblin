@@ -74,7 +74,7 @@ defmodule Goblin.IteratorTest do
         |> Enum.reject(fn {_key, _seq, val} -> val == :"$goblin_tombstone" end)
 
       assert data ==
-               Goblin.Iterator.k_merge_stream(fn -> iterators end, filter_tombstones: true)
+               Goblin.Iterator.k_merge_stream(fn -> iterators end, filter_tombstones?: true)
                |> Enum.to_list()
     end
 
@@ -88,7 +88,7 @@ defmodule Goblin.IteratorTest do
         |> Goblin.TestHelper.uniq_by_value(&elem(&1, 0))
 
       assert data ==
-               Goblin.Iterator.k_merge_stream(fn -> iterators end, filter_tombstones: true)
+               Goblin.Iterator.k_merge_stream(fn -> iterators end, filter_tombstones?: true)
                |> Enum.to_list()
 
       for _ <- 1..length(iterators) do

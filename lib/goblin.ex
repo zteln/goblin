@@ -630,11 +630,11 @@ defmodule Goblin do
   end
 
   def handle_call(:flushing?, _from, state) do
-    {:reply, state.flusher.ref != nil, state}
+    {:reply, state.flushing != nil, state}
   end
 
   def handle_call(:compacting?, _from, state) do
-    {:reply, state.compactor.ref != nil, state}
+    {:reply, state.compacting != nil, state}
   end
 
   @impl GenServer

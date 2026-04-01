@@ -15,7 +15,7 @@ defmodule Goblin.CompactorTest do
     Compactor.new(Keyword.merge(@opts, overrides))
   end
 
-  defp new_compactor_with_disk_opts(ctx, overrides \\ []) do
+  defp new_compactor_with_disk_opts(ctx, overrides) do
     Compactor.new(Keyword.merge(@opts ++ disk_table_opts(ctx), overrides))
   end
 
@@ -63,7 +63,6 @@ defmodule Goblin.CompactorTest do
       compactor = new_compactor()
 
       assert compactor.levels == %{}
-      assert compactor.ref == nil
       assert :queue.is_empty(compactor.queue)
     end
   end
@@ -92,22 +91,7 @@ defmodule Goblin.CompactorTest do
     end
   end
 
-  describe "remove_from_level/2" do
-    test "removes a disk table by file path" do
-      dt1 = fake_disk_table(level_key: 0, file: "a.goblin")
-      dt2 = fake_disk_table(level_key: 0, file: "b.goblin")
-
-      compactor =
-        new_compactor()
-        |> Compactor.put_into_level(dt1)
-        |> Compactor.put_into_level(dt2)
-        |> Compactor.remove_from_level(dt1)
-
-      assert [^dt2] = compactor.levels[0]
-    end
-  end
-
-  describe "push/1" do
+  describe "next/1" do
     test "returns :noop when no levels overflow" do
       dt = fake_disk_table(level_key: 0, file: "a.goblin")
 
@@ -115,97 +99,58 @@ defmodule Goblin.CompactorTest do
         new_compactor()
         |> Compactor.put_into_level(dt)
 
-      assert {:noop, _compactor} = Compactor.push(compactor)
+      assert {:noop, _compactor} = Compactor.next(compactor)
     end
 
-    test "returns {:compact, level_key, _} when level 0 exceeds file limit" do
+    test "returns {:compact, ...} when level 0 exceeds file limit" do
       compactor =
         Enum.reduce(1..4, new_compactor(), fn i, acc ->
           dt = fake_disk_table(level_key: 0, file: "#{i}.goblin", key_range: {i, i})
           Compactor.put_into_level(acc, dt)
         end)
 
-      assert {:compact, 0, _compactor} = Compactor.push(compactor)
+      assert {:compact, 1, sources, _targets, _filter?, _compactor} = Compactor.next(compactor)
+      assert length(sources) == 4
     end
 
-    test "returns :noop when ref is set even if level overflows" do
-      compactor =
-        Enum.reduce(1..4, new_compactor(), fn i, acc ->
-          dt = fake_disk_table(level_key: 0, file: "#{i}.goblin", key_range: {i, i})
-          Compactor.put_into_level(acc, dt)
-        end)
-        |> Compactor.set_ref(make_ref())
-
-      assert {:noop, _compactor} = Compactor.push(compactor)
-    end
-  end
-
-  describe "pop/1" do
-    test "returns :noop on empty queue" do
-      compactor = new_compactor()
-
-      assert {:noop, _compactor} = Compactor.pop(compactor)
-    end
-
-    test "dequeues the next level key" do
-      # Build an overflowing compactor, push to enqueue, then consume with pop
-      compactor =
-        Enum.reduce(1..4, new_compactor(), fn i, acc ->
-          dt = fake_disk_table(level_key: 0, file: "#{i}.goblin", key_range: {i, i})
-          Compactor.put_into_level(acc, dt)
-        end)
-
-      # push enqueues and immediately dequeues (ref is nil), so we set ref first
-      # to force queuing, then clear ref and pop
-      compactor = Compactor.set_ref(compactor, make_ref())
-      {:noop, compactor} = Compactor.push(compactor)
-      compactor = Compactor.set_ref(compactor, nil)
-
-      assert {:compact, 0, _compactor} = Compactor.pop(compactor)
-    end
-  end
-
-  describe "set_ref/2" do
-    test "sets and clears the ref" do
-      compactor = new_compactor()
-      ref = make_ref()
-
-      compactor = Compactor.set_ref(compactor, ref)
-      assert compactor.ref == ref
-
-      compactor = Compactor.set_ref(compactor, nil)
-      assert compactor.ref == nil
-    end
-  end
-
-  describe "push/1 size-based overflow" do
-    test "returns {:compact, level_key, _} when non-level-0 exceeds size limit" do
+    test "returns {:compact, ...} when non-level-0 exceeds size limit" do
       # level_base_size is 256, level_size_multiplier is 10
       # level 1 threshold: 256 * 10^0 = 256 bytes
-      dt1 = fake_disk_table(level_key: 1, file: "a.goblin", size: 150)
-      dt2 = fake_disk_table(level_key: 1, file: "b.goblin", size: 150)
+      dt1 = fake_disk_table(level_key: 1, file: "a.goblin", size: 150, key_range: {1, 50})
+      dt2 = fake_disk_table(level_key: 1, file: "b.goblin", size: 150, key_range: {51, 100})
 
       compactor =
         new_compactor()
         |> Compactor.put_into_level(dt1)
         |> Compactor.put_into_level(dt2)
 
-      assert {:compact, 1, _compactor} = Compactor.push(compactor)
+      assert {:compact, 2, _sources, _targets, _filter?, _compactor} = Compactor.next(compactor)
+    end
+
+    test "returns :noop when only target level has tables" do
+      dt = fake_disk_table(level_key: 1, file: "a.goblin", size: 10)
+
+      compactor =
+        new_compactor()
+        |> Compactor.put_into_level(dt)
+
+      assert {:noop, _compactor} = Compactor.next(compactor)
+    end
+
+    test "removes source and target tables from levels" do
+      compactor =
+        Enum.reduce(1..4, new_compactor(), fn i, acc ->
+          dt = fake_disk_table(level_key: 0, file: "#{i}.goblin", key_range: {i, i})
+          Compactor.put_into_level(acc, dt)
+        end)
+
+      {:compact, _level, _sources, _targets, _filter?, compactor} = Compactor.next(compactor)
+
+      assert Map.get(compactor.levels, 0, []) == []
     end
   end
 
-  describe "compact/2" do
-    test "returns {:ok, [], []} when source level is empty", ctx do
-      # Simulate a stale queue entry: level 0 is empty, level 1 has tables
-      dt = create_disk_table(ctx, 1, [{1, 0, "v1"}, {2, 1, "v2"}])
-
-      compactor =
-        new_compactor_with_disk_opts(ctx)
-        |> Compactor.put_into_level(dt)
-
-      assert {:ok, [], []} = Compactor.compact(compactor, 0)
-    end
-
+  describe "compact/5" do
     test "merges level 0 sources into level 1", ctx do
       counter = :counters.new(1, [])
       ctx = Map.put(ctx, :counter, counter)
@@ -214,11 +159,15 @@ defmodule Goblin.CompactorTest do
       dt2 = create_disk_table(ctx, 0, [{2, 2, "b"}, {4, 3, "d"}])
 
       compactor =
-        new_compactor_with_disk_opts(ctx)
+        new_compactor_with_disk_opts(ctx, flush_level_file_limit: 2)
         |> Compactor.put_into_level(dt1)
         |> Compactor.put_into_level(dt2)
 
-      assert {:ok, new_tables, old_tables} = Compactor.compact(compactor, 0)
+      {:compact, target_level_key, sources, targets, filter?, compactor} =
+        Compactor.next(compactor)
+
+      assert {:ok, new_tables, old_tables} =
+               Compactor.compact(compactor, target_level_key, sources, targets, filter?)
 
       assert length(new_tables) >= 1
       assert length(old_tables) == 2
