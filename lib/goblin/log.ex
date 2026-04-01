@@ -1,10 +1,8 @@
 defmodule Goblin.Log do
   @moduledoc false
 
-  @typedoc "A `:disk_log` handle."
   @type t :: any()
 
-  @doc "Opens a disk log at the given file path with the specified mode."
   @spec open(term(), Path.t(), :read_write | :read_only) :: {:ok, t()} | {:error, term()}
   def open(name, file, mode \\ :read_write) do
     opts = [name: name, file: ~c"#{file}", quiet: true, mode: mode]
@@ -16,16 +14,9 @@ defmodule Goblin.Log do
     end
   end
 
-  @doc "Closes a disk log."
   @spec close(t()) :: :ok | {:error, term()}
   def close(log), do: :disk_log.close(log)
 
-  @doc """
-  Appends term(s) to the log and syncs to disk.
-
-  Returns `{:ok, bytes_written}` where `bytes_written` is the total
-  external term format size of the appended terms.
-  """
   @spec append(t(), term() | list(term())) :: {:ok, non_neg_integer()} | {:error, term()}
   def append(log, terms) when is_list(terms) do
     with :ok <- :disk_log.log_terms(log, terms),
@@ -36,11 +27,6 @@ defmodule Goblin.Log do
 
   def append(log, term), do: append(log, [term])
 
-  @doc """
-  Returns a lazy stream over all terms in the log.
-
-  Raises on read errors.
-  """
   @spec stream_log!(t()) :: Enumerable.t()
   def stream_log!(log) do
     Stream.resource(

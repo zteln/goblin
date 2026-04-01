@@ -25,7 +25,6 @@ defmodule Goblin.DiskTable.Encoder do
   @magic "GOBLINFILE000000"
   @magic_size byte_size(@magic)
 
-  @doc "Encodes a {key, seq, value} triple into an SST block binary, optionally compressing the output."
   @spec encode_sst_block(Goblin.triple(), boolean()) :: {binary(), pos_integer()}
   def encode_sst_block(triple, compress?) do
     data = encode(triple, compress?)
@@ -39,7 +38,6 @@ defmodule Goblin.DiskTable.Encoder do
     {sst_block, no_blocks}
   end
 
-  @doc "Decodes an SST header block, returning amount of blocks it the entire SST block spans if successful."
   @spec decode_sst_header_block(binary()) ::
           {:ok, pos_integer()} | {:error, :end_of_sst | :invalid_sst_header}
   def decode_sst_header_block(<<@sst_block_id, no_blocks::integer-64>>),
@@ -48,14 +46,12 @@ defmodule Goblin.DiskTable.Encoder do
   def decode_sst_header_block(<<@separator, _rest::binary>>), do: {:error, :end_of_sst}
   def decode_sst_header_block(_), do: {:error, :invalid_sst_header}
 
-  @doc "Decodes an SST block, returning the {key, seq, value} triple if successful."
   @spec decode_sst_block(binary()) :: {:ok, Goblin.triple()} | {:error, :invalid_sst_block}
   def decode_sst_block(<<@sst_block_id, _no_blocks::integer-64, data::binary>>),
     do: {:ok, decode(data)}
 
   def decode_sst_block(_), do: {:error, :invalid_sst_block}
 
-  @doc "Encodes a footer block, containing metadata about the disk table."
   @spec encode_footer_block(
           Goblin.level_key(),
           Goblin.BloomFilter.t(),
@@ -125,7 +121,6 @@ defmodule Goblin.DiskTable.Encoder do
     {footer_block, size, crc}
   end
 
-  @doc "Decodes the metadata block from the footer block."
   @spec decode_metadata_block(binary()) ::
           {:ok,
            {Goblin.level_key(), {pos_integer(), non_neg_integer()},
@@ -156,7 +151,6 @@ defmodule Goblin.DiskTable.Encoder do
 
   def decode_metadata_block(_), do: {:error, :invalid_metadata_block}
 
-  @doc "Decodes the Bloom filter block."
   @spec decode_bloom_filter_block(binary()) ::
           {:ok, Goblin.BloomFilter.t()} | {:error, :invalid_bloom_filter_block}
   def decode_bloom_filter_block(bloom_filter_block) do
@@ -166,7 +160,6 @@ defmodule Goblin.DiskTable.Encoder do
     end
   end
 
-  @doc "Decodes the key range block."
   @spec decode_key_range_block(binary()) ::
           {:ok, {Goblin.db_key(), Goblin.db_key()}} | {:error, :invalid_key_range_block}
   def decode_key_range_block(key_range_block) do
@@ -176,7 +169,6 @@ defmodule Goblin.DiskTable.Encoder do
     end
   end
 
-  @doc "Decodes the sequence range block."
   @spec decode_seq_range_block(binary()) ::
           {:ok, {Goblin.seq_no(), Goblin.seq_no()}} | {:error, :invalid_seq_range_block}
   def decode_seq_range_block(seq_range_block) do
@@ -186,46 +178,36 @@ defmodule Goblin.DiskTable.Encoder do
     end
   end
 
-  @doc "Decodes the CRC block."
   @spec decode_crc_block(binary()) :: {:ok, non_neg_integer()} | {:error, :invalid_crc_block}
   def decode_crc_block(<<crc::integer-32>>), do: {:ok, crc}
   def decode_crc_block(_), do: {:error, :invalid_crc_block}
 
-  @doc "Decodes the size block."
   @spec decode_size_block(binary()) :: {:ok, non_neg_integer()} | {:error, :invalid_size_block}
   def decode_size_block(<<size::integer-64>>), do: {:ok, size}
   def decode_size_block(_), do: {:error, :invalid_size_block}
 
-  @doc "Returns the unit size for an SST block."
   @spec sst_block_unit_size() :: non_neg_integer()
   def sst_block_unit_size, do: @sst_block_unit_size
 
-  @doc "Returns the size for an SST header."
   @spec sst_header_size() :: non_neg_integer()
   def sst_header_size, do: @sst_header_size
 
-  @doc "Returns the size of the metadata block."
   @spec metadata_block_size() :: non_neg_integer()
   def metadata_block_size, do: @metadata_block_size
 
-  @doc "Returns the size of the CRC block."
   @spec crc_block_size() :: non_neg_integer()
   def crc_block_size, do: @crc_block_size
 
-  @doc "Returns the size of the size block."
   @spec size_block_size() :: non_neg_integer()
   def size_block_size, do: @size_block_size
 
-  @doc "Returns the size of the magic code."
   @spec magic_size() :: non_neg_integer()
   def magic_size, do: @magic_size
 
-  @doc "Checks whether the provided magic matches the current magic."
   @spec validate_magic_block(binary()) :: :ok | {:error, :invalid_magic}
   def validate_magic_block(@magic), do: :ok
   def validate_magic_block(_), do: {:error, :invalid_magic}
 
-  @doc "Updates the CRC with the provided binary."
   @spec update_crc(non_neg_integer(), binary()) :: non_neg_integer()
   def update_crc(crc, bin), do: :erlang.crc32(crc, bin)
 

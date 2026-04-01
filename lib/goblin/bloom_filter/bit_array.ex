@@ -8,9 +8,13 @@ defmodule Goblin.BloomFilter.BitArray do
     :bits
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          size: non_neg_integer(),
+          no_bits: non_neg_integer(),
+          no_hashes: non_neg_integer(),
+          bits: <<>>
+        }
 
-  @doc "Create a new bit array."
   @spec new(non_neg_integer(), number()) :: t()
   def new(size, fpp) do
     no_bits = no_bits(size, fpp)
@@ -19,7 +23,6 @@ defmodule Goblin.BloomFilter.BitArray do
     %__MODULE__{size: size, no_bits: no_bits, no_hashes: no_hashes, bits: bits}
   end
 
-  @doc "Add key to bit array if not already full."
   @spec add_key(t(), Goblin.db_key()) :: {:ok, t()} | {:error, :full}
   def add_key(%{size: size}, _key) when size <= 0, do: {:error, :full}
 
@@ -37,7 +40,6 @@ defmodule Goblin.BloomFilter.BitArray do
     {:ok, %{bit_array | bits: bits, size: bit_array.size - 1}}
   end
 
-  @doc "Check if key is a member in the bit array."
   @spec member?(t(), Goblin.db_key()) :: boolean()
   def member?(bit_array, key) do
     %{bits: bits} = bit_array

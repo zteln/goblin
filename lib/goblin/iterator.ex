@@ -1,7 +1,6 @@
 defmodule Goblin.Iterator do
   @moduledoc false
 
-  @doc "Streams through an entire Iterable from start to finish."
   @spec linear_stream((-> Goblin.Iterable.t())) :: Enumerable.t(Goblin.triple())
   def linear_stream(init_f) do
     Stream.resource(
@@ -19,7 +18,6 @@ defmodule Goblin.Iterator do
     )
   end
 
-  @doc "Performs a k-way merge between iterators provided. Returns a stream over the result."
   @spec k_merge_stream((-> [Goblin.Iterable.t()]), keyword()) ::
           Enumerable.t(Goblin.triple())
   def k_merge_stream(init_f, opts \\ []) do
@@ -49,7 +47,7 @@ defmodule Goblin.Iterator do
   end
 
   defp k_merge(cursors, opts) do
-    filter_tombstones = Keyword.get(opts, :filter_tombstones, true)
+    filter_tombstones? = Keyword.get(opts, :filter_tombstones?, true)
     min = opts[:min]
     max = opts[:max]
 
@@ -65,7 +63,7 @@ defmodule Goblin.Iterator do
       [{_, {smallest_key, _, _}} | _] when not is_nil(min) and smallest_key < min ->
         {[], Enum.flat_map(cursors, &jump(&1, smallest_key))}
 
-      [{_, {smallest_key, _, :"$goblin_tombstone"}} | _] when filter_tombstones ->
+      [{_, {smallest_key, _, :"$goblin_tombstone"}} | _] when filter_tombstones? ->
         {[], Enum.flat_map(cursors, &jump(&1, smallest_key))}
 
       [{_, {smallest_key, _, _} = next} | _] ->

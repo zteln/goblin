@@ -30,7 +30,6 @@ defmodule Goblin.DiskTable do
           crc: binary()
         }
 
-  @doc "Writes a stream of triples into one or more SST files on disk."
   @spec into(
           Enumerable.t(Goblin.triple()),
           keyword()
@@ -87,7 +86,6 @@ defmodule Goblin.DiskTable do
     end)
   end
 
-  @doc "Parses an existing SST file and reconstructs a disk table struct."
   @spec from_file(Path.t()) :: {:ok, t()} | {:error, term()}
   def from_file(file) do
     handler = Handler.open!(file)
@@ -126,20 +124,22 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  @doc "Checks whether a key is within the minmax range of a disk table."
+  @spec remove(t()) :: :ok | {:error, term()}
+  def remove(disk_table) do
+    File.rm(disk_table.file)
+  end
+
   @spec within_min_max?(t(), Goblin.db_key()) :: boolean()
   def within_min_max?(disk_table, key) do
     %{key_range: {min, max}} = disk_table
     min <= key and key <= max
   end
 
-  @doc "Checks whether a key is a member to a disk tables Bloom filter."
   @spec bloom_filter_member?(t(), Goblin.db_key()) :: boolean()
   def bloom_filter_member?(disk_table, key) do
     BloomFilter.member?(disk_table.bloom_filter, key)
   end
 
-  @doc "Checks whether a disk table overlaps the provided range."
   @spec within_bounds?(t(), Goblin.db_key() | nil, Goblin.db_key() | nil) :: boolean()
   def within_bounds?(_disk_table, nil, nil), do: true
 

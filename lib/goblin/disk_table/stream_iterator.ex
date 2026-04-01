@@ -7,7 +7,6 @@ defmodule Goblin.DiskTable.StreamIterator do
     :max_seq
   ]
 
-  @doc "Generate a new Iterable for streaming through a disk table."
   @spec new(Goblin.DiskTable.t(), Goblin.seq_no() | nil) ::
           Goblin.Iterable.t()
   def new(disk_table, seq \\ nil) do

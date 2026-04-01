@@ -1,7 +1,6 @@
 defmodule Goblin.Export do
   @moduledoc false
 
-  @doc "Creates a compressed tar archive from the given file list."
   @spec into_tar(Path.t(), list(Path.t())) :: {:ok, Path.t()} | {:error, term()}
   def into_tar(dir, filelist) do
     tar_name = tar_name(dir)

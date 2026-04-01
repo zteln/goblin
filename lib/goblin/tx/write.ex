@@ -2,13 +2,13 @@ defmodule Goblin.Tx.Write do
   @moduledoc false
 
   alias Goblin.{
-    Snapshots,
+    Broker,
     Queryable,
     Tx
   }
 
   defstruct [
-    :seq,
+    :sequence,
     :tx_key,
     :name,
     :max_level_key,
@@ -16,25 +16,23 @@ defmodule Goblin.Tx.Write do
   ]
 
   @type t :: %__MODULE__{
-          seq: non_neg_integer(),
+          sequence: non_neg_integer(),
           tx_key: term(),
           name: atom(),
           max_level_key: integer(),
           writes: list()
         }
 
-  @doc "Creates a new write transaction."
   @spec new(atom(), term(), non_neg_integer(), integer()) :: t()
   def new(name, tx_key, seq, max_level_key) do
     %__MODULE__{
       name: name,
       tx_key: tx_key,
-      seq: seq,
+      sequence: seq,
       max_level_key: max_level_key
     }
   end
 
-  @doc "Finalizes the transaction by reversing the accumulated writes."
   @spec complete(t()) :: t()
   def complete(tx) do
     %{tx | writes: Enum.reverse(tx.writes)}
@@ -51,8 +49,8 @@ defmodule Goblin.Tx.Write do
           tag -> {:"$goblin_tag", tag, key}
         end
 
-      write = {:put, tx.seq, key, value}
-      %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
+      write = {:put, tx.sequence, key, value}
+      %{tx | sequence: tx.sequence + 1, writes: [write | tx.writes]}
     end
 
     def put_multi(tx, pairs, opts) do
@@ -67,8 +65,8 @@ defmodule Goblin.Tx.Write do
           raise ArgumentError, "not allowed to write with key `nil`"
 
         {key, value}, acc ->
-          write = {:put, acc.seq, tagger.(key), value}
-          %{acc | seq: acc.seq + 1, writes: [write | acc.writes]}
+          write = {:put, acc.sequence, tagger.(key), value}
+          %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
       end)
     end
 
@@ -81,8 +79,8 @@ defmodule Goblin.Tx.Write do
           tag -> {:"$goblin_tag", tag, key}
         end
 
-      write = {:remove, tx.seq, key}
-      %{tx | seq: tx.seq + 1, writes: [write | tx.writes]}
+      write = {:remove, tx.sequence, key}
+      %{tx | sequence: tx.sequence + 1, writes: [write | tx.writes]}
     end
 
     def remove_multi(tx, keys, opts) do
@@ -97,8 +95,8 @@ defmodule Goblin.Tx.Write do
           raise ArgumentError, "not allowed to write with key `nil`"
 
         key, acc ->
-          write = {:remove, acc.seq, tagger.(key)}
-          %{acc | seq: acc.seq + 1, writes: [write | acc.writes]}
+          write = {:remove, acc.sequence, tagger.(key)}
+          %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
       end)
     end
 
@@ -120,7 +118,7 @@ defmodule Goblin.Tx.Write do
       tables_f = fn level_key ->
         [
           tx_table
-          | Snapshots.filter_tables(
+          | Broker.filter_tables(
               tx.name,
               tx.tx_key,
               level_key: level_key,
@@ -129,7 +127,7 @@ defmodule Goblin.Tx.Write do
         ]
       end
 
-      case Tx.Read.search(tables_f, [key], tx.seq, tx.max_level_key) do
+      case Tx.Read.search(tables_f, [key], tx.sequence, tx.max_level_key) do
         [] -> opts[:default]
         [{_key, value}] -> value
       end
@@ -153,7 +151,7 @@ defmodule Goblin.Tx.Write do
       tables_f = fn level_key ->
         [
           tx_table
-          | Snapshots.filter_tables(
+          | Broker.filter_tables(
               tx.name,
               tx.tx_key,
               level_key: level_key,
@@ -164,7 +162,7 @@ defmodule Goblin.Tx.Write do
         ]
       end
 
-      Tx.Read.search(tables_f, keys, tx.seq, tx.max_level_key)
+      Tx.Read.search(tables_f, keys, tx.sequence, tx.max_level_key)
       |> List.keysort(0)
     end
   end

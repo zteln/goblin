@@ -1,4 +1,4 @@
-defmodule Goblin.WAL do
+defmodule Goblin.MemTable.WAL do
   @moduledoc false
 
   alias Goblin.Log
@@ -15,7 +15,6 @@ defmodule Goblin.WAL do
           log_file: Path.t()
         }
 
-  @doc "Opens a WAL file at the given path."
   @spec open(atom(), Path.t(), boolean()) :: {:ok, t()} | {:error, term()}
   def open(name, path, write? \\ true) do
     mode =
@@ -33,25 +32,24 @@ defmodule Goblin.WAL do
     end
   end
 
-  @doc "Appends writes to the WAL and syncs to disk."
   @spec append(t(), term()) :: {:ok, t()} | {:error, term()}
   def append(wal, writes) do
     with {:ok, _size} <- Log.append(wal.log, writes) do
-      {:ok, wal}
+      :ok
     end
   end
 
-  @doc "Returns a lazy stream of all entries in the WAL."
   @spec replay(t()) :: Enumerable.t()
   def replay(wal) do
     Log.stream_log!(wal.log)
   end
 
-  @doc "Closes the WAL."
   @spec close(t()) :: :ok | {:error, term()}
   def close(wal), do: Log.close(wal.log)
 
-  @doc "Deletes the WAL file from disk."
   @spec rm(t()) :: :ok | {:error, atom()}
   def rm(wal), do: File.rm(wal.log_file)
+
+  @spec filepath(t()) :: Path.t()
+  def filepath(wal), do: wal.log_file
 end

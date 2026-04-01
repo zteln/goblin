@@ -10,7 +10,6 @@ defmodule Goblin.DiskTable.BinarySearchIterator do
     :high
   ]
 
-  @doc "Returns a new Iterable BinarySearchIterator struct."
   @spec new(Goblin.DiskTable.t(), [Goblin.db_key()], Goblin.seq_no()) ::
           Goblin.Iterable.t()
   def new(disk_table, keys, seq) do

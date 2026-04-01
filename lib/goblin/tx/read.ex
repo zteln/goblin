@@ -3,7 +3,7 @@ defmodule Goblin.Tx.Read do
 
   alias Goblin.{
     Iterator,
-    Snapshots,
+    Broker,
     Queryable,
     Tx
   }
@@ -22,7 +22,6 @@ defmodule Goblin.Tx.Read do
           max_level_key: integer()
         }
 
-  @doc "Creates a new read transaction."
   @spec new(atom(), term(), non_neg_integer(), integer()) :: t()
   def new(name, tx_key, seq, max_level_key) do
     %__MODULE__{
@@ -33,7 +32,6 @@ defmodule Goblin.Tx.Read do
     }
   end
 
-  @doc "Searches for keys across table levels."
   @spec search(
           (integer() -> [Goblin.Iterable.t()]),
           [term()],
@@ -63,14 +61,14 @@ defmodule Goblin.Tx.Read do
         fn ->
           Enum.map(tables_f.(level_key), &Queryable.search(&1, keys, seq))
         end,
-        filter_tombstones: false
+        filter_tombstones?: false
       )
-      |> Enum.reduce({acc, keys}, fn
+      |> Enum.reduce({acc, MapSet.new(keys)}, fn
         {key, _seq, :"$goblin_tombstone"}, {acc, keys} ->
-          {acc, Enum.reject(keys, &(&1 == key))}
+          {acc, MapSet.delete(keys, key)}
 
         {key, _seq, val}, {acc, keys} ->
-          {[{key, val} | acc], Enum.reject(keys, &(&1 == key))}
+          {[{key, val} | acc], MapSet.delete(keys, key)}
       end)
 
     search(tables_f, keys, seq, max_level_key, level_key + 1, acc)
@@ -101,7 +99,7 @@ defmodule Goblin.Tx.Read do
         end
 
       tables_f = fn level_key ->
-        Snapshots.filter_tables(
+        Broker.filter_tables(
           tx.name,
           tx.tx_key,
           level_key: level_key,
@@ -123,7 +121,7 @@ defmodule Goblin.Tx.Read do
         end
 
       tables_f = fn level_key ->
-        Snapshots.filter_tables(
+        Broker.filter_tables(
           tx.name,
           tx.tx_key,
           level_key: level_key,

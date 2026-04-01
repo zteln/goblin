@@ -2,15 +2,12 @@ defprotocol Goblin.Queryable do
   @moduledoc false
   @type t :: t()
 
-  @doc "Returns whether a key might be in a provided table or not."
   @spec has_key?(t(), Goblin.db_key()) :: boolean()
   def has_key?(table, key)
 
-  @doc "Returns an iterable struct used for searching for `keys` in the table."
   @spec search(t(), [Goblin.db_key()], Goblin.seq_no()) :: Goblin.Iterable.t()
   def search(table, keys, seq)
 
-  @doc "Returns an iterable struct used for streaming through the table."
   @spec stream(t(), Goblin.db_key() | nil, Goblin.db_key() | nil, Goblin.seq_no()) ::
           Goblin.Iterable.t()
   def stream(table, min, max, seq)

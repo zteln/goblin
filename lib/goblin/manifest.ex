@@ -16,9 +16,14 @@ defmodule Goblin.Manifest do
     log_size: 0
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          log: any(),
+          log_file: Path.t(),
+          data_dir: Path.t(),
+          snapshot: Snapshot.t(),
+          log_size: non_neg_integer()
+        }
 
-  @doc "Opens the manifest log, recovering state from disk."
   @spec open(atom(), Path.t()) :: {:ok, t()} | {:error, term()}
   def open(name, data_dir) do
     log_file = Path.join(data_dir, @log_file)
@@ -41,19 +46,88 @@ defmodule Goblin.Manifest do
     end
   end
 
-  @doc "Closes the manifest log."
   @spec close(t()) :: :ok | {:error, term()}
   def close(manifest), do: Log.close(manifest.log)
 
-  @doc "Returns whether the manifest log has exceeded its size limit."
-  @spec rotate?(t()) :: boolean()
-  def rotate?(manifest) do
-    manifest.log_size >= @default_max_log_size
+  @spec update_sequence(t(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
+  def update_sequence(manifest, sequence) do
+    updates = [{:sequence, sequence}]
+
+    with {:ok, manifest} <- apply_updates(manifest, updates),
+         {:ok, manifest} <- rotate(manifest) do
+      {:ok, manifest}
+    end
   end
 
-  @doc "Compacts the manifest log by rewriting it as a single snapshot."
-  @spec rotate(t()) :: {:ok, t()} | {:error, term()}
-  def rotate(manifest) do
+  @spec add_wal(t(), Path.t()) :: {:ok, t()} | {:error, term()}
+  def add_wal(manifest, wal_path) do
+    updates = [{:wal, trim_dir(wal_path)}]
+
+    with {:ok, manifest} <- apply_updates(manifest, updates),
+         {:ok, manifest} <- rotate(manifest) do
+      {:ok, manifest}
+    end
+  end
+
+  @spec add_flush(t(), list(Path.t()), Path.t()) :: {:ok, t()} | {:error, term()}
+  def add_flush(manifest, dt_paths, wal_path) do
+    updates = [
+      {:wal_removed, trim_dir(wal_path)}
+      | Enum.map(dt_paths, &{:disk_table_added, trim_dir(&1)})
+    ]
+
+    with {:ok, manifest} <- apply_updates(manifest, updates),
+         {:ok, manifest} <- rotate(manifest) do
+      {:ok, manifest}
+    end
+  end
+
+  @spec add_compaction(t(), list(Path.t()), list(Path.t())) :: {:ok, t()} | {:error, term()}
+  def add_compaction(manifest, new_dts, old_dts) do
+    updates =
+      Enum.map(new_dts, &{:disk_table_added, trim_dir(&1)}) ++
+        Enum.map(old_dts, &{:disk_table_removed, trim_dir(&1)})
+
+    with {:ok, manifest} <- apply_updates(manifest, updates),
+         {:ok, manifest} <- rotate(manifest) do
+      {:ok, manifest}
+    end
+  end
+
+  @spec clear_dirt(t()) :: t()
+  def clear_dirt(manifest) do
+    snapshot = Snapshot.update(manifest.snapshot, :clear_dirt)
+    %{manifest | snapshot: snapshot}
+  end
+
+  @spec snapshot(t(), list(atom())) :: map()
+  def snapshot(manifest, keys) do
+    manifest.snapshot
+    |> Map.take(keys)
+    |> Map.replace_lazy(:wal, &(&1 && Path.join(manifest.data_dir, &1)))
+    |> Map.replace_lazy(:disk_tables, fn dts ->
+      Enum.map(dts, &Path.join(manifest.data_dir, &1))
+    end)
+    |> Map.replace_lazy(:wals, fn wals ->
+      wals
+      |> Enum.map(&Path.join(manifest.data_dir, &1))
+      |> Enum.reverse()
+    end)
+    |> Map.replace_lazy(:dirt, fn dirt ->
+      Enum.map(dirt, &Path.join(manifest.data_dir, &1))
+    end)
+  end
+
+  defp apply_updates(manifest, updates) do
+    with {:ok, size} <- Log.append(manifest.log, updates) do
+      snapshot = Snapshot.update(manifest.snapshot, updates)
+      log_size = manifest.log_size + size
+      manifest = %{manifest | snapshot: snapshot, log_size: log_size}
+      {:ok, manifest}
+    end
+  end
+
+  defp rotate(%{log_size: log_size} = manifest) when log_size >= @default_max_log_size do
     %{
       log: log,
       log_file: log_file,
@@ -70,66 +144,7 @@ defmodule Goblin.Manifest do
     end
   end
 
-  @doc "Appends actions to the manifest log and updates the in-memory snapshot."
-  @spec update(t(), list(any())) :: {:ok, t()} | {:error, term()}
-  def update(manifest, actions) do
-    updates =
-      actions
-      |> Enum.flat_map(fn
-        {:activate_disk_tables, disk_tables} ->
-          Enum.map(disk_tables, &{:disk_table_activated, &1})
-
-        {:remove_disk_tables, disk_tables} ->
-          Enum.map(disk_tables, &{:disk_table_removed, &1})
-
-        {:retire_wals, wals} ->
-          Enum.map(wals, &{:wal_retired, &1})
-
-        {:remove_wals, wals} ->
-          Enum.map(wals, &{:wal_removed, &1})
-
-        {:activate_wal, wal} ->
-          [{:wal_activated, wal}]
-
-        {:set_seq, seq} ->
-          [{:seq_set, seq}]
-
-        :sweep ->
-          [:sweeped]
-
-        _ ->
-          []
-      end)
-      |> Enum.map(fn
-        {:seq_set, seq} -> {:seq_set, seq}
-        :sweeped -> :sweeped
-        {update, file} -> {update, trim_dir(file)}
-      end)
-
-    with {:ok, size} <- Log.append(manifest.log, updates) do
-      snapshot = Snapshot.update(manifest.snapshot, updates)
-      {:ok, %{manifest | snapshot: snapshot, log_size: manifest.log_size + size}}
-    end
-  end
-
-  @doc "Returns selected fields from the manifest snapshot with resolved paths."
-  @spec snapshot(t(), list(atom())) :: map()
-  def snapshot(manifest, keys) do
-    manifest.snapshot
-    |> Map.take(keys)
-    |> Map.replace_lazy(:active_wal, &(&1 && Path.join(manifest.data_dir, &1)))
-    |> Map.replace_lazy(:active_disk_tables, fn disk_tables ->
-      Enum.map(disk_tables, &Path.join(manifest.data_dir, &1))
-    end)
-    |> Map.replace_lazy(:retired_wals, fn retired_wals ->
-      retired_wals
-      |> Enum.map(&Path.join(manifest.data_dir, &1))
-      |> Enum.reverse()
-    end)
-    |> Map.replace_lazy(:dirt, fn dirt ->
-      Enum.map(dirt, &Path.join(manifest.data_dir, &1))
-    end)
-  end
+  defp rotate(manifest), do: {:ok, manifest}
 
   defp recover_snapshot(log) do
     log
