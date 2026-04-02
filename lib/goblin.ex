@@ -621,7 +621,9 @@ defmodule Goblin do
       wals: wals
     } = Manifest.snapshot(state.manifest, [:disk_tables, :wal, :wals])
 
-    filelist = List.flatten([state.manifest.log_file, wal, dts, wals])
+    manifest_files = Manifest.current_files(state.manifest)
+
+    filelist = List.flatten([manifest_files, wal, dts, wals])
 
     case Export.into_tar(export_dir, filelist) do
       {:ok, output} -> {:reply, {:ok, output}, state}

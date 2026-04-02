@@ -1,72 +1,56 @@
 defmodule Goblin.Manifest do
   @moduledoc false
 
-  alias Goblin.Log
-  alias Goblin.Manifest.Snapshot
+  alias Goblin.Manifest.{
+    Snapshot,
+    Log
+  }
 
   @log_key :manifest
   @log_file "manifest.goblin"
-  @default_max_log_size 10 * 1024 * 1024
 
   defstruct [
     :log,
-    :log_file,
     :data_dir,
-    :snapshot,
-    log_size: 0
+    :snapshot
   ]
 
   @type t :: %__MODULE__{
           log: any(),
-          log_file: Path.t(),
           data_dir: Path.t(),
-          snapshot: Snapshot.t(),
-          log_size: non_neg_integer()
+          snapshot: Snapshot.t()
         }
 
   @spec open(atom(), Path.t()) :: {:ok, t()} | {:error, term()}
   def open(name, data_dir) do
     log_file = Path.join(data_dir, @log_file)
+    manifest = %__MODULE__{data_dir: data_dir}
 
-    if File.exists?(rotation_file(log_file)),
-      do: File.rename(rotation_file(log_file), log_file)
-
-    with {:ok, log} <- Log.open({name, @log_key}, log_file) do
-      %{size: log_size} = File.stat!(log_file)
-      snapshot = recover_snapshot(log)
-
-      {:ok,
-       %__MODULE__{
-         log: log,
-         log_file: log_file,
-         data_dir: data_dir,
-         log_size: log_size,
-         snapshot: snapshot
-       }}
+    with {:ok, log} <- Log.open_log({name, @log_key}, log_file) do
+      recover_manifest(%{manifest | log: log})
     end
   end
 
   @spec close(t()) :: :ok | {:error, term()}
-  def close(manifest), do: Log.close(manifest.log)
+  def close(manifest), do: Log.close_log(manifest.log)
+
+  @spec current_files(t()) :: list(Path.t())
+  def current_files(manifest) do
+    File.ls!(manifest.data_dir)
+    |> Enum.filter(&String.starts_with?(&1, @log_file))
+    |> Enum.map(&Path.join(manifest.data_dir, &1))
+  end
 
   @spec update_sequence(t(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
   def update_sequence(manifest, sequence) do
     updates = [{:sequence, sequence}]
-
-    with {:ok, manifest} <- apply_updates(manifest, updates),
-         {:ok, manifest} <- rotate(manifest) do
-      {:ok, manifest}
-    end
+    apply_updates(manifest, updates)
   end
 
   @spec add_wal(t(), Path.t()) :: {:ok, t()} | {:error, term()}
   def add_wal(manifest, wal_path) do
     updates = [{:wal, trim_dir(wal_path)}]
-
-    with {:ok, manifest} <- apply_updates(manifest, updates),
-         {:ok, manifest} <- rotate(manifest) do
-      {:ok, manifest}
-    end
+    apply_updates(manifest, updates)
   end
 
   @spec add_flush(t(), list(Path.t()), Path.t()) :: {:ok, t()} | {:error, term()}
@@ -76,10 +60,7 @@ defmodule Goblin.Manifest do
       | Enum.map(dt_paths, &{:disk_table_added, trim_dir(&1)})
     ]
 
-    with {:ok, manifest} <- apply_updates(manifest, updates),
-         {:ok, manifest} <- rotate(manifest) do
-      {:ok, manifest}
-    end
+    apply_updates(manifest, updates)
   end
 
   @spec add_compaction(t(), list(Path.t()), list(Path.t())) :: {:ok, t()} | {:error, term()}
@@ -88,15 +69,12 @@ defmodule Goblin.Manifest do
       Enum.map(new_dts, &{:disk_table_added, trim_dir(&1)}) ++
         Enum.map(old_dts, &{:disk_table_removed, trim_dir(&1)})
 
-    with {:ok, manifest} <- apply_updates(manifest, updates),
-         {:ok, manifest} <- rotate(manifest) do
-      {:ok, manifest}
-    end
+    apply_updates(manifest, updates)
   end
 
   @spec clear_dirt(t()) :: t()
   def clear_dirt(manifest) do
-    snapshot = Snapshot.update(manifest.snapshot, :clear_dirt)
+    snapshot = Snapshot.clear_dirt(manifest.snapshot)
     %{manifest | snapshot: snapshot}
   end
 
@@ -119,39 +97,33 @@ defmodule Goblin.Manifest do
   end
 
   defp apply_updates(manifest, updates) do
-    with {:ok, size} <- Log.append(manifest.log, updates) do
-      snapshot = Snapshot.update(manifest.snapshot, updates)
-      log_size = manifest.log_size + size
-      manifest = %{manifest | snapshot: snapshot, log_size: log_size}
-      {:ok, manifest}
+    order = Snapshot.order(manifest.snapshot)
+
+    updates =
+      Enum.with_index(updates, fn {action, data}, idx ->
+        {idx + order + 1, action, data}
+      end)
+
+    snapshot = Snapshot.update(manifest.snapshot, updates)
+
+    with :ok <- Log.append(manifest.log, updates, {:snapshot, snapshot}) do
+      {:ok, %{manifest | snapshot: snapshot}}
     end
   end
 
-  defp rotate(%{log_size: log_size} = manifest) when log_size >= @default_max_log_size do
-    %{
-      log: log,
-      log_file: log_file,
-      snapshot: snapshot
-    } = manifest
+  defp recover_manifest(manifest) do
+    snapshot = recover_snapshot(manifest)
 
-    with :ok <- Log.close(log),
-         :ok <- File.rename(log_file, rotation_file(log_file)),
-         {:ok, log} <- Log.open(log, log_file),
-         {:ok, size} <- Log.append(log, {:snapshot, snapshot}),
-         :ok <- File.rm(rotation_file(log_file)) do
-      %{size: log_size} = File.stat!(log_file)
-      {:ok, %{manifest | log_size: log_size + size, snapshot: snapshot}}
+    with :ok <- Log.set_header(manifest.log, {:snapshot, snapshot}) do
+      {:ok, %{manifest | snapshot: snapshot}}
     end
   end
 
-  defp rotate(manifest), do: {:ok, manifest}
-
-  defp recover_snapshot(log) do
-    log
+  defp recover_snapshot(manifest) do
+    manifest.log
     |> Log.stream_log!()
     |> Enum.reduce(%Snapshot{}, &Snapshot.update(&2, &1))
   end
 
-  defp rotation_file(file), do: "#{file}.rotation"
   defp trim_dir(name), do: Path.basename(name)
 end
