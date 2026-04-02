@@ -27,22 +27,26 @@ defmodule Goblin.Broker do
           (Goblin.Queryable.t() -> :ok)
         ) :: :ok
   def add_table(broker, id, level_key, table, delete_callback) do
-    counter = :ets.update_counter(broker, :counter, 1, {:counter, 0})
+    counter = inc_get_counter(broker)
+    key = {counter, :table, id}
+    soft_deleted_at = nil
+    retries = {nil, 0}
     entry = %{table: table, delete: delete_callback}
-    :ets.insert(broker, {{counter, :table, id}, false, {nil, 0}, level_key, entry})
+    table_item = {key, soft_deleted_at, retries, level_key, entry}
+    :ets.insert(broker, table_item)
     :ok
   end
 
   @spec soft_delete_table(:ets.table(), term()) :: :ok
   def soft_delete_table(broker, id) do
-    counter = :ets.update_counter(broker, :counter, 1, {:counter, 0})
+    soft_deleted_at = inc_get_counter(broker)
 
     case :ets.match(broker, {{:"$1", :table, id}, :_, :_, :_, :_}) do
       [] ->
         :ok
 
       [[insert_counter]] ->
-        :ets.update_element(broker, {insert_counter, :table, id}, {2, counter})
+        :ets.update_element(broker, {insert_counter, :table, id}, {2, soft_deleted_at})
         :ok
     end
   end
@@ -53,8 +57,8 @@ defmodule Goblin.Broker do
       [{_, _, {_, retries}, _, _}] when retries > @max_retries ->
         {:error, :too_many_retries}
 
-      [obj] ->
-        try_hard_delete(broker, obj)
+      [table_item] ->
+        try_hard_delete(broker, table_item)
     end
   end
 
@@ -100,7 +104,7 @@ defmodule Goblin.Broker do
         [{:sequence, seq}] -> seq
       end
 
-    counter = :ets.update_counter(broker, :counter, 1, {:counter, 0})
+    counter = inc_get_counter(broker)
     :ets.insert(broker, {{counter, :tx, tx_key}})
     :ets.delete(broker, {:pending_tx, :tx, tx_key})
 
@@ -125,10 +129,16 @@ defmodule Goblin.Broker do
     :ok
   end
 
-  defp try_hard_delete(broker, obj) do
-    {{insert_counter, _, id} = key, soft_delete_counter, {_, retries}, _, entry} = obj
+  defp try_hard_delete(broker, table_item) do
+    {
+      {insert_counter, _, id} = key,
+      soft_deleted_at,
+      {_, retries},
+      _,
+      entry
+    } = table_item
 
-    case check_table_usage(broker, insert_counter, soft_delete_counter) do
+    case check_table_usage(broker, insert_counter, soft_deleted_at) do
       :ok ->
         %{table: table, delete: delete} = entry
         :ets.delete(broker, key)
@@ -161,5 +171,9 @@ defmodule Goblin.Broker do
       [] -> :ok
       _ -> :in_use
     end
+  end
+
+  defp inc_get_counter(broker) do
+    :ets.update_counter(broker, :counter, 1, {:counter, 0})
   end
 end
