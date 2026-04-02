@@ -13,7 +13,7 @@ defmodule Goblin.MixProject do
       package: package(),
       description: description(),
       docs: &docs/0,
-      source_url: "https://codeberg.com/zteln/goblin"
+      source_url: "https://github.com/zteln/goblin"
     ]
   end
 
@@ -35,7 +35,7 @@ defmodule Goblin.MixProject do
       name: "goblin",
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
       licenses: ["MIT"],
-      links: %{"Codeberg" => "https://codeberg.com/zteln/goblin"}
+      links: %{"Github" => "https://github.com/zteln/goblin"}
     ]
   end
 
