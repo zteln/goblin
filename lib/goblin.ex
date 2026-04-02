@@ -818,8 +818,7 @@ defmodule Goblin do
 
     wals = wals ++ [wal || new_file(state.data_dir, wal_count, @wal_suffix)]
 
-    disk_table_counter = :atomics.put(state.disk_table_counter, 1, disk_table_count)
-    state = %{state | disk_table_counter: disk_table_counter}
+    :atomics.put(state.disk_table_counter, 1, disk_table_count)
 
     with {:ok, state} <- restore_mem_tables(state, wals, sequence),
          {:ok, state} <- restore_disk_tables(state, disk_tables),
