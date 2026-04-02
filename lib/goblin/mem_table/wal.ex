@@ -1,8 +1,6 @@
 defmodule Goblin.MemTable.WAL do
   @moduledoc false
 
-  alias Goblin.Log
-
   @log_key :wal
 
   defstruct [
@@ -11,41 +9,54 @@ defmodule Goblin.MemTable.WAL do
   ]
 
   @type t :: %__MODULE__{
-          log: Log.t(),
+          log: term(),
           log_file: Path.t()
         }
 
   @spec open(atom(), Path.t(), boolean()) :: {:ok, t()} | {:error, term()}
-  def open(name, path, write? \\ true) do
+  def open(name, log_file, write? \\ true) do
     mode =
       case write? do
         true -> :read_write
         false -> :read_only
       end
 
-    with {:ok, log} <- Log.open({name, @log_key}, path, mode) do
-      {:ok,
-       %__MODULE__{
-         log: log,
-         log_file: path
-       }}
+    opts = [
+      name: {name, @log_key},
+      file: ~c"#{log_file}",
+      quiet: true,
+      mode: mode
+    ]
+
+    case :disk_log.open(opts) do
+      {:ok, log} -> {:ok, %__MODULE__{log: log, log_file: log_file}}
+      {:repaired, log, _recovered, _bad_bytes} -> {:ok, %__MODULE__{log: log, log_file: log_file}}
+      error -> error
     end
   end
 
   @spec append(t(), term()) :: {:ok, t()} | {:error, term()}
   def append(wal, writes) do
-    with {:ok, _size} <- Log.append(wal.log, writes) do
-      :ok
+    with :ok <- :disk_log.log_terms(wal.log, writes) do
+      :disk_log.sync(wal.log)
     end
   end
 
   @spec replay(t()) :: Enumerable.t()
   def replay(wal) do
-    Log.stream_log!(wal.log)
+    Stream.resource(
+      fn -> :disk_log.chunk(wal.log, :start) end,
+      fn
+        :eof -> {:halt, :eof}
+        {:error, reason} -> raise "Failed to stream log, reason: #{inspect(reason)}"
+        {continuation, terms} -> {terms, :disk_log.chunk(wal.log, continuation)}
+      end,
+      fn _ -> :ok end
+    )
   end
 
   @spec close(t()) :: :ok | {:error, term()}
-  def close(wal), do: Log.close(wal.log)
+  def close(wal), do: :disk_log.close(wal.log)
 
   @spec rm(t()) :: :ok | {:error, atom()}
   def rm(wal), do: File.rm(wal.log_file)
