@@ -12,8 +12,8 @@ defmodule Goblin.DiskTable do
     :file,
     :level_key,
     :bloom_filter,
-    key_range: {nil, nil},
-    seq_range: {nil, 0},
+    :key_range,
+    :seq_range,
     size: 0,
     no_blocks: 0,
     crc: :erlang.crc32(<<>>)
@@ -177,13 +177,13 @@ defmodule Goblin.DiskTable do
 
     key_range =
       case disk_table.key_range do
-        {nil, _max} -> {key, key}
+        nil -> {key, key}
         {min, _max} -> {min, key}
       end
 
     seq_range =
       case disk_table.seq_range do
-        {nil, _max} -> {seq, seq}
+        nil -> {seq, seq}
         {min, _max} -> {min, seq}
       end
 

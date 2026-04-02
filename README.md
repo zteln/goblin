@@ -9,7 +9,7 @@ A lightweight, embedded database for Elixir.
 - **Crash recovery** via write-ahead logging
 - **Automatic background compaction**
 - **Bloom filters** for fast negative lookups
-- **Any Elixir term** as key (except `nil`) or value
+- **Any Elixir term** as key or value
 
 ## Usage
 
@@ -57,10 +57,15 @@ Goblin.remove(db, :alice)
 # => :ok
 ```
 
-> #### Note {: .warning}
+> #### Key types {: .warning}
 >
-> A key can be any Elixir term (except `nil`), but avoid mixing floats and integers as keys
-> (e.g. both `1` and `1.0`). This can cause unexpected reads.
+> A key can be any Elixir term, but mixing floats and integers
+> with the same numeric value (e.g. both `1` and `1.0`) is undefined behaviour.
+> Goblin uses ETS `:ordered_set` internally, which considers `1` and `1.0` as
+> equal (`1 == 1.0`), while the Bloom filters use exact equality (`1 === 1.0` is
+> `false`). This mismatch can cause keys to not be found or old versions to not
+> be garbage collected during compaction. To avoid issues, use a consistent
+> numeric type for your keys (e.g. always integers or always floats).
 
 ### Batch operations
 

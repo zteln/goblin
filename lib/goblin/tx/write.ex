@@ -39,9 +39,6 @@ defmodule Goblin.Tx.Write do
   end
 
   defimpl Goblin.Transactionable do
-    def put(_tx, nil, _value, _opts),
-      do: raise(ArgumentError, "not allowed to write with key `nil`")
-
     def put(tx, key, value, opts) do
       key =
         case opts[:tag] do
@@ -60,17 +57,11 @@ defmodule Goblin.Tx.Write do
           tag -> fn key -> {:"$goblin_tag", tag, key} end
         end
 
-      Enum.reduce(pairs, tx, fn
-        {nil, _value}, _acc ->
-          raise ArgumentError, "not allowed to write with key `nil`"
-
-        {key, value}, acc ->
-          write = {:put, acc.sequence, tagger.(key), value}
-          %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
+      Enum.reduce(pairs, tx, fn {key, value}, acc ->
+        write = {:put, acc.sequence, tagger.(key), value}
+        %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
       end)
     end
-
-    def remove(_tx, nil, _opts), do: raise(ArgumentError, "not allowed to write with key `nil`")
 
     def remove(tx, key, opts) do
       key =
@@ -90,13 +81,9 @@ defmodule Goblin.Tx.Write do
           tag -> fn key -> {:"$goblin_tag", tag, key} end
         end
 
-      Enum.reduce(keys, tx, fn
-        nil, _acc ->
-          raise ArgumentError, "not allowed to write with key `nil`"
-
-        key, acc ->
-          write = {:remove, acc.sequence, tagger.(key)}
-          %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
+      Enum.reduce(keys, tx, fn key, acc ->
+        write = {:remove, acc.sequence, tagger.(key)}
+        %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
       end)
     end
 
