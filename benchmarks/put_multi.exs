@@ -1,33 +1,52 @@
-tmp_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put_multi"
+Mix.install([:benchee, :cubdb, {:goblin, path: File.cwd!()}])
+
+goblin_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put_multi/goblin"
+cubdb_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put_multi/cubdb"
 
 Benchee.run(
   %{
-    "Goblin.put_multi/2" => fn {db, pairs} ->
-      Goblin.put_multi(db, pairs)
+    "Goblin.put_multi/2" => fn {goblin, _cubdb, pairs} ->
+      Goblin.put_multi(goblin, pairs)
+    end,
+    "CubDB.put_multi/2" => fn {_goblin, cubdb, pairs} ->
+      CubDB.put_multi(cubdb, pairs)
     end
   },
   inputs: %{
     "10" => 10,
     "100" => 100,
-    "1000" => 1000,
-    "10000" => 10_000,
-    "100000" => 100_000
+    "1_000" => 1_000,
+    "10_000" => 10_000,
+    "100_000" => 100_000
   },
   before_scenario: fn size ->
-    File.rm_rf!(tmp_dir)
-    {:ok, db} = Goblin.start_link(data_dir: tmp_dir)
-    {db, size}
+    File.rm_rf!(goblin_dir)
+    File.rm_rf!(cubdb_dir)
+
+    {:ok, goblin} = Goblin.start_link(data_dir: goblin_dir)
+
+    {:ok, cubdb} =
+      CubDB.start_link(
+        data_dir: cubdb_dir,
+        auto_compact: false,
+        auto_file_sync: false
+      )
+
+    Process.unlink(cubdb)
+    {goblin, cubdb, size}
   end,
-  before_each: fn {db, size} ->
+  before_each: fn {goblin, cubdb, size} ->
     pairs =
       for _ <- 1..size do
         {:rand.uniform(100_000), :crypto.strong_rand_bytes(1024)}
       end
 
-    {db, pairs}
+    {goblin, cubdb, pairs}
   end,
-  after_scenario: fn {db, _size} ->
-    Goblin.stop(db)
-    File.rm_rf!(tmp_dir)
+  after_scenario: fn {goblin, cubdb, _size} ->
+    Goblin.stop(goblin)
+    CubDB.stop(cubdb)
+    File.rm_rf!(goblin_dir)
+    File.rm_rf!(cubdb_dir)
   end
 )

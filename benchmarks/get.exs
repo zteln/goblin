@@ -1,12 +1,25 @@
-repos_dir = "#{File.cwd!()}/tmp/goblin_benchmark/fixtures/"
+Mix.install([:benchee, :cubdb, {:goblin, path: File.cwd!()}])
 
-File.exists?(repos_dir) ||
-  raise "fixtures must exist. Run `mix run benchmarks/create_fix_repos.exs`."
+fixtures_dir = "#{File.cwd!()}/tmp/goblin_benchmark/fixtures"
+
+File.exists?(fixtures_dir) ||
+  raise "Fixtures must exist. Run `elixir bench/create_fix_repos.exs` first."
+
+num_keys = %{
+  "1_kb_repo" => max(div(1024, 1024), 1),
+  "1_mb_repo" => div(1024 * 1024, 1024),
+  "10_mb_repo" => div(10 * 1024 * 1024, 1024),
+  "100_mb_repo" => div(100 * 1024 * 1024, 1024),
+  "1_gb_repo" => div(1024 * 1024 * 1024, 1024)
+}
 
 Benchee.run(
   %{
-    "Goblin.get/3" => fn {db, key} ->
-      Goblin.get(db, key)
+    "Goblin.get/2" => fn {goblin, _cubdb, key} ->
+      Goblin.get(goblin, key)
+    end,
+    "CubDB.get/2" => fn {_goblin, cubdb, key} ->
+      CubDB.get(cubdb, key)
     end
   },
   inputs: %{
@@ -17,15 +30,18 @@ Benchee.run(
     "1GB" => "1_gb_repo"
   },
   before_scenario: fn label ->
-    data_dir = Path.join(repos_dir, label)
-    {:ok, db} = Goblin.start_link(data_dir: data_dir)
-    db
+    {:ok, goblin} = Goblin.start_link(data_dir: Path.join([fixtures_dir, "goblin", label]))
+    {:ok, cubdb} = CubDB.start_link(data_dir: Path.join([fixtures_dir, "cubdb", label]))
+    _ = Goblin.get(goblin, 1)
+    _ = CubDB.get(cubdb, 1)
+    {goblin, cubdb, num_keys[label]}
   end,
-  before_each: fn db ->
-    key = :rand.uniform(1_000_000)
-    {db, key}
+  before_each: fn {goblin, cubdb, max_key} ->
+    key = :rand.uniform(max_key)
+    {goblin, cubdb, key}
   end,
-  after_scenario: fn db ->
-    Goblin.stop(db)
+  after_scenario: fn {goblin, cubdb, _max_key} ->
+    Goblin.stop(goblin)
+    CubDB.stop(cubdb)
   end
 )

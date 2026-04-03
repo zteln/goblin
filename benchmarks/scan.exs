@@ -13,13 +13,15 @@ num_keys = %{
   "1_gb_repo" => div(1024 * 1024 * 1024, 1024)
 }
 
+range_size = 100
+
 Benchee.run(
   %{
-    "Goblin.get_multi/2" => fn {goblin, _cubdb, keys} ->
-      Goblin.get_multi(goblin, keys)
+    "Goblin.scan/2" => fn {goblin, _cubdb, min, max} ->
+      Goblin.scan(goblin, min: min, max: max) |> Enum.to_list()
     end,
-    "CubDB.get_multi/2" => fn {_goblin, cubdb, keys} ->
-      CubDB.get_multi(cubdb, keys)
+    "CubDB.select/2" => fn {_goblin, cubdb, min, max} ->
+      CubDB.select(cubdb, min_key: min, max_key: max) |> Enum.to_list()
     end
   },
   inputs: %{
@@ -37,8 +39,9 @@ Benchee.run(
     {goblin, cubdb, num_keys[label]}
   end,
   before_each: fn {goblin, cubdb, max_key} ->
-    keys = for _ <- 1..1000, do: :rand.uniform(max_key)
-    {goblin, cubdb, keys}
+    min = :rand.uniform(max(max_key - range_size, 1))
+    max = min + range_size
+    {goblin, cubdb, min, max}
   end,
   after_scenario: fn {goblin, cubdb, _max_key} ->
     Goblin.stop(goblin)
