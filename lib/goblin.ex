@@ -952,7 +952,7 @@ defmodule Goblin do
   end
 
   defp next_file_pair(ref, dir) do
-    count = :atomics.add_get(ref, 1, 1)
+    count = :atomics.add_get(ref, 1, 1) - 1
     file = new_file(dir, count, @disk_table_suffix)
     {"#{file}.tmp", file}
   end
