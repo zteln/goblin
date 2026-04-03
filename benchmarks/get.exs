@@ -1,4 +1,7 @@
-Mix.install([:benchee, :cubdb, {:goblin, path: File.cwd!()}])
+Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}])
+
+results_dir = "#{File.cwd!()}/tmp/goblin_benchmark/results"
+File.mkdir_p!(results_dir)
 
 fixtures_dir = "#{File.cwd!()}/tmp/goblin_benchmark/fixtures"
 
@@ -43,5 +46,9 @@ Benchee.run(
   after_scenario: fn {goblin, cubdb, _max_key} ->
     Goblin.stop(goblin)
     CubDB.stop(cubdb)
-  end
+  end,
+  formatters: [
+    Benchee.Formatters.Console,
+    {Benchee.Formatters.Markdown, file: Path.join(results_dir, "get.md")}
+  ]
 )

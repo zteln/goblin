@@ -17,7 +17,7 @@ Install by adding `:goblin` as a dependency:
 ```elixir
 def deps do
   [
-    {:goblin, "~> 0.7.0"}
+    {:goblin, "~> 0.8.0"}
   ]
 end
 ```
@@ -227,6 +227,10 @@ The footer contains metadata for efficient lookups:
 
 Goblin does not perform automatic data migration between versions.
 To upgrade, stream entries from the old database into a new instance running the newer version.
+
+## Benchmarks
+
+See [BENCHMARKS.md](https://github.com/zteln/goblin/blob/main/BENCHMARKS.md) for benchmark results comparing Goblin against CubDB.
 
 ## Too many open files?
 
