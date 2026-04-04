@@ -64,13 +64,7 @@ defmodule Goblin.Broker do
 
   @spec hard_delete_tables(:ets.table()) :: :ok
   def hard_delete_tables(broker) do
-    ms = [
-      {
-        {{:_, :table, :_}, :"$2", {:"$3", :_}, :_, :_},
-        [{:andalso, {:is_integer, :"$2"}, {:==, :"$3", nil}}],
-        [:"$_"]
-      }
-    ]
+    ms = soft_deleted_tables_ms()
 
     :ets.select(broker, ms)
     |> Enum.each(&try_hard_delete(broker, &1))
@@ -81,14 +75,7 @@ defmodule Goblin.Broker do
     predicate = opts[:filter] || fn _ -> true end
     level_key = opts[:level_key] || :_
     [[tx_counter]] = :ets.match(broker, {{:"$1", :tx, tx_key}})
-
-    ms = [
-      {
-        {{:"$1", :table, :_}, :"$2", :_, level_key, %{table: :"$3"}},
-        [{:andalso, {:is_integer, :"$1"}, {:<, :"$1", tx_counter}, {:<, tx_counter, :"$2"}}],
-        [:"$3"]
-      }
-    ]
+    ms = visible_tables_ms(level_key, tx_counter)
 
     :ets.select(broker, ms)
     |> Enum.filter(&predicate.(&1))
@@ -107,14 +94,7 @@ defmodule Goblin.Broker do
     counter = inc_get_counter(broker)
     :ets.insert(broker, {{counter, :tx, tx_key}})
     :ets.delete(broker, {:pending_tx, :tx, tx_key})
-
-    ms = [
-      {
-        {{:"$1", :table, :_}, :"$2", :_, :"$3", :_},
-        [{:andalso, {:<, :"$1", counter}, {:<, counter, :"$2"}}],
-        [:"$3"]
-      }
-    ]
+    ms = visible_level_keys_ms(counter)
 
     max_level_key =
       :ets.select(broker, ms)
@@ -138,13 +118,13 @@ defmodule Goblin.Broker do
       entry
     } = table_item
 
-    case check_table_usage(broker, insert_counter, soft_deleted_at) do
-      :ok ->
+    case table_free?(broker, insert_counter, soft_deleted_at) do
+      true ->
         %{table: table, delete: delete} = entry
         :ets.delete(broker, key)
         delete.(table)
 
-      :in_use ->
+      false ->
         timer_ref = Process.send_after(self(), {:retry_hard_delete, id}, 1000)
         :ets.update_element(broker, key, {3, {timer_ref, retries + 1}})
     end
@@ -152,8 +132,17 @@ defmodule Goblin.Broker do
     :ok
   end
 
-  defp check_table_usage(broker, insert_counter, soft_delete_counter) do
-    ms = [
+  defp table_free?(broker, insert_counter, soft_delete_counter) do
+    ms = count_active_tx_in_range_ms(insert_counter, soft_delete_counter)
+    :ets.select_count(broker, ms) == 0
+  end
+
+  defp inc_get_counter(broker) do
+    :ets.update_counter(broker, :counter, 1, {:counter, 0})
+  end
+
+  defp count_active_tx_in_range_ms(insert_counter, soft_delete_counter) do
+    [
       {
         {{:"$1", :tx, :_}},
         [
@@ -163,17 +152,38 @@ defmodule Goblin.Broker do
             {:==, :"$1", :pending_tx}
           }
         ],
+        [true]
+      }
+    ]
+  end
+
+  defp visible_level_keys_ms(counter) do
+    [
+      {
+        {{:"$1", :table, :_}, :"$2", :_, :"$3", :_},
+        [{:andalso, {:<, :"$1", counter}, {:<, counter, :"$2"}}],
+        [:"$3"]
+      }
+    ]
+  end
+
+  defp visible_tables_ms(level_key, counter) do
+    [
+      {
+        {{:"$1", :table, :_}, :"$2", :_, level_key, %{table: :"$3"}},
+        [{:andalso, {:is_integer, :"$1"}, {:<, :"$1", counter}, {:<, counter, :"$2"}}],
+        [:"$3"]
+      }
+    ]
+  end
+
+  defp soft_deleted_tables_ms() do
+    [
+      {
+        {{:_, :table, :_}, :"$2", {:"$3", :_}, :_, :_},
+        [{:andalso, {:is_integer, :"$2"}, {:==, :"$3", nil}}],
         [:"$_"]
       }
     ]
-
-    case :ets.select(broker, ms) do
-      [] -> :ok
-      _ -> :in_use
-    end
-  end
-
-  defp inc_get_counter(broker) do
-    :ets.update_counter(broker, :counter, 1, {:counter, 0})
   end
 end
