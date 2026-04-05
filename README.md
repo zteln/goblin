@@ -232,6 +232,10 @@ To upgrade, stream entries from the old database into a new instance running the
 
 See [BENCHMARKS.md](https://github.com/zteln/goblin/blob/main/BENCHMARKS.md) for benchmark results comparing Goblin against CubDB.
 
+## Transactional consistency checks
+
+Goblin is checked for transactional consistency via [Elle](https://github.com/jepsen-io/elle) in [GoblinKVStore](https://github.com/zteln/goblin_kv_store).
+
 ## Too many open files?
 
 If you see `:emfile` errors, the file descriptor limit has been reached.
