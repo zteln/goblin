@@ -103,8 +103,10 @@ The function must return `{:commit, tx, reply}` to commit or `:abort` to abort.
 ```elixir
 Goblin.transaction(db, fn tx ->
   counter = Goblin.Tx.get(tx, :counter, default: 0)
-  tx = Goblin.Tx.put(tx, :counter, counter + 1)
-  {:commit, tx, :ok}
+
+  tx
+  |> Goblin.Tx.put(:counter, counter + 1)
+  |> Goblin.Tx.abort()
 end)
 # => :ok
 
@@ -112,10 +114,11 @@ Goblin.transaction(db, fn tx ->
   counter = Goblin.Tx.get(tx, :counter, default: 0)
 
   if counter < 100 do
-    tx = Goblin.Tx.put(tx, :counter, counter + 1)
-    {:commit, tx, counter + 1}
+    tx
+    |> Goblin.Tx.put(:counter, counter + 1)
+    |> Goblin.Tx.commit()
   else
-    :abort
+    Goblin.Tx.abort(tx)
   end
 end)
 # => 2 (if committed) or {:error, :aborted} (if aborted)
