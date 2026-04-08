@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.0 (2026-04-08)
+* Changes
+    * Restructured from Supervisor architecture to single GenServer architecture
+* Bug fixes
+    * A writer is cleaned up if it throws during the transaction
+    * Race conditions during reads and simultaneous table clean ups have been fixed
+* Enhancements
+    * Added `Goblin.Tx.commit/1/2` and `Goblin.Tx.abort/1` functions to allow committing and aborting transactions in pipelines
+* Added
+    * More comprehensive tests
+
 ## v0.7.1 (2026-03-05)
 * Changes
     * Automatic migration of disk tables has been removed in order to simplify the codebase.
