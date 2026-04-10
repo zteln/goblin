@@ -11,22 +11,22 @@ defmodule Goblin.Tx.Read do
   defstruct [
     :name,
     :seq,
-    :tx_key,
+    :tx_id,
     :max_level_key
   ]
 
   @type t :: %__MODULE__{
           name: atom(),
           seq: non_neg_integer(),
-          tx_key: term(),
+          tx_id: term(),
           max_level_key: integer()
         }
 
   @spec new(atom(), term(), non_neg_integer(), integer()) :: t()
-  def new(name, tx_key, seq, max_level_key) do
+  def new(name, tx_id, seq, max_level_key) do
     %__MODULE__{
       name: name,
-      tx_key: tx_key,
+      tx_id: tx_id,
       seq: seq,
       max_level_key: max_level_key
     }
@@ -101,7 +101,7 @@ defmodule Goblin.Tx.Read do
       tables_f = fn level_key ->
         Broker.filter_tables(
           tx.name,
-          tx.tx_key,
+          tx.tx_id,
           level_key: level_key,
           filter: &Queryable.has_key?(&1, key)
         )
@@ -123,7 +123,7 @@ defmodule Goblin.Tx.Read do
       tables_f = fn level_key ->
         Broker.filter_tables(
           tx.name,
-          tx.tx_key,
+          tx.tx_id,
           level_key: level_key,
           filter: fn table ->
             Enum.any?(keys, &Queryable.has_key?(table, &1))

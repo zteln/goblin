@@ -13,9 +13,9 @@ defmodule Goblin.BrokerTest do
       Broker.add_table(ctx.ref, :t1, 0, :table_data, fn _ -> :ok end)
 
       tx_key = make_ref()
-      Broker.register_tx(ctx.ref, tx_key)
+      {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      assert [:table_data] == Broker.filter_tables(ctx.ref, tx_key)
+      assert [:table_data] == Broker.filter_tables(ctx.ref, tx_id)
     end
 
     test "filter option excludes non-matching tables", ctx do
@@ -23,9 +23,9 @@ defmodule Goblin.BrokerTest do
       Broker.add_table(ctx.ref, :t2, 0, :skip, fn _ -> :ok end)
 
       tx_key = make_ref()
-      Broker.register_tx(ctx.ref, tx_key)
+      {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      result = Broker.filter_tables(ctx.ref, tx_key, filter: &(&1 == :keep))
+      result = Broker.filter_tables(ctx.ref, tx_id, filter: &(&1 == :keep))
       assert result == [:keep]
     end
 
@@ -34,10 +34,10 @@ defmodule Goblin.BrokerTest do
       Broker.add_table(ctx.ref, :t2, 1, :level_1, fn _ -> :ok end)
 
       tx_key = make_ref()
-      Broker.register_tx(ctx.ref, tx_key)
+      {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      assert [:level_0] == Broker.filter_tables(ctx.ref, tx_key, level_key: 0)
-      assert [:level_1] == Broker.filter_tables(ctx.ref, tx_key, level_key: 1)
+      assert [:level_0] == Broker.filter_tables(ctx.ref, tx_id, level_key: 0)
+      assert [:level_1] == Broker.filter_tables(ctx.ref, tx_id, level_key: 1)
     end
   end
 
@@ -133,25 +133,25 @@ defmodule Goblin.BrokerTest do
       Broker.put_sequence(ctx.ref, 42)
 
       tx_key = make_ref()
-      assert {2, 42} == Broker.register_tx(ctx.ref, tx_key)
+      assert {2, 42, _tx_id} = Broker.register_tx(ctx.ref, tx_key)
     end
 
-    test "returns {-1, 0} when no tables exist", ctx do
+    test "returns {-1, 0, _} when no tables exist", ctx do
       tx_key = make_ref()
-      assert {-1, 0} == Broker.register_tx(ctx.ref, tx_key)
+      assert {-1, 0, _tx_id} = Broker.register_tx(ctx.ref, tx_key)
     end
 
     test "unregister_tx removes snapshot entries", ctx do
       Broker.add_table(ctx.ref, :t1, 0, :data, fn _ -> :ok end)
 
       tx_key = make_ref()
-      Broker.register_tx(ctx.ref, tx_key)
+      {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      assert [:data] == Broker.filter_tables(ctx.ref, tx_key)
+      assert [:data] == Broker.filter_tables(ctx.ref, tx_id)
 
       Broker.unregister_tx(ctx.ref, tx_key)
 
-      assert_raise MatchError, fn -> Broker.filter_tables(ctx.ref, tx_key) end
+      assert :ets.match(ctx.ref, {{:_, :tx, tx_key}}) == []
     end
   end
 
@@ -160,7 +160,7 @@ defmodule Goblin.BrokerTest do
       Broker.put_sequence(ctx.ref, 10)
 
       tx_key = make_ref()
-      {_max_level_key, seq} = Broker.register_tx(ctx.ref, tx_key)
+      {_max_level_key, seq, _tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
       assert seq == 10
     end
@@ -170,7 +170,7 @@ defmodule Goblin.BrokerTest do
       Broker.put_sequence(ctx.ref, 15)
 
       tx_key = make_ref()
-      {_max_level_key, seq} = Broker.register_tx(ctx.ref, tx_key)
+      {_max_level_key, seq, _tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
       assert seq == 15
     end

@@ -15,7 +15,7 @@ defmodule Goblin.Broker do
 
   @spec put_sequence(:ets.table(), non_neg_integer()) :: :ok
   def put_sequence(broker, sequence) do
-    :ets.update_element(broker, :sequence, {2, sequence}, {:sequence, 0})
+    :ets.update_element(broker, :meta, {3, sequence}, {:meta, -1, 0})
     :ok
   end
 
@@ -34,7 +34,19 @@ defmodule Goblin.Broker do
     entry = %{table: table, delete: delete_callback}
     table_item = {key, soft_deleted_at, retries, level_key, entry}
     :ets.insert(broker, table_item)
-    :ok
+
+    case :ets.lookup(broker, :meta) do
+      [] ->
+        :ets.insert(broker, {:meta, level_key, 0})
+        :ok
+
+      [{:meta, max_level_key, seq}] when level_key > max_level_key ->
+        :ets.insert(broker, {:meta, level_key, seq})
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   @spec soft_delete_table(:ets.table(), term()) :: :ok
@@ -70,37 +82,32 @@ defmodule Goblin.Broker do
     |> Enum.each(&try_hard_delete(broker, &1))
   end
 
-  @spec filter_tables(:ets.table(), reference(), keyword()) :: list(Goblin.Queryable.t())
-  def filter_tables(broker, tx_key, opts \\ []) do
+  @spec filter_tables(:ets.table(), non_neg_integer(), keyword()) :: list(Goblin.Queryable.t())
+  def filter_tables(broker, tx_counter, opts \\ []) do
     predicate = opts[:filter] || fn _ -> true end
     level_key = opts[:level_key] || :_
-    [[tx_counter]] = :ets.match(broker, {{:"$1", :tx, tx_key}})
     ms = visible_tables_ms(level_key, tx_counter)
 
     :ets.select(broker, ms)
     |> Enum.filter(&predicate.(&1))
   end
 
-  @spec register_tx(:ets.table(), reference()) :: {-1 | non_neg_integer(), non_neg_integer()}
+  @spec register_tx(:ets.table(), reference()) ::
+          {-1 | non_neg_integer(), non_neg_integer(), non_neg_integer()}
   def register_tx(broker, tx_key) do
     :ets.insert(broker, {{:pending_tx, :tx, tx_key}})
 
-    seq =
-      case :ets.lookup(broker, :sequence) do
-        [] -> 0
-        [{:sequence, seq}] -> seq
+    {max_level_key, seq} =
+      case :ets.lookup(broker, :meta) do
+        [] -> {-1, 0}
+        [{:meta, max_level_key, seq}] -> {max_level_key, seq}
       end
 
     counter = inc_get_counter(broker)
     :ets.insert(broker, {{counter, :tx, tx_key}})
     :ets.delete(broker, {:pending_tx, :tx, tx_key})
-    ms = visible_level_keys_ms(counter)
 
-    max_level_key =
-      :ets.select(broker, ms)
-      |> Enum.max(fn -> -1 end)
-
-    {max_level_key, seq}
+    {max_level_key, seq, counter}
   end
 
   @spec unregister_tx(:ets.table(), reference()) :: :ok
@@ -153,16 +160,6 @@ defmodule Goblin.Broker do
           }
         ],
         [true]
-      }
-    ]
-  end
-
-  defp visible_level_keys_ms(counter) do
-    [
-      {
-        {{:"$1", :table, :_}, :"$2", :_, :"$3", :_},
-        [{:andalso, {:<, :"$1", counter}, {:<, counter, :"$2"}}],
-        [:"$3"]
       }
     ]
   end

@@ -170,9 +170,9 @@ defmodule Goblin do
 
     try do
       with :ok <- start_transaction(db, tx_key),
-           {max_level_key, seq} <- Broker.register_tx(ref, tx_key),
+           {max_level_key, seq, tx_id} <- Broker.register_tx(ref, tx_key),
            {:ok, tx, reply} <-
-             run_transaction(db, Tx.Write.new(ref, tx_key, seq, max_level_key), callback),
+             run_transaction(db, Tx.Write.new(ref, tx_id, seq, max_level_key), callback),
            :ok <- commit_transaction(db, tx) do
         reply
       end
@@ -333,9 +333,9 @@ defmodule Goblin do
     tx_key = make_ref()
 
     try do
-      {max_level_key, seq} = Broker.register_tx(ref, tx_key)
+      {max_level_key, seq, tx_id} = Broker.register_tx(ref, tx_key)
 
-      Tx.Read.new(ref, tx_key, seq, max_level_key)
+      Tx.Read.new(ref, tx_id, seq, max_level_key)
       |> callback.()
     after
       Broker.unregister_tx(ref, tx_key)
@@ -460,9 +460,9 @@ defmodule Goblin do
 
     Goblin.Iterator.k_merge_stream(
       fn ->
-        {_max_level_key, seq} = Broker.register_tx(ref, tx_key)
+        {_max_level_key, seq, tx_id} = Broker.register_tx(ref, tx_key)
 
-        Broker.filter_tables(ref, tx_key)
+        Broker.filter_tables(ref, tx_id)
         |> Enum.map(&Goblin.Queryable.stream(&1, min, max, seq))
       end,
       after: fn ->
