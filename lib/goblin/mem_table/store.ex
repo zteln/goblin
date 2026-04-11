@@ -46,34 +46,24 @@ defmodule Goblin.MemTable.Store do
     end
   end
 
-  @spec search(t(), term(), non_neg_integer()) :: {term(), non_neg_integer(), term()} | :not_found
+  @spec search(t(), term(), :infinity | non_neg_integer()) ::
+          {term(), non_neg_integer(), term()} | :not_found
   def search(store, key, seq) do
-    ms = [
-      {
-        {{:"$1", :"$2"}, :_},
-        [{:andalso, {:==, :"$1", {:const, key}}, {:<, {:abs, :"$2"}, seq}}],
-        [:"$_"]
-      }
-    ]
+    case :ets.next(store.ref, {key, -seq}) do
+      {k, s} when key == k ->
+        [{_, value}] = :ets.lookup(store.ref, {k, s})
+        {key, abs(s), value}
 
-    :ets.select(store.ref, ms)
-    |> Enum.map(fn {{key, seq}, value} -> {key, abs(seq), value} end)
-    |> Enum.max_by(fn {_key, seq, _value} -> seq end, fn -> :not_found end)
+      _ ->
+        :not_found
+    end
   end
 
   @spec has_key?(t(), term()) :: boolean()
   def has_key?(store, key) do
-    ms = [
-      {
-        {{:"$1", :_}, :_},
-        [{:==, :"$1", {:const, key}}],
-        [:"$_"]
-      }
-    ]
-
-    case :ets.select(store.ref, ms) do
-      [] -> false
-      _ -> true
+    case :ets.prev(store.ref, {key, 1}) do
+      {k, _} when k == key -> true
+      _ -> false
     end
   end
 

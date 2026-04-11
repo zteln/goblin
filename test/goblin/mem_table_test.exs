@@ -29,7 +29,7 @@ defmodule Goblin.MemTableTest do
 
       mem_table = open_mem_table(ctx)
 
-      results = Goblin.Queryable.search(mem_table, [:a, :b], :infinity)
+      results = Goblin.Queryable.search(mem_table, [:a, :b], 2)
       assert {:a, 0, "v1"} in results
       assert {:b, 1, "v2"} in results
     end
@@ -41,7 +41,7 @@ defmodule Goblin.MemTableTest do
 
       :ok = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
 
-      assert [{:key, 0, "value"}] = Goblin.Queryable.search(mem_table, [:key], :infinity)
+      assert [{:key, 0, "value"}] = Goblin.Queryable.search(mem_table, [:key], 1)
     end
 
     test "appends remove commits as tombstones", ctx do
@@ -51,7 +51,7 @@ defmodule Goblin.MemTableTest do
       :ok = MemTable.append_commits(mem_table, [{:remove, 1, :key}])
 
       assert [{:key, 1, :"$goblin_tombstone"}] =
-               Goblin.Queryable.search(mem_table, [:key], :infinity)
+               Goblin.Queryable.search(mem_table, [:key], 2)
     end
   end
 
