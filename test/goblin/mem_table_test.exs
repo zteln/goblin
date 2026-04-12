@@ -8,12 +8,12 @@ defmodule Goblin.MemTableTest do
   defp wal_path(ctx), do: Path.join(ctx.tmp_dir, "test.wal")
 
   defp open_mem_table(ctx, opts \\ []) do
-    opts = Keyword.merge([sequence: :infinity, write?: true], opts)
-    {:ok, mem_table} = MemTable.open(:"#{ctx.test}", wal_path(ctx), opts)
+    opts = Keyword.merge([write?: true], opts)
+    {:ok, mem_table} = MemTable.open(wal_path(ctx), opts)
     mem_table
   end
 
-  describe "open/3" do
+  describe "open/2" do
     test "opens and returns a MemTable struct", ctx do
       mem_table = open_mem_table(ctx)
 
@@ -24,7 +24,7 @@ defmodule Goblin.MemTableTest do
 
     test "replays WAL on re-open", ctx do
       mem_table = open_mem_table(ctx)
-      :ok = MemTable.append_commits(mem_table, [{:put, 0, :a, "v1"}, {:put, 1, :b, "v2"}])
+      {:ok, mem_table} = MemTable.append_commits(mem_table, [{:put, 0, :a, "v1"}, {:put, 1, :b, "v2"}])
       :ok = MemTable.close(mem_table)
 
       mem_table = open_mem_table(ctx)
@@ -39,7 +39,7 @@ defmodule Goblin.MemTableTest do
     test "appends put commits and makes data queryable", ctx do
       mem_table = open_mem_table(ctx)
 
-      :ok = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
+      {:ok, mem_table} = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
 
       assert [{:key, 0, "value"}] = Goblin.Queryable.search(mem_table, [:key], 1)
     end
@@ -47,8 +47,8 @@ defmodule Goblin.MemTableTest do
     test "appends remove commits as tombstones", ctx do
       mem_table = open_mem_table(ctx)
 
-      :ok = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
-      :ok = MemTable.append_commits(mem_table, [{:remove, 1, :key}])
+      {:ok, mem_table} = MemTable.append_commits(mem_table, [{:put, 0, :key, "value"}])
+      {:ok, mem_table} = MemTable.append_commits(mem_table, [{:remove, 1, :key}])
 
       assert [{:key, 1, :"$goblin_tombstone"}] =
                Goblin.Queryable.search(mem_table, [:key], 2)
@@ -70,7 +70,7 @@ defmodule Goblin.MemTableTest do
           {:put, i, :"key_#{i}", String.duplicate("x", 100)}
         end)
 
-      :ok = MemTable.append_commits(mem_table, commits)
+      {:ok, mem_table} = MemTable.append_commits(mem_table, commits)
 
       assert MemTable.rotate?(mem_table, 1)
     end

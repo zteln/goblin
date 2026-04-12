@@ -8,33 +8,33 @@ defmodule Goblin.MemTable do
 
   defstruct [
     :wal,
-    :store
+    :store,
+    :max_sequence
   ]
 
   @type t :: %__MODULE__{
           wal: WAL.t(),
-          store: Store.t()
+          store: Store.t(),
+          max_sequence: non_neg_integer()
         }
 
   @type commit ::
           {:put, non_neg_integer(), term(), term()}
           | {:remove, non_neg_integer(), term()}
 
-  @spec open(any(), Path.t(), keyword()) :: {:ok, t()}
-  def open(name, path, opts) do
-    sequence = opts[:sequence]
-
-    with {:ok, wal} <- WAL.open(name, path, opts[:write?] || true) do
+  @spec open(Path.t(), keyword()) :: {:ok, t()}
+  def open(path, opts) do
+    with {:ok, wal} <- WAL.open(path, opts[:write?] || true) do
       store = Store.new()
 
-      WAL.replay(wal)
-      |> Stream.filter(fn
-        {:put, seq, _key, _value} -> seq <= sequence
-        {:remove, seq, _key} -> seq <= sequence
-      end)
-      |> Enum.each(&update_store(store, &1))
+      max_seq =
+        WAL.replay(wal)
+        |> Enum.reduce(-1, fn entry, acc ->
+          update_store(store, entry)
+          max(acc, elem(entry, 1))
+        end)
 
-      {:ok, %__MODULE__{wal: wal, store: store}}
+      {:ok, %__MODULE__{wal: wal, store: store, max_sequence: max_seq}}
     end
   end
 
@@ -59,12 +59,21 @@ defmodule Goblin.MemTable do
     Store.size(mem_table.store) >= size_limit
   end
 
-  @spec append_commits(t(), list(commit())) :: :ok | {:error, term()}
+  @spec append_commits(t(), list(commit())) :: {:ok, t()} | {:error, term()}
   def append_commits(mem_table, commits) do
     with :ok <- WAL.append(mem_table.wal, commits) do
-      Enum.each(commits, &update_store(mem_table.store, &1))
+      max_seq =
+        Enum.reduce(commits, mem_table.max_sequence, fn commit, _acc ->
+          update_store(mem_table.store, commit)
+          elem(commit, 1)
+        end)
+
+      {:ok, %{mem_table | max_sequence: max_seq}}
     end
   end
+
+  @spec sequence(t()) :: non_neg_integer()
+  def sequence(mem_table), do: mem_table.max_sequence + 1
 
   defp update_store(store, {:put, seq, key, value}),
     do: Store.insert(store, key, seq, value)
