@@ -41,22 +41,18 @@ defmodule Goblin.Manifest do
     |> Enum.map(&Path.join(manifest.data_dir, &1))
   end
 
-  @spec update_sequence(t(), non_neg_integer()) :: {:ok, t()} | {:error, term()}
-  def update_sequence(manifest, sequence) do
-    updates = [{:sequence, sequence}]
-    apply_updates(manifest, updates)
-  end
-
   @spec add_wal(t(), Path.t()) :: {:ok, t()} | {:error, term()}
   def add_wal(manifest, wal_path) do
     updates = [{:wal, trim_dir(wal_path)}]
     apply_updates(manifest, updates)
   end
 
-  @spec add_flush(t(), list(Path.t()), Path.t()) :: {:ok, t()} | {:error, term()}
-  def add_flush(manifest, dt_paths, wal_path) do
+  @spec add_flush(t(), list(Path.t()), Path.t(), non_neg_integer()) ::
+          {:ok, t()} | {:error, term()}
+  def add_flush(manifest, dt_paths, wal_path, seq) do
     updates = [
-      {:wal_removed, trim_dir(wal_path)}
+      {:wal_removed, trim_dir(wal_path)},
+      {:sequence, seq}
       | Enum.map(dt_paths, &{:disk_table_added, trim_dir(&1)})
     ]
 

@@ -23,22 +23,21 @@ defmodule Goblin.ManifestTest do
 
     test "recovers state from an existing manifest log", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update_sequence(manifest, 42)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          42
+        )
+
       :ok = Manifest.close(manifest)
 
       {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
 
       assert %{sequence: 42} = Manifest.snapshot(recovered, [:sequence])
-    end
-  end
-
-  describe "update_sequence/2" do
-    test "persists sequence and updates the snapshot", ctx do
-      manifest = open_manifest(ctx)
-
-      {:ok, manifest} = Manifest.update_sequence(manifest, 5)
-
-      assert %{sequence: 5} = Manifest.snapshot(manifest, [:sequence])
     end
   end
 
@@ -60,7 +59,12 @@ defmodule Goblin.ManifestTest do
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(manifest, [Path.join(ctx.tmp_dir, "sst_0.goblin")], Path.join(ctx.tmp_dir, "wal.goblin"))
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          0
+        )
 
       assert %{disk_tables: [dt]} = Manifest.snapshot(manifest, [:disk_tables])
       assert String.ends_with?(dt, "sst_0.goblin")
@@ -70,8 +74,17 @@ defmodule Goblin.ManifestTest do
   describe "snapshot/2" do
     test "returns only requested keys with resolved paths", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update_sequence(manifest, 10)
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          10
+        )
+
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
 
       seq_only = Manifest.snapshot(manifest, [:sequence])
       assert seq_only == %{sequence: 10}
@@ -79,7 +92,7 @@ defmodule Goblin.ManifestTest do
 
       wal_only = Manifest.snapshot(manifest, [:wal])
       assert %{wal: wal} = wal_only
-      assert wal == Path.join(ctx.tmp_dir, "wal.goblin")
+      assert wal == Path.join(ctx.tmp_dir, "wal2.goblin")
       refute Map.has_key?(wal_only, :sequence)
     end
   end
@@ -108,7 +121,12 @@ defmodule Goblin.ManifestTest do
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(manifest, [Path.join(ctx.tmp_dir, "sst_0.goblin")], Path.join(ctx.tmp_dir, "wal.goblin"))
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          0
+        )
 
       {:ok, manifest} =
         Manifest.add_compaction(
@@ -131,7 +149,12 @@ defmodule Goblin.ManifestTest do
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(manifest, [Path.join(ctx.tmp_dir, "sst_0.goblin")], Path.join(ctx.tmp_dir, "wal.goblin"))
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          0
+        )
 
       {:ok, manifest} =
         Manifest.add_compaction(
@@ -146,11 +169,15 @@ defmodule Goblin.ManifestTest do
 
     test "preserves other snapshot state", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update_sequence(manifest, 10)
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(manifest, [Path.join(ctx.tmp_dir, "sst_0.goblin")], Path.join(ctx.tmp_dir, "wal.goblin"))
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          10
+        )
 
       {:ok, manifest} =
         Manifest.add_compaction(
@@ -170,11 +197,15 @@ defmodule Goblin.ManifestTest do
   describe "recovery" do
     test "recovers full state after lifecycle with compaction", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update_sequence(manifest, 5)
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(manifest, [Path.join(ctx.tmp_dir, "sst_0.goblin")], Path.join(ctx.tmp_dir, "wal.goblin"))
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          5
+        )
 
       {:ok, manifest} =
         Manifest.add_compaction(
@@ -195,11 +226,29 @@ defmodule Goblin.ManifestTest do
 
     test "supports further updates after recovery", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.update_sequence(manifest, 5)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          5
+        )
+
       :ok = Manifest.close(manifest)
 
       {:ok, manifest} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
-      {:ok, manifest} = Manifest.update_sequence(manifest, 10)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_1.goblin")],
+          Path.join(ctx.tmp_dir, "wal2.goblin"),
+          10
+        )
+
       :ok = Manifest.close(manifest)
 
       {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
