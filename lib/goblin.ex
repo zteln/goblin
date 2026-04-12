@@ -70,7 +70,6 @@ defmodule Goblin do
     :broker,
     :mem_table,
     :manifest,
-    :wal,
     :disk_table_counter,
     :flusher,
     :flushing,
@@ -593,10 +592,9 @@ defmodule Goblin do
     Process.demonitor(monitor_ref)
     %{writes: writes, sequence: seq} = tx
 
-    with :ok <- MemTable.append_commits(state.mem_table, writes),
-         {:ok, manifest} <- Manifest.update_sequence(state.manifest, seq),
+    with {:ok, mem_table} <- MemTable.append_commits(state.mem_table, writes),
          :ok <- Broker.put_sequence(state.broker, seq) do
-      {:reply, :ok, %{state | manifest: manifest}, {:continue, :next_writer}}
+      {:reply, :ok, %{state | mem_table: mem_table}, {:continue, :next_writer}}
     else
       {:error, reason} = error -> {:stop, reason, error, state}
     end
@@ -662,7 +660,8 @@ defmodule Goblin do
            Manifest.add_flush(
              state.manifest,
              Enum.map(dts, & &1.file),
-             MemTable.wal_path(mt)
+             MemTable.wal_path(mt),
+             MemTable.sequence(mt)
            ),
          :ok <- MemTable.remove_wal(mt) do
       compactor =
@@ -749,7 +748,7 @@ defmodule Goblin do
         %{wal_count: wal_count} = Manifest.snapshot(state.manifest, [:wal_count])
         wal_path = new_file(state.data_dir, wal_count, @wal_suffix)
 
-        with {:ok, state} <- rotate_mem_table(state, wal_path),
+        with {:ok, state, _seq} <- rotate_mem_table(state, wal_path),
              {:ok, manifest} <- Manifest.add_wal(state.manifest, wal_path) do
           {:noreply, %{state | manifest: manifest}, {:continue, :flush}}
         else
@@ -805,7 +804,7 @@ defmodule Goblin do
       wals: wals,
       wal: wal,
       disk_tables: disk_tables,
-      sequence: sequence,
+      sequence: manifest_seq,
       disk_table_count: disk_table_count,
       wal_count: wal_count
     } =
@@ -822,9 +821,9 @@ defmodule Goblin do
 
     :atomics.put(state.disk_table_counter, 1, disk_table_count)
 
-    with {:ok, state} <- restore_mem_tables(state, wals, sequence),
+    with {:ok, state, mem_seq} <- restore_mem_tables(state, wals),
          {:ok, state} <- restore_disk_tables(state, disk_tables),
-         {:ok, state} <- restore_sequence(state, sequence),
+         {:ok, state} <- restore_sequence(state, max(mem_seq, manifest_seq)),
          {:ok, state} <- add_new_wal_to_manifest(state, wal) do
       Process.put(:"$goblin_ext_ref", state.broker)
       {:noreply, state, {:continue, :rotate_mem_table}}
@@ -840,14 +839,14 @@ defmodule Goblin do
     :ok
   end
 
-  defp restore_mem_tables(state, wals, sequence) do
+  defp restore_mem_tables(state, wals) do
     current_wal = List.last(wals)
 
-    Enum.reduce_while(wals, {:ok, state}, fn wal, {:ok, acc} ->
+    Enum.reduce_while(wals, {:ok, state, 0}, fn wal, {:ok, acc, seq} ->
       write? = wal == current_wal
 
-      case rotate_mem_table(acc, wal, write?: write?, sequence: sequence) do
-        {:ok, acc} -> {:cont, {:ok, acc}}
+      case rotate_mem_table(acc, wal, write?: write?) do
+        {:ok, acc, new_seq} -> {:cont, {:ok, acc, max(new_seq, seq)}}
         error -> {:halt, error}
       end
     end)
@@ -895,10 +894,10 @@ defmodule Goblin do
   end
 
   defp open_mem_table(state, wal_path, opts) do
-    with {:ok, mt} <- MemTable.open(state.name, wal_path, opts) do
+    with {:ok, mt} <- MemTable.open(wal_path, opts) do
       Broker.add_table(state.broker, MemTable.wal_path(mt), -1, mt, &MemTable.delete_table/1)
 
-      {:ok, %{state | mem_table: mt}}
+      {:ok, %{state | mem_table: mt}, MemTable.sequence(mt)}
     end
   end
 

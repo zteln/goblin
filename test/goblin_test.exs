@@ -419,6 +419,33 @@ defmodule GoblinTest do
   describe "durable" do
     setup ctx, do: %{db: start_supervised_db(ctx)}
 
+    test "fresh start does not expose uncommitted writes to concurrent readers", ctx do
+      parent = self()
+
+      writer =
+        spawn(fn ->
+          Goblin.transaction(ctx.db, fn tx ->
+            tx = Goblin.Tx.put(tx, :key, :uncommitted)
+            send(parent, :in_tx)
+
+            receive do
+              :cont -> {:commit, tx, :ok}
+            end
+          end)
+
+          send(parent, :committed)
+        end)
+
+      assert_receive :in_tx, 5000
+
+      assert nil == Goblin.get(ctx.db, :key)
+
+      send(writer, :cont)
+      assert_receive :committed, 5000
+
+      assert :uncommitted == Goblin.get(ctx.db, :key)
+    end
+
     test "can get same values on restart", ctx do
       assert :ok ==
                Goblin.transaction(ctx.db, fn tx ->
