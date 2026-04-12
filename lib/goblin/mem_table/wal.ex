@@ -1,66 +1,83 @@
 defmodule Goblin.MemTable.WAL do
   @moduledoc false
+  require Logger
 
-  @log_key :wal
+  @default_modes [:raw, :read, :binary]
 
   defstruct [
-    :log,
-    :log_file
+    :file,
+    :iodev
   ]
 
   @type t :: %__MODULE__{
-          log: term(),
-          log_file: Path.t()
+          file: Path.t(),
+          iodev: :file.io_device()
         }
 
-  @spec open(atom(), Path.t(), boolean()) :: {:ok, t()} | {:error, term()}
-  def open(name, log_file, write? \\ true) do
-    mode =
+  @spec open(Path.t(), boolean()) :: {:ok, t()} | {:error, term()}
+  def open(path, write? \\ true) do
+    modes =
       case write? do
-        true -> :read_write
-        false -> :read_only
+        true -> [:append | @default_modes]
+        false -> @default_modes
       end
 
-    opts = [
-      name: {name, @log_key},
-      file: ~c"#{log_file}",
-      quiet: true,
-      mode: mode
-    ]
-
-    case :disk_log.open(opts) do
-      {:ok, log} -> {:ok, %__MODULE__{log: log, log_file: log_file}}
-      {:repaired, log, _recovered, _bad_bytes} -> {:ok, %__MODULE__{log: log, log_file: log_file}}
-      error -> error
+    with {:ok, iodev} <- :file.open(path, modes) do
+      {:ok, %__MODULE__{iodev: iodev, file: path}}
     end
   end
 
-  @spec append(t(), term()) :: {:ok, t()} | {:error, term()}
+  @spec append(t(), list(term())) :: :ok | {:error, term()}
   def append(wal, writes) do
-    with :ok <- :disk_log.log_terms(wal.log, writes) do
-      :disk_log.sync(wal.log)
+    iolist = :erlang.term_to_iovec(writes)
+    size = :erlang.iolist_size(iolist)
+    iolist = [<<size::integer-32>> | iolist]
+
+    with :ok <- :file.write(wal.iodev, iolist) do
+      :file.datasync(wal.iodev)
     end
   end
 
-  @spec replay(t()) :: Enumerable.t()
+  @spec replay(t()) :: Enumerable.t(term())
   def replay(wal) do
     Stream.resource(
-      fn -> :disk_log.chunk(wal.log, :start) end,
-      fn
-        :eof -> {:halt, :eof}
-        {:error, reason} -> raise "Failed to stream log, reason: #{inspect(reason)}"
-        {continuation, terms} -> {terms, :disk_log.chunk(wal.log, continuation)}
+      fn -> {wal.iodev, 0} end,
+      fn {iodev, pos} ->
+        case read(iodev, pos) do
+          {:ok, terms, pos} -> {terms, {iodev, pos}}
+          :eof -> {:halt, :eof}
+          {:error, :wrong_size} -> {:halt, :eof}
+          {:error, reason} -> raise "Failed to stream WAL file, reason: #{inspect(reason)}"
+        end
       end,
       fn _ -> :ok end
     )
   end
 
   @spec close(t()) :: :ok | {:error, term()}
-  def close(wal), do: :disk_log.close(wal.log)
+  def close(wal), do: :file.close(wal.iodev)
 
-  @spec rm(t()) :: :ok | {:error, atom()}
-  def rm(wal), do: File.rm(wal.log_file)
+  @spec rm(t()) :: :ok | {:error, term()}
+  def rm(wal), do: File.rm(wal.file)
 
   @spec filepath(t()) :: Path.t()
-  def filepath(wal), do: wal.log_file
+  def filepath(wal), do: wal.file
+
+  defp read(iodev, pos) do
+    with {:ok, <<size::integer-32>>} <- :file.pread(iodev, pos, 4),
+         {:ok, bin} <- :file.pread(iodev, pos + 4, size),
+         :ok <- validate_size(size, bin) do
+      {:ok, :erlang.binary_to_term(bin), pos + 4 + size}
+    end
+  end
+
+  defp validate_size(size, bin) when size == byte_size(bin), do: :ok
+
+  defp validate_size(size, bin) do
+    Logger.warning(fn ->
+      "[#{inspect(__MODULE__)}] Unable to recover #{size - byte_size(bin)} from WAL. Possibly corrupt state..."
+    end)
+
+    {:error, :wrong_size}
+  end
 end

@@ -5,17 +5,16 @@ defmodule Goblin.MemTable.WALTest do
 
   @moduletag :tmp_dir
 
-  defp wal_name(ctx), do: :"#{ctx.test}"
   defp wal_path(ctx), do: Path.join(ctx.tmp_dir, "test.wal")
 
   defp open_wal(ctx) do
-    {:ok, wal} = WAL.open(wal_name(ctx), wal_path(ctx))
+    {:ok, wal} = WAL.open(wal_path(ctx))
     wal
   end
 
   describe "open/3" do
     test "opens a new WAL", ctx do
-      assert {:ok, %WAL{}} = WAL.open(wal_name(ctx), wal_path(ctx))
+      assert {:ok, %WAL{}} = WAL.open(wal_path(ctx))
     end
   end
 
