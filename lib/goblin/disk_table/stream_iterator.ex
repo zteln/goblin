@@ -46,11 +46,16 @@ defmodule Goblin.DiskTable.StreamIterator do
     def deinit(iterator), do: Handler.close(iterator.handler)
 
     defp read_next_sst_block(handler) do
-      with {:ok, sst_header_block} <- Handler.read(handler, Encoder.sst_header_size()),
+      with {:ok, sst_header_block} <- Handler.seq_read(handler, Encoder.sst_header_size()),
            {:ok, no_blocks} <- Encoder.decode_sst_header_block(sst_header_block),
-           {:ok, sst_block} <- Handler.read(handler, no_blocks * Encoder.sst_block_unit_size()),
-           {:ok, triple} <- Encoder.decode_sst_block(sst_block) do
-        {:ok, triple, Handler.advance_offset(handler, no_blocks * Encoder.sst_block_unit_size())}
+           {:ok, sst_block} <-
+             Handler.seq_read(
+               handler,
+               no_blocks * Encoder.sst_block_unit_size() - Encoder.sst_header_size()
+             ),
+           {:ok, triple} <-
+             Encoder.decode_sst_block(<<sst_header_block::binary, sst_block::binary>>) do
+        {:ok, triple, handler}
       end
     end
   end
