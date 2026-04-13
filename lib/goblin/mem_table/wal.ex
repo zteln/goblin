@@ -46,7 +46,6 @@ defmodule Goblin.MemTable.WAL do
         case read(iodev, pos) do
           {:ok, terms, pos} -> {terms, {iodev, pos}}
           :eof -> {:halt, :eof}
-          {:error, :wrong_size} -> {:halt, :eof}
           {:error, reason} -> raise "Failed to stream WAL file, reason: #{inspect(reason)}"
         end
       end,
@@ -78,6 +77,6 @@ defmodule Goblin.MemTable.WAL do
       "[#{inspect(__MODULE__)}] Unable to recover #{size - byte_size(bin)} from WAL. Possibly corrupt state..."
     end)
 
-    {:error, :wrong_size}
+    :eof
   end
 end
