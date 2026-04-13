@@ -69,4 +69,31 @@ defmodule Goblin.DiskTable.HandlerTest do
                Goblin.DiskTable.Handler.read(handler, 2, 3)
     end
   end
+
+  describe "seq_read/2" do
+    setup ctx do
+      file = Path.join(ctx.tmp_dir, "file")
+      content = "file content"
+      {:ok, handler} = Goblin.DiskTable.Handler.open(file, write?: true)
+      {:ok, handler} = Goblin.DiskTable.Handler.write(handler, content)
+      Goblin.DiskTable.Handler.sync(handler)
+      Goblin.DiskTable.Handler.close(handler)
+      %{disk_table_file: file, disk_table_content: content}
+    end
+
+    test "reads sequentially from file start", ctx do
+      {:ok, handler} = Goblin.DiskTable.Handler.open(ctx.disk_table_file, start?: true)
+
+      assert {:ok, "file"} = Goblin.DiskTable.Handler.seq_read(handler, 4)
+      assert {:ok, " con"} = Goblin.DiskTable.Handler.seq_read(handler, 4)
+      assert {:ok, "tent"} = Goblin.DiskTable.Handler.seq_read(handler, 4)
+    end
+
+    test "returns eof when reading past end of file", ctx do
+      {:ok, handler} = Goblin.DiskTable.Handler.open(ctx.disk_table_file, start?: true)
+
+      assert {:ok, "file content"} = Goblin.DiskTable.Handler.seq_read(handler, 12)
+      assert {:error, :eof} = Goblin.DiskTable.Handler.seq_read(handler, 1)
+    end
+  end
 end

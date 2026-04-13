@@ -8,6 +8,8 @@ defmodule Goblin.DiskTable.Handler do
 
   @type t :: %__MODULE__{}
 
+  @default_open_opts [:binary, :read, :raw, read_ahead: 64 * 1024]
+
   @spec open!(Path.t(), keyword()) :: t()
   def open!(file, opts \\ []) do
     case open(file, opts) do
@@ -19,7 +21,12 @@ defmodule Goblin.DiskTable.Handler do
   @spec open(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def open(file, opts \\ []) do
     position = if opts[:start?], do: 0, else: :eof
-    opts = [:binary, :read, :raw | List.wrap(opts[:write?] && :append)]
+
+    opts =
+      case opts[:write?] do
+        true -> [:append | @default_open_opts]
+        _ -> @default_open_opts
+      end
 
     with {:ok, file_handler} <- :file.open(file, opts),
          {:ok, file_offset} <- :file.position(file_handler, position) do
@@ -55,14 +62,18 @@ defmodule Goblin.DiskTable.Handler do
     end
   end
 
+  @spec seq_read(t(), non_neg_integer()) :: {:ok, binary()} | {:error, term()}
+  def seq_read(handler, size) do
+    case :file.read(handler.file_handler, size) do
+      {:ok, bin} -> {:ok, bin}
+      :eof -> {:error, :eof}
+      error -> error
+    end
+  end
+
   @spec close(t()) :: :ok | {:error, term()}
   def close(handler), do: :file.close(handler.file_handler)
 
   @spec sync(t()) :: :ok | {:error, term()}
   def sync(handler), do: :file.datasync(handler.file_handler)
-
-  @spec advance_offset(t(), non_neg_integer()) :: t()
-  def advance_offset(handler, offset) do
-    %{handler | file_offset: handler.file_offset + offset}
-  end
 end
