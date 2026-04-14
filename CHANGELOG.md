@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 (2026-04-14)
+* Enhancements
+    * Transaction management has been optimized
+    * In-memory queries have been optimized
+    * Scan queries have been optimized
+* Breaking changes
+    * The WAL implementation has been rewritten, changing the internal structure. This is incompatible with previous versions.
+
 ## v0.8.0 (2026-04-08)
 * Changes
     * Restructured from Supervisor architecture to single GenServer architecture
