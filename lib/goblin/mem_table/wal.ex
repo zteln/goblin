@@ -33,7 +33,8 @@ defmodule Goblin.MemTable.WAL do
     size = :erlang.iolist_size(iolist)
     iolist = [<<size::integer-32>> | iolist]
 
-    with :ok <- :file.write(wal.iodev, iolist) do
+    with :ok <- size_within_limit(size),
+         :ok <- :file.write(wal.iodev, iolist) do
       :file.datasync(wal.iodev)
     end
   end
@@ -79,4 +80,7 @@ defmodule Goblin.MemTable.WAL do
 
     :eof
   end
+
+  defp size_within_limit(size) when size < 0xFFFFFFFF, do: :ok
+  defp size_within_limit(_size), do: {:error, :commit_too_large}
 end
