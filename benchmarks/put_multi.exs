@@ -1,4 +1,6 @@
-Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}])
+Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}], force: true)
+
+profile? = "--profile" in System.argv()
 
 results_dir = "#{File.cwd!()}/tmp/goblin_benchmark/results"
 File.mkdir_p!(results_dir)
@@ -32,7 +34,7 @@ Benchee.run(
       CubDB.start_link(
         data_dir: cubdb_dir,
         auto_compact: false,
-        auto_file_sync: false
+        auto_file_sync: true
       )
 
     Process.unlink(cubdb)
@@ -52,6 +54,7 @@ Benchee.run(
     File.rm_rf!(goblin_dir)
     File.rm_rf!(cubdb_dir)
   end,
+  profile_after: if(profile?, do: :tprof, else: false),
   formatters: [
     Benchee.Formatters.Console,
     {Benchee.Formatters.Markdown, file: Path.join(results_dir, "put_multi.md")}

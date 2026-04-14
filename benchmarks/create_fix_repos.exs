@@ -1,4 +1,4 @@
-Mix.install([{:goblin, path: File.cwd!()}, :cubdb])
+Mix.install([{:goblin, path: File.cwd!()}, :cubdb], force: true)
 
 defmodule CreateRepo do
   @fixtures_dir "#{File.cwd!()}/tmp/goblin_benchmark/fixtures"
@@ -51,8 +51,7 @@ File.rm_rf!(fixtures_dir)
 File.mkdir_p!(fixtures_dir)
 
 db_callbacks = [
-  {"goblin",
-   fn dir -> Goblin.start_link(data_dir: dir) end,
+  {"goblin", fn dir -> Goblin.start_link(data_dir: dir) end,
    fn db, pairs -> Goblin.put_multi(db, pairs) end,
    fn db ->
      # wait for flushing and compaction to finish
@@ -66,10 +65,8 @@ db_callbacks = [
      wait.(wait)
      Goblin.stop(db)
    end},
-  {"cubdb",
-   fn dir -> CubDB.start_link(data_dir: dir) end,
-   fn db, pairs -> CubDB.put_multi(db, pairs) end,
-   fn db -> CubDB.stop(db) end}
+  {"cubdb", fn dir -> CubDB.start_link(data_dir: dir) end,
+   fn db, pairs -> CubDB.put_multi(db, pairs) end, fn db -> CubDB.stop(db) end}
 ]
 
 for {db_name, start, put, stop} <- db_callbacks,
