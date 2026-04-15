@@ -106,7 +106,7 @@ Goblin.transaction(db, fn tx ->
 
   tx
   |> Goblin.Tx.put(:counter, counter + 1)
-  |> Goblin.Tx.abort()
+  |> Goblin.Tx.commit()
 end)
 # => :ok
 
