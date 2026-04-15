@@ -1,12 +1,12 @@
 # Benchmarks
 
-Goblin v0.8.0 vs CubDB — 2026-04-08
+Goblin v0.9.0 vs CubDB — 2026-04-14
 
 ## put
 
 Benchmark
 
-Benchmark run from 2026-04-08 16:59:15.636832Z UTC
+Benchmark run from 2026-04-14 16:50:10.231530Z UTC
 
 ## System
 
@@ -71,20 +71,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">14.63</td>
-    <td style="white-space: nowrap; text-align: right">68.36 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;194.45%</td>
-    <td style="white-space: nowrap; text-align: right">46.82 ms</td>
-    <td style="white-space: nowrap; text-align: right">1055.68 ms</td>
+    <td style="white-space: nowrap; text-align: right">20.82</td>
+    <td style="white-space: nowrap; text-align: right">48.03 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;258.07%</td>
+    <td style="white-space: nowrap; text-align: right">30.93 ms</td>
+    <td style="white-space: nowrap; text-align: right">1036.55 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">11.61</td>
-    <td style="white-space: nowrap; text-align: right">86.15 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;9.64%</td>
-    <td style="white-space: nowrap; text-align: right">87.54 ms</td>
-    <td style="white-space: nowrap; text-align: right">107.39 ms</td>
+    <td style="white-space: nowrap; text-align: right">11.55</td>
+    <td style="white-space: nowrap; text-align: right">86.57 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;10.73%</td>
+    <td style="white-space: nowrap; text-align: right">89.10 ms</td>
+    <td style="white-space: nowrap; text-align: right">110.10 ms</td>
   </tr>
 
 </table>
@@ -99,14 +99,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap;text-align: right">14.63</td>
+    <td style="white-space: nowrap;text-align: right">20.82</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">11.61</td>
-    <td style="white-space: nowrap; text-align: right">1.26x</td>
+    <td style="white-space: nowrap; text-align: right">11.55</td>
+    <td style="white-space: nowrap; text-align: right">1.8x</td>
   </tr>
 
 </table>
@@ -130,20 +130,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">163.50</td>
-    <td style="white-space: nowrap; text-align: right">6.12 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;103.55%</td>
-    <td style="white-space: nowrap; text-align: right">5.85 ms</td>
-    <td style="white-space: nowrap; text-align: right">7.56 ms</td>
+    <td style="white-space: nowrap; text-align: right">236.08</td>
+    <td style="white-space: nowrap; text-align: right">4.24 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;308.66%</td>
+    <td style="white-space: nowrap; text-align: right">3.77 ms</td>
+    <td style="white-space: nowrap; text-align: right">5.07 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">126.05</td>
-    <td style="white-space: nowrap; text-align: right">7.93 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;11.12%</td>
-    <td style="white-space: nowrap; text-align: right">7.80 ms</td>
-    <td style="white-space: nowrap; text-align: right">13.56 ms</td>
+    <td style="white-space: nowrap; text-align: right">114.12</td>
+    <td style="white-space: nowrap; text-align: right">8.76 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;10.60%</td>
+    <td style="white-space: nowrap; text-align: right">8.64 ms</td>
+    <td style="white-space: nowrap; text-align: right">13.01 ms</td>
   </tr>
 
 </table>
@@ -158,14 +158,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap;text-align: right">163.50</td>
+    <td style="white-space: nowrap;text-align: right">236.08</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">126.05</td>
-    <td style="white-space: nowrap; text-align: right">1.3x</td>
+    <td style="white-space: nowrap; text-align: right">114.12</td>
+    <td style="white-space: nowrap; text-align: right">2.07x</td>
   </tr>
 
 </table>
@@ -188,21 +188,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">9.76 K</td>
-    <td style="white-space: nowrap; text-align: right">102.42 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;26.70%</td>
-    <td style="white-space: nowrap; text-align: right">98.42 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">170.54 &micro;s</td>
+    <td style="white-space: nowrap">Goblin.put/3</td>
+    <td style="white-space: nowrap; text-align: right">3.77 K</td>
+    <td style="white-space: nowrap; text-align: right">265.38 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;100.33%</td>
+    <td style="white-space: nowrap; text-align: right">227.54 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">876.13 &micro;s</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">1.96 K</td>
-    <td style="white-space: nowrap; text-align: right">510.36 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;39.63%</td>
-    <td style="white-space: nowrap; text-align: right">464 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">1488.03 &micro;s</td>
+    <td style="white-space: nowrap">CubDB.put/3</td>
+    <td style="white-space: nowrap; text-align: right">3.56 K</td>
+    <td style="white-space: nowrap; text-align: right">281.14 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;37.69%</td>
+    <td style="white-space: nowrap; text-align: right">263.04 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">802.17 &micro;s</td>
   </tr>
 
 </table>
@@ -216,15 +216,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap;text-align: right">9.76 K</td>
+    <td style="white-space: nowrap">Goblin.put/3</td>
+    <td style="white-space: nowrap;text-align: right">3.77 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">1.96 K</td>
-    <td style="white-space: nowrap; text-align: right">4.98x</td>
+    <td style="white-space: nowrap">CubDB.put/3</td>
+    <td style="white-space: nowrap; text-align: right">3.56 K</td>
+    <td style="white-space: nowrap; text-align: right">1.06x</td>
   </tr>
 
 </table>
@@ -247,21 +247,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">983.77</td>
-    <td style="white-space: nowrap; text-align: right">1.02 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;41.78%</td>
-    <td style="white-space: nowrap; text-align: right">0.89 ms</td>
-    <td style="white-space: nowrap; text-align: right">3.06 ms</td>
+    <td style="white-space: nowrap">Goblin.put/3</td>
+    <td style="white-space: nowrap; text-align: right">722.48</td>
+    <td style="white-space: nowrap; text-align: right">1.38 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;23.23%</td>
+    <td style="white-space: nowrap; text-align: right">1.34 ms</td>
+    <td style="white-space: nowrap; text-align: right">2.50 ms</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">421.49</td>
-    <td style="white-space: nowrap; text-align: right">2.37 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;21.59%</td>
-    <td style="white-space: nowrap; text-align: right">2.37 ms</td>
-    <td style="white-space: nowrap; text-align: right">4.01 ms</td>
+    <td style="white-space: nowrap">CubDB.put/3</td>
+    <td style="white-space: nowrap; text-align: right">605.03</td>
+    <td style="white-space: nowrap; text-align: right">1.65 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;15.34%</td>
+    <td style="white-space: nowrap; text-align: right">1.63 ms</td>
+    <td style="white-space: nowrap; text-align: right">2.52 ms</td>
   </tr>
 
 </table>
@@ -275,15 +275,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap;text-align: right">983.77</td>
+    <td style="white-space: nowrap">Goblin.put/3</td>
+    <td style="white-space: nowrap;text-align: right">722.48</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">421.49</td>
-    <td style="white-space: nowrap; text-align: right">2.33x</td>
+    <td style="white-space: nowrap">CubDB.put/3</td>
+    <td style="white-space: nowrap; text-align: right">605.03</td>
+    <td style="white-space: nowrap; text-align: right">1.19x</td>
   </tr>
 
 </table>
@@ -307,20 +307,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap; text-align: right">9.12 K</td>
-    <td style="white-space: nowrap; text-align: right">109.65 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;34.16%</td>
-    <td style="white-space: nowrap; text-align: right">104.88 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">184.82 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">3.51 K</td>
+    <td style="white-space: nowrap; text-align: right">285.21 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;35.48%</td>
+    <td style="white-space: nowrap; text-align: right">266.54 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">793.19 &micro;s</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">1.88 K</td>
-    <td style="white-space: nowrap; text-align: right">531.34 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;35.96%</td>
-    <td style="white-space: nowrap; text-align: right">485.13 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">1351.34 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">3.50 K</td>
+    <td style="white-space: nowrap; text-align: right">285.34 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;78.27%</td>
+    <td style="white-space: nowrap; text-align: right">239.04 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">1008.43 &micro;s</td>
   </tr>
 
 </table>
@@ -335,14 +335,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">CubDB.put/3</td>
-    <td style="white-space: nowrap;text-align: right">9.12 K</td>
+    <td style="white-space: nowrap;text-align: right">3.51 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.put/3</td>
-    <td style="white-space: nowrap; text-align: right">1.88 K</td>
-    <td style="white-space: nowrap; text-align: right">4.85x</td>
+    <td style="white-space: nowrap; text-align: right">3.50 K</td>
+    <td style="white-space: nowrap; text-align: right">1.0x</td>
   </tr>
 
 </table>
@@ -351,7 +351,7 @@ Run Time Comparison
 
 Benchmark
 
-Benchmark run from 2026-04-08 17:00:48.355529Z UTC
+Benchmark run from 2026-04-14 16:51:44.515964Z UTC
 
 ## System
 
@@ -416,20 +416,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">1.62 K</td>
-    <td style="white-space: nowrap; text-align: right">616.69 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;25.50%</td>
-    <td style="white-space: nowrap; text-align: right">581.50 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">1283.90 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">3.32 K</td>
+    <td style="white-space: nowrap; text-align: right">0.30 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;36.66%</td>
+    <td style="white-space: nowrap; text-align: right">0.28 ms</td>
+    <td style="white-space: nowrap; text-align: right">0.75 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">1.01 K</td>
-    <td style="white-space: nowrap; text-align: right">991.11 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;17.83%</td>
-    <td style="white-space: nowrap; text-align: right">933.33 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">1684.65 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">0.70 K</td>
+    <td style="white-space: nowrap; text-align: right">1.43 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;14.54%</td>
+    <td style="white-space: nowrap; text-align: right">1.39 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.98 ms</td>
   </tr>
 
 </table>
@@ -444,14 +444,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">1.62 K</td>
+    <td style="white-space: nowrap;text-align: right">3.32 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">1.01 K</td>
-    <td style="white-space: nowrap; text-align: right">1.61x</td>
+    <td style="white-space: nowrap; text-align: right">0.70 K</td>
+    <td style="white-space: nowrap; text-align: right">4.73x</td>
   </tr>
 
 </table>
@@ -475,20 +475,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">989.74</td>
-    <td style="white-space: nowrap; text-align: right">1.01 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;33.52%</td>
-    <td style="white-space: nowrap; text-align: right">0.89 ms</td>
+    <td style="white-space: nowrap; text-align: right">940.42</td>
+    <td style="white-space: nowrap; text-align: right">1.06 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;30.25%</td>
+    <td style="white-space: nowrap; text-align: right">0.99 ms</td>
     <td style="white-space: nowrap; text-align: right">1.89 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">104.80</td>
+    <td style="white-space: nowrap; text-align: right">104.78</td>
     <td style="white-space: nowrap; text-align: right">9.54 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;7.28%</td>
-    <td style="white-space: nowrap; text-align: right">9.44 ms</td>
-    <td style="white-space: nowrap; text-align: right">11.61 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;10.19%</td>
+    <td style="white-space: nowrap; text-align: right">9.32 ms</td>
+    <td style="white-space: nowrap; text-align: right">11.96 ms</td>
   </tr>
 
 </table>
@@ -503,14 +503,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">989.74</td>
+    <td style="white-space: nowrap;text-align: right">940.42</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">104.80</td>
-    <td style="white-space: nowrap; text-align: right">9.44x</td>
+    <td style="white-space: nowrap; text-align: right">104.78</td>
+    <td style="white-space: nowrap; text-align: right">8.98x</td>
   </tr>
 
 </table>
@@ -534,20 +534,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">3.44</td>
-    <td style="white-space: nowrap; text-align: right">0.29 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;3.96%</td>
-    <td style="white-space: nowrap; text-align: right">0.29 s</td>
-    <td style="white-space: nowrap; text-align: right">0.30 s</td>
+    <td style="white-space: nowrap; text-align: right">4.42</td>
+    <td style="white-space: nowrap; text-align: right">0.23 s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;8.91%</td>
+    <td style="white-space: nowrap; text-align: right">0.23 s</td>
+    <td style="white-space: nowrap; text-align: right">0.25 s</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.0778</td>
-    <td style="white-space: nowrap; text-align: right">12.86 s</td>
+    <td style="white-space: nowrap; text-align: right">0.0797</td>
+    <td style="white-space: nowrap; text-align: right">12.55 s</td>
     <td style="white-space: nowrap; text-align: right">&plusmn;0.00%</td>
-    <td style="white-space: nowrap; text-align: right">12.86 s</td>
-    <td style="white-space: nowrap; text-align: right">12.86 s</td>
+    <td style="white-space: nowrap; text-align: right">12.55 s</td>
+    <td style="white-space: nowrap; text-align: right">12.55 s</td>
   </tr>
 
 </table>
@@ -562,14 +562,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">3.44</td>
+    <td style="white-space: nowrap;text-align: right">4.42</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.0778</td>
-    <td style="white-space: nowrap; text-align: right">44.26x</td>
+    <td style="white-space: nowrap; text-align: right">0.0797</td>
+    <td style="white-space: nowrap; text-align: right">55.4x</td>
   </tr>
 
 </table>
@@ -593,19 +593,19 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">33.42</td>
-    <td style="white-space: nowrap; text-align: right">0.0299 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;8.21%</td>
-    <td style="white-space: nowrap; text-align: right">0.0301 s</td>
-    <td style="white-space: nowrap; text-align: right">0.0352 s</td>
+    <td style="white-space: nowrap; text-align: right">42.69</td>
+    <td style="white-space: nowrap; text-align: right">0.0234 s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;12.57%</td>
+    <td style="white-space: nowrap; text-align: right">0.0237 s</td>
+    <td style="white-space: nowrap; text-align: right">0.0342 s</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
     <td style="white-space: nowrap; text-align: right">0.94</td>
-    <td style="white-space: nowrap; text-align: right">1.07 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;6.98%</td>
-    <td style="white-space: nowrap; text-align: right">1.10 s</td>
+    <td style="white-space: nowrap; text-align: right">1.06 s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;8.15%</td>
+    <td style="white-space: nowrap; text-align: right">1.08 s</td>
     <td style="white-space: nowrap; text-align: right">1.12 s</td>
   </tr>
 
@@ -621,14 +621,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">33.42</td>
+    <td style="white-space: nowrap;text-align: right">42.69</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
     <td style="white-space: nowrap; text-align: right">0.94</td>
-    <td style="white-space: nowrap; text-align: right">35.71x</td>
+    <td style="white-space: nowrap; text-align: right">45.18x</td>
   </tr>
 
 </table>
@@ -652,20 +652,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">232.78</td>
-    <td style="white-space: nowrap; text-align: right">4.30 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;10.91%</td>
-    <td style="white-space: nowrap; text-align: right">4.26 ms</td>
-    <td style="white-space: nowrap; text-align: right">5.48 ms</td>
+    <td style="white-space: nowrap; text-align: right">312.71</td>
+    <td style="white-space: nowrap; text-align: right">3.20 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;12.15%</td>
+    <td style="white-space: nowrap; text-align: right">3.19 ms</td>
+    <td style="white-space: nowrap; text-align: right">4.38 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">9.44</td>
-    <td style="white-space: nowrap; text-align: right">105.96 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;5.23%</td>
-    <td style="white-space: nowrap; text-align: right">104.61 ms</td>
-    <td style="white-space: nowrap; text-align: right">122.20 ms</td>
+    <td style="white-space: nowrap; text-align: right">9.41</td>
+    <td style="white-space: nowrap; text-align: right">106.32 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;4.11%</td>
+    <td style="white-space: nowrap; text-align: right">105.48 ms</td>
+    <td style="white-space: nowrap; text-align: right">118.83 ms</td>
   </tr>
 
 </table>
@@ -680,14 +680,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.put_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">232.78</td>
+    <td style="white-space: nowrap;text-align: right">312.71</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.put_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">9.44</td>
-    <td style="white-space: nowrap; text-align: right">24.67x</td>
+    <td style="white-space: nowrap; text-align: right">9.41</td>
+    <td style="white-space: nowrap; text-align: right">33.25x</td>
   </tr>
 
 </table>
@@ -696,7 +696,7 @@ Run Time Comparison
 
 Benchmark
 
-Benchmark run from 2026-04-08 17:02:10.464530Z UTC
+Benchmark run from 2026-04-14 16:53:07.995750Z UTC
 
 ## System
 
@@ -760,21 +760,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap; text-align: right">22.78 K</td>
-    <td style="white-space: nowrap; text-align: right">0.0439 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;65.37%</td>
-    <td style="white-space: nowrap; text-align: right">0.0381 ms</td>
-    <td style="white-space: nowrap; text-align: right">0.194 ms</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap; text-align: right">148.04 K</td>
+    <td style="white-space: nowrap; text-align: right">6.75 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;129.73%</td>
+    <td style="white-space: nowrap; text-align: right">6.33 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">10.71 &micro;s</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">0.105 K</td>
-    <td style="white-space: nowrap; text-align: right">9.55 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;1.97%</td>
-    <td style="white-space: nowrap; text-align: right">9.49 ms</td>
-    <td style="white-space: nowrap; text-align: right">10.14 ms</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">23.83 K</td>
+    <td style="white-space: nowrap; text-align: right">41.97 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;57.82%</td>
+    <td style="white-space: nowrap; text-align: right">37.08 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">186.40 &micro;s</td>
   </tr>
 
 </table>
@@ -788,15 +788,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap;text-align: right">22.78 K</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap;text-align: right">148.04 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">0.105 K</td>
-    <td style="white-space: nowrap; text-align: right">217.43x</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">23.83 K</td>
+    <td style="white-space: nowrap; text-align: right">6.21x</td>
   </tr>
 
 </table>
@@ -819,21 +819,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap; text-align: right">24.46 K</td>
-    <td style="white-space: nowrap; text-align: right">40.89 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;31.81%</td>
-    <td style="white-space: nowrap; text-align: right">38.50 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">83.56 &micro;s</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap; text-align: right">158.59 K</td>
+    <td style="white-space: nowrap; text-align: right">6.31 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;139.14%</td>
+    <td style="white-space: nowrap; text-align: right">5.92 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">10.50 &micro;s</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">1.05 K</td>
-    <td style="white-space: nowrap; text-align: right">955.20 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;5.81%</td>
-    <td style="white-space: nowrap; text-align: right">950.69 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">1030.32 &micro;s</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">25.45 K</td>
+    <td style="white-space: nowrap; text-align: right">39.29 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;30.01%</td>
+    <td style="white-space: nowrap; text-align: right">37.58 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">78.38 &micro;s</td>
   </tr>
 
 </table>
@@ -847,15 +847,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap;text-align: right">24.46 K</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap;text-align: right">158.59 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">1.05 K</td>
-    <td style="white-space: nowrap; text-align: right">23.36x</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">25.45 K</td>
+    <td style="white-space: nowrap; text-align: right">6.23x</td>
   </tr>
 
 </table>
@@ -878,21 +878,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap; text-align: right">3.99 K</td>
-    <td style="white-space: nowrap; text-align: right">0.25 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;51.00%</td>
-    <td style="white-space: nowrap; text-align: right">0.27 ms</td>
-    <td style="white-space: nowrap; text-align: right">0.52 ms</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap; text-align: right">5.06 K</td>
+    <td style="white-space: nowrap; text-align: right">197.81 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;35.31%</td>
+    <td style="white-space: nowrap; text-align: right">211.92 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">353.48 &micro;s</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">0.110 K</td>
-    <td style="white-space: nowrap; text-align: right">9.06 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;29.35%</td>
-    <td style="white-space: nowrap; text-align: right">7.97 ms</td>
-    <td style="white-space: nowrap; text-align: right">15.98 ms</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">3.91 K</td>
+    <td style="white-space: nowrap; text-align: right">255.59 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;44.60%</td>
+    <td style="white-space: nowrap; text-align: right">279.88 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">529.34 &micro;s</td>
   </tr>
 
 </table>
@@ -906,15 +906,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap;text-align: right">3.99 K</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap;text-align: right">5.06 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">0.110 K</td>
-    <td style="white-space: nowrap; text-align: right">36.14x</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">3.91 K</td>
+    <td style="white-space: nowrap; text-align: right">1.29x</td>
   </tr>
 
 </table>
@@ -937,21 +937,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap; text-align: right">31.83 K</td>
-    <td style="white-space: nowrap; text-align: right">31.42 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;34.45%</td>
-    <td style="white-space: nowrap; text-align: right">29.17 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">67.92 &micro;s</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap; text-align: right">149.81 K</td>
+    <td style="white-space: nowrap; text-align: right">6.68 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;148.77%</td>
+    <td style="white-space: nowrap; text-align: right">5.92 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">19.67 &micro;s</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">8.24 K</td>
-    <td style="white-space: nowrap; text-align: right">121.35 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;7.87%</td>
-    <td style="white-space: nowrap; text-align: right">120.21 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">139.18 &micro;s</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">32.35 K</td>
+    <td style="white-space: nowrap; text-align: right">30.91 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;59.28%</td>
+    <td style="white-space: nowrap; text-align: right">27.67 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">65.79 &micro;s</td>
   </tr>
 
 </table>
@@ -965,15 +965,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap;text-align: right">31.83 K</td>
+    <td style="white-space: nowrap">Goblin.get/2</td>
+    <td style="white-space: nowrap;text-align: right">149.81 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">8.24 K</td>
-    <td style="white-space: nowrap; text-align: right">3.86x</td>
+    <td style="white-space: nowrap">CubDB.get/2</td>
+    <td style="white-space: nowrap; text-align: right">32.35 K</td>
+    <td style="white-space: nowrap; text-align: right">4.63x</td>
   </tr>
 
 </table>
@@ -997,20 +997,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap; text-align: right">129.05 K</td>
-    <td style="white-space: nowrap; text-align: right">7.75 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;90.95%</td>
-    <td style="white-space: nowrap; text-align: right">7.50 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">11.54 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">173.41 K</td>
+    <td style="white-space: nowrap; text-align: right">5.77 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;167.89%</td>
+    <td style="white-space: nowrap; text-align: right">5.46 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">9.25 &micro;s</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap; text-align: right">87.15 K</td>
-    <td style="white-space: nowrap; text-align: right">11.47 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;81.76%</td>
-    <td style="white-space: nowrap; text-align: right">8.96 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">30.13 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">89.55 K</td>
+    <td style="white-space: nowrap; text-align: right">11.17 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;70.60%</td>
+    <td style="white-space: nowrap; text-align: right">9 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">28.54 &micro;s</td>
   </tr>
 
 </table>
@@ -1025,14 +1025,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.get/2</td>
-    <td style="white-space: nowrap;text-align: right">129.05 K</td>
+    <td style="white-space: nowrap;text-align: right">173.41 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.get/2</td>
-    <td style="white-space: nowrap; text-align: right">87.15 K</td>
-    <td style="white-space: nowrap; text-align: right">1.48x</td>
+    <td style="white-space: nowrap; text-align: right">89.55 K</td>
+    <td style="white-space: nowrap; text-align: right">1.94x</td>
   </tr>
 
 </table>
@@ -1041,7 +1041,7 @@ Run Time Comparison
 
 Benchmark
 
-Benchmark run from 2026-04-08 17:03:48.686970Z UTC
+Benchmark run from 2026-04-14 16:54:33.035318Z UTC
 
 ## System
 
@@ -1105,21 +1105,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">20.61</td>
-    <td style="white-space: nowrap; text-align: right">0.0485 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;25.69%</td>
-    <td style="white-space: nowrap; text-align: right">0.0420 s</td>
-    <td style="white-space: nowrap; text-align: right">0.0902 s</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">531.33</td>
+    <td style="white-space: nowrap; text-align: right">1.88 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;10.20%</td>
+    <td style="white-space: nowrap; text-align: right">1.86 ms</td>
+    <td style="white-space: nowrap; text-align: right">2.27 ms</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.21</td>
-    <td style="white-space: nowrap; text-align: right">4.82 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;0.24%</td>
-    <td style="white-space: nowrap; text-align: right">4.82 s</td>
-    <td style="white-space: nowrap; text-align: right">4.82 s</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">25.50</td>
+    <td style="white-space: nowrap; text-align: right">39.22 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;8.25%</td>
+    <td style="white-space: nowrap; text-align: right">38.20 ms</td>
+    <td style="white-space: nowrap; text-align: right">61.21 ms</td>
   </tr>
 
 </table>
@@ -1133,15 +1133,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">20.61</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap;text-align: right">531.33</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.21</td>
-    <td style="white-space: nowrap; text-align: right">99.24x</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">25.50</td>
+    <td style="white-space: nowrap; text-align: right">20.84x</td>
   </tr>
 
 </table>
@@ -1164,21 +1164,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">24.14</td>
-    <td style="white-space: nowrap; text-align: right">41.43 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;8.72%</td>
-    <td style="white-space: nowrap; text-align: right">40.28 ms</td>
-    <td style="white-space: nowrap; text-align: right">56.39 ms</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">671.84</td>
+    <td style="white-space: nowrap; text-align: right">1.49 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;6.56%</td>
+    <td style="white-space: nowrap; text-align: right">1.47 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.77 ms</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">2.09</td>
-    <td style="white-space: nowrap; text-align: right">478.41 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;0.21%</td>
-    <td style="white-space: nowrap; text-align: right">478.23 ms</td>
-    <td style="white-space: nowrap; text-align: right">480.69 ms</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">23.85</td>
+    <td style="white-space: nowrap; text-align: right">41.93 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;17.63%</td>
+    <td style="white-space: nowrap; text-align: right">38.77 ms</td>
+    <td style="white-space: nowrap; text-align: right">75.59 ms</td>
   </tr>
 
 </table>
@@ -1192,15 +1192,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">24.14</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap;text-align: right">671.84</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">2.09</td>
-    <td style="white-space: nowrap; text-align: right">11.55x</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">23.85</td>
+    <td style="white-space: nowrap; text-align: right">28.17x</td>
   </tr>
 
 </table>
@@ -1223,21 +1223,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">6.40</td>
-    <td style="white-space: nowrap; text-align: right">0.156 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;9.68%</td>
-    <td style="white-space: nowrap; text-align: right">0.155 s</td>
-    <td style="white-space: nowrap; text-align: right">0.184 s</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">11.16</td>
+    <td style="white-space: nowrap; text-align: right">89.59 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;6.28%</td>
+    <td style="white-space: nowrap; text-align: right">88.39 ms</td>
+    <td style="white-space: nowrap; text-align: right">116.75 ms</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.127</td>
-    <td style="white-space: nowrap; text-align: right">7.90 s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;0.00%</td>
-    <td style="white-space: nowrap; text-align: right">7.90 s</td>
-    <td style="white-space: nowrap; text-align: right">7.90 s</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">6.00</td>
+    <td style="white-space: nowrap; text-align: right">166.61 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;16.04%</td>
+    <td style="white-space: nowrap; text-align: right">167.62 ms</td>
+    <td style="white-space: nowrap; text-align: right">224.29 ms</td>
   </tr>
 
 </table>
@@ -1251,15 +1251,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">6.40</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap;text-align: right">11.16</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.127</td>
-    <td style="white-space: nowrap; text-align: right">50.61x</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">6.00</td>
+    <td style="white-space: nowrap; text-align: right">1.86x</td>
   </tr>
 
 </table>
@@ -1282,21 +1282,21 @@ Run Time
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">33.94</td>
-    <td style="white-space: nowrap; text-align: right">29.47 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;6.12%</td>
-    <td style="white-space: nowrap; text-align: right">28.96 ms</td>
-    <td style="white-space: nowrap; text-align: right">35.47 ms</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">800.19</td>
+    <td style="white-space: nowrap; text-align: right">1.25 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;6.64%</td>
+    <td style="white-space: nowrap; text-align: right">1.24 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.51 ms</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">17.04</td>
-    <td style="white-space: nowrap; text-align: right">58.67 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;1.62%</td>
-    <td style="white-space: nowrap; text-align: right">58.50 ms</td>
-    <td style="white-space: nowrap; text-align: right">63.39 ms</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">31.62</td>
+    <td style="white-space: nowrap; text-align: right">31.63 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;9.85%</td>
+    <td style="white-space: nowrap; text-align: right">31.70 ms</td>
+    <td style="white-space: nowrap; text-align: right">42.13 ms</td>
   </tr>
 
 </table>
@@ -1310,15 +1310,15 @@ Run Time Comparison
     <th style="text-align: right">IPS</th>
     <th style="text-align: right">Slower</th>
   <tr>
-    <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">33.94</td>
+    <td style="white-space: nowrap">Goblin.get_multi/2</td>
+    <td style="white-space: nowrap;text-align: right">800.19</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
-    <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">17.04</td>
-    <td style="white-space: nowrap; text-align: right">1.99x</td>
+    <td style="white-space: nowrap">CubDB.get_multi/2</td>
+    <td style="white-space: nowrap; text-align: right">31.62</td>
+    <td style="white-space: nowrap; text-align: right">25.31x</td>
   </tr>
 
 </table>
@@ -1342,20 +1342,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">1.14 K</td>
-    <td style="white-space: nowrap; text-align: right">0.88 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;3.00%</td>
-    <td style="white-space: nowrap; text-align: right">0.87 ms</td>
-    <td style="white-space: nowrap; text-align: right">0.96 ms</td>
+    <td style="white-space: nowrap; text-align: right">3.26 K</td>
+    <td style="white-space: nowrap; text-align: right">0.31 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;10.59%</td>
+    <td style="white-space: nowrap; text-align: right">0.30 ms</td>
+    <td style="white-space: nowrap; text-align: right">0.39 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.120 K</td>
-    <td style="white-space: nowrap; text-align: right">8.34 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;12.72%</td>
-    <td style="white-space: nowrap; text-align: right">7.85 ms</td>
-    <td style="white-space: nowrap; text-align: right">12.22 ms</td>
+    <td style="white-space: nowrap; text-align: right">0.117 K</td>
+    <td style="white-space: nowrap; text-align: right">8.56 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;15.41%</td>
+    <td style="white-space: nowrap; text-align: right">7.80 ms</td>
+    <td style="white-space: nowrap; text-align: right">13.06 ms</td>
   </tr>
 
 </table>
@@ -1370,14 +1370,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.get_multi/2</td>
-    <td style="white-space: nowrap;text-align: right">1.14 K</td>
+    <td style="white-space: nowrap;text-align: right">3.26 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.get_multi/2</td>
-    <td style="white-space: nowrap; text-align: right">0.120 K</td>
-    <td style="white-space: nowrap; text-align: right">9.48x</td>
+    <td style="white-space: nowrap; text-align: right">0.117 K</td>
+    <td style="white-space: nowrap; text-align: right">27.9x</td>
   </tr>
 
 </table>
@@ -1386,7 +1386,7 @@ Run Time Comparison
 
 Benchmark
 
-Benchmark run from 2026-04-08 17:05:10.294659Z UTC
+Benchmark run from 2026-04-14 16:55:55.635436Z UTC
 
 ## System
 
@@ -1451,20 +1451,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">1.02 K</td>
-    <td style="white-space: nowrap; text-align: right">0.98 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;16.61%</td>
-    <td style="white-space: nowrap; text-align: right">0.93 ms</td>
-    <td style="white-space: nowrap; text-align: right">1.61 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.03 K</td>
+    <td style="white-space: nowrap; text-align: right">0.97 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;18.34%</td>
+    <td style="white-space: nowrap; text-align: right">0.91 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.64 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">0.0576 K</td>
-    <td style="white-space: nowrap; text-align: right">17.35 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;60.70%</td>
-    <td style="white-space: nowrap; text-align: right">16.49 ms</td>
-    <td style="white-space: nowrap; text-align: right">37.00 ms</td>
+    <td style="white-space: nowrap; text-align: right">0.0504 K</td>
+    <td style="white-space: nowrap; text-align: right">19.84 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;58.43%</td>
+    <td style="white-space: nowrap; text-align: right">20.41 ms</td>
+    <td style="white-space: nowrap; text-align: right">43.27 ms</td>
   </tr>
 
 </table>
@@ -1479,14 +1479,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap;text-align: right">1.02 K</td>
+    <td style="white-space: nowrap;text-align: right">1.03 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">0.0576 K</td>
-    <td style="white-space: nowrap; text-align: right">17.7x</td>
+    <td style="white-space: nowrap; text-align: right">0.0504 K</td>
+    <td style="white-space: nowrap; text-align: right">20.4x</td>
   </tr>
 
 </table>
@@ -1510,20 +1510,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">1.04 K</td>
-    <td style="white-space: nowrap; text-align: right">0.96 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;19.52%</td>
-    <td style="white-space: nowrap; text-align: right">0.90 ms</td>
-    <td style="white-space: nowrap; text-align: right">1.63 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.08 K</td>
+    <td style="white-space: nowrap; text-align: right">0.93 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;15.65%</td>
+    <td style="white-space: nowrap; text-align: right">0.89 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.57 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">0.65 K</td>
-    <td style="white-space: nowrap; text-align: right">1.53 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;56.51%</td>
-    <td style="white-space: nowrap; text-align: right">1.52 ms</td>
-    <td style="white-space: nowrap; text-align: right">3.17 ms</td>
+    <td style="white-space: nowrap; text-align: right">0.58 K</td>
+    <td style="white-space: nowrap; text-align: right">1.72 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;57.73%</td>
+    <td style="white-space: nowrap; text-align: right">1.72 ms</td>
+    <td style="white-space: nowrap; text-align: right">3.77 ms</td>
   </tr>
 
 </table>
@@ -1538,14 +1538,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap;text-align: right">1.04 K</td>
+    <td style="white-space: nowrap;text-align: right">1.08 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">0.65 K</td>
-    <td style="white-space: nowrap; text-align: right">1.59x</td>
+    <td style="white-space: nowrap; text-align: right">0.58 K</td>
+    <td style="white-space: nowrap; text-align: right">1.86x</td>
   </tr>
 
 </table>
@@ -1569,20 +1569,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">767.24</td>
-    <td style="white-space: nowrap; text-align: right">1.30 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;21.60%</td>
-    <td style="white-space: nowrap; text-align: right">1.30 ms</td>
-    <td style="white-space: nowrap; text-align: right">1.99 ms</td>
+    <td style="white-space: nowrap; text-align: right">774.02</td>
+    <td style="white-space: nowrap; text-align: right">1.29 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;19.69%</td>
+    <td style="white-space: nowrap; text-align: right">1.29 ms</td>
+    <td style="white-space: nowrap; text-align: right">1.92 ms</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">26.54</td>
-    <td style="white-space: nowrap; text-align: right">37.67 ms</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;61.43%</td>
-    <td style="white-space: nowrap; text-align: right">36.43 ms</td>
-    <td style="white-space: nowrap; text-align: right">87.43 ms</td>
+    <td style="white-space: nowrap; text-align: right">67.57</td>
+    <td style="white-space: nowrap; text-align: right">14.80 ms</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;83.44%</td>
+    <td style="white-space: nowrap; text-align: right">12.53 ms</td>
+    <td style="white-space: nowrap; text-align: right">57.79 ms</td>
   </tr>
 
 </table>
@@ -1597,14 +1597,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap;text-align: right">767.24</td>
+    <td style="white-space: nowrap;text-align: right">774.02</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">26.54</td>
-    <td style="white-space: nowrap; text-align: right">28.9x</td>
+    <td style="white-space: nowrap; text-align: right">67.57</td>
+    <td style="white-space: nowrap; text-align: right">11.45x</td>
   </tr>
 
 </table>
@@ -1628,20 +1628,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">5.71 K</td>
-    <td style="white-space: nowrap; text-align: right">175.11 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;44.56%</td>
-    <td style="white-space: nowrap; text-align: right">174.46 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">308.71 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">5.21 K</td>
+    <td style="white-space: nowrap; text-align: right">191.88 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;44.51%</td>
+    <td style="white-space: nowrap; text-align: right">191.79 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">340.33 &micro;s</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">1.06 K</td>
-    <td style="white-space: nowrap; text-align: right">946.96 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;19.73%</td>
-    <td style="white-space: nowrap; text-align: right">881.33 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">1633.25 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">1.09 K</td>
+    <td style="white-space: nowrap; text-align: right">920.38 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;19.34%</td>
+    <td style="white-space: nowrap; text-align: right">872.96 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">1638.68 &micro;s</td>
   </tr>
 
 </table>
@@ -1656,14 +1656,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap;text-align: right">5.71 K</td>
+    <td style="white-space: nowrap;text-align: right">5.21 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">1.06 K</td>
-    <td style="white-space: nowrap; text-align: right">5.41x</td>
+    <td style="white-space: nowrap; text-align: right">1.09 K</td>
+    <td style="white-space: nowrap; text-align: right">4.8x</td>
   </tr>
 
 </table>
@@ -1687,20 +1687,20 @@ Run Time
 
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap; text-align: right">148.86 K</td>
-    <td style="white-space: nowrap; text-align: right">6.72 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;130.06%</td>
-    <td style="white-space: nowrap; text-align: right">6.42 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">10.25 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">179.89 K</td>
+    <td style="white-space: nowrap; text-align: right">5.56 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;195.00%</td>
+    <td style="white-space: nowrap; text-align: right">5.25 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">8.50 &micro;s</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">83.77 K</td>
-    <td style="white-space: nowrap; text-align: right">11.94 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">&plusmn;63.53%</td>
+    <td style="white-space: nowrap; text-align: right">84.64 K</td>
+    <td style="white-space: nowrap; text-align: right">11.82 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">&plusmn;55.40%</td>
     <td style="white-space: nowrap; text-align: right">9.50 &micro;s</td>
-    <td style="white-space: nowrap; text-align: right">30.67 &micro;s</td>
+    <td style="white-space: nowrap; text-align: right">30.04 &micro;s</td>
   </tr>
 
 </table>
@@ -1715,14 +1715,14 @@ Run Time Comparison
     <th style="text-align: right">Slower</th>
   <tr>
     <td style="white-space: nowrap">Goblin.scan/2</td>
-    <td style="white-space: nowrap;text-align: right">148.86 K</td>
+    <td style="white-space: nowrap;text-align: right">179.89 K</td>
     <td>&nbsp;</td>
   </tr>
 
   <tr>
     <td style="white-space: nowrap">CubDB.select/2</td>
-    <td style="white-space: nowrap; text-align: right">83.77 K</td>
-    <td style="white-space: nowrap; text-align: right">1.78x</td>
+    <td style="white-space: nowrap; text-align: right">84.64 K</td>
+    <td style="white-space: nowrap; text-align: right">2.13x</td>
   </tr>
 
 </table>
