@@ -1,32 +1,34 @@
-defmodule Goblin.MemTable.Iterator do
+defmodule Goblin.Mem.Iterator do
   @moduledoc false
 
   defstruct [
     :idx,
-    :store,
+    :table,
     :max_seq
   ]
 
   @type t :: %__MODULE__{
           idx: term() | nil,
-          store: Goblin.MemTable.Store.t(),
+          table: Goblin.Mem.Table.t(),
           max_seq: non_neg_integer() | nil
         }
 
+  def new(mem, seq), do: %__MODULE__{table: mem.table, max_seq: seq}
+
   defimpl Goblin.Iterable do
-    alias Goblin.MemTable.Store
+    alias Goblin.Mem.Table
 
     def init(iterator), do: iterator
 
     def deinit(_iterator), do: :ok
 
     def next(%{idx: nil} = iterator) do
-      idx = Store.iterate(iterator.store)
+      idx = Table.iterate(iterator.table)
       handle_iteration(iterator, idx)
     end
 
     def next(iterator) do
-      idx = Store.iterate(iterator.store, iterator.idx)
+      idx = Table.iterate(iterator.table, iterator.idx)
       handle_iteration(iterator, idx)
     end
 
@@ -34,7 +36,7 @@ defmodule Goblin.MemTable.Iterator do
 
     defp handle_iteration(%{max_seq: max_seq} = iterator, {key, seq} = idx)
          when seq < max_seq do
-      case Store.get(iterator.store, key, seq) do
+      case Table.get(iterator.table, key, seq) do
         :not_found -> next(%{iterator | idx: idx})
         triple -> {triple, %{iterator | idx: idx}}
       end
