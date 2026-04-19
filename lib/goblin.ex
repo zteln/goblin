@@ -48,8 +48,8 @@ defmodule Goblin do
   alias Goblin.{
     Manifest,
     Broker,
-    MemTable,
-    DiskTable,
+    Mem,
+    Disk,
     Tx,
     Flusher,
     Compactor,
@@ -546,7 +546,7 @@ defmodule Goblin do
         next_file_pair(disk_table_counter, data_dir)
       end)
 
-    with {:ok, manifest} <- Manifest.open(name, data_dir) do
+    with {:ok, manifest} <- Manifest.open(data_dir) do
       %{dirt: dirt} = Manifest.snapshot(manifest, [:dirt])
       Enum.each(dirt, fn file -> File.exists?(file) && File.rm!(file) end)
       manifest = Manifest.clear_dirt(manifest)
@@ -592,7 +592,7 @@ defmodule Goblin do
     Process.demonitor(monitor_ref)
     %{writes: writes, sequence: seq} = tx
 
-    with {:ok, mem_table} <- MemTable.append_commits(state.mem_table, writes),
+    with {:ok, mem_table} <- Mem.append_commits(state.mem_table, writes),
          :ok <- Broker.put_sequence(state.broker, seq) do
       {:reply, :ok, %{state | mem_table: mem_table}, {:continue, :next_writer}}
     else
@@ -659,19 +659,18 @@ defmodule Goblin do
     with {:ok, manifest} <-
            Manifest.add_flush(
              state.manifest,
-             Enum.map(dts, & &1.file),
-             MemTable.wal_path(mt),
-             MemTable.sequence(mt)
+             Enum.map(dts, & &1.path),
+             Mem.disk_path(mt),
+             Mem.sequence(mt)
            ),
-         :ok <- MemTable.remove_wal(mt) do
+         :ok <- Mem.remove_disk(mt) do
       compactor =
         Enum.reduce(dts, state.compactor, fn dt, acc ->
-          Broker.add_table(state.broker, dt.file, dt.level_key, dt, &DiskTable.remove/1)
-
+          Broker.add_table(state.broker, dt)
           Compactor.put_into_level(acc, dt)
         end)
 
-      Broker.soft_delete_table(state.broker, MemTable.wal_path(mt))
+      Broker.soft_delete_table(state.broker, mt)
       state = %{state | manifest: manifest, compactor: compactor, flushing: nil}
       {:noreply, state, {:continue, :flush}}
     else
@@ -687,16 +686,16 @@ defmodule Goblin do
     with {:ok, manifest} <-
            Manifest.add_compaction(
              state.manifest,
-             Enum.map(new_dts, & &1.file),
-             Enum.map(old_dts, & &1.file)
+             Enum.map(new_dts, & &1.path),
+             Enum.map(old_dts, & &1.path)
            ) do
       compactor =
         Enum.reduce(new_dts, state.compactor, fn dt, acc ->
-          Broker.add_table(state.broker, dt.file, dt.level_key, dt, &DiskTable.remove/1)
+          Broker.add_table(state.broker, dt)
           Compactor.put_into_level(acc, dt)
         end)
 
-      Enum.each(old_dts, &Broker.soft_delete_table(state.broker, &1.file))
+      Enum.each(old_dts, &Broker.soft_delete_table(state.broker, &1))
 
       state = %{state | manifest: manifest, compactor: compactor, compacting: nil}
       {:noreply, state, {:continue, :flush}}
@@ -743,7 +742,7 @@ defmodule Goblin do
   end
 
   def handle_continue(:rotate_mem_table, state) do
-    case MemTable.rotate?(state.mem_table, state.mem_limit) do
+    case Mem.rotate?(state.mem_table, state.mem_limit) do
       true ->
         %{wal_count: wal_count} = Manifest.snapshot(state.manifest, [:wal_count])
         wal_path = new_file(state.data_dir, wal_count, @wal_suffix)
@@ -835,7 +834,7 @@ defmodule Goblin do
   @impl GenServer
   def terminate(_reason, state) do
     state.manifest && Manifest.close(state.manifest)
-    state.mem_table && MemTable.close(state.mem_table)
+    state.mem_table && Mem.close(state.mem_table)
     :ok
   end
 
@@ -855,8 +854,8 @@ defmodule Goblin do
   defp restore_disk_tables(state, dts) do
     dts
     |> Enum.reduce_while({:ok, state}, fn dt, {:ok, acc} ->
-      with {:ok, dt} <- DiskTable.from_file(dt) do
-        Broker.add_table(acc.broker, dt.file, dt.level_key, dt, &DiskTable.remove/1)
+      with {:ok, dt} <- Disk.from_file(dt) do
+        Broker.add_table(acc.broker, dt)
         compactor = Compactor.put_into_level(acc.compactor, dt)
         {:cont, {:ok, %{acc | compactor: compactor}}}
       else
@@ -872,7 +871,7 @@ defmodule Goblin do
   end
 
   defp add_new_wal_to_manifest(state, nil) do
-    with {:ok, manifest} <- Manifest.add_wal(state.manifest, MemTable.wal_path(state.mem_table)) do
+    with {:ok, manifest} <- Manifest.add_wal(state.manifest, Mem.disk_path(state.mem_table)) do
       {:ok, %{state | manifest: manifest}}
     end
   end
@@ -886,7 +885,7 @@ defmodule Goblin do
   end
 
   defp rotate_mem_table(state, wal_path, opts) do
-    with :ok <- MemTable.close(state.mem_table) do
+    with :ok <- Mem.close(state.mem_table) do
       state
       |> retire_mem_table()
       |> open_mem_table(wal_path, opts)
@@ -894,10 +893,10 @@ defmodule Goblin do
   end
 
   defp open_mem_table(state, wal_path, opts) do
-    with {:ok, mt} <- MemTable.open(wal_path, opts) do
-      Broker.add_table(state.broker, MemTable.wal_path(mt), -1, mt, &MemTable.delete_table/1)
+    with {:ok, mt} <- Mem.new(wal_path, opts) do
+      Broker.add_table(state.broker, mt)
 
-      {:ok, %{state | mem_table: mt}, MemTable.sequence(mt)}
+      {:ok, %{state | mem_table: mt}, Mem.sequence(mt)}
     end
   end
 
