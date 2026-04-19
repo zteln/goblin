@@ -1,5 +1,9 @@
-defmodule Goblin.DiskTable.BinarySearchIteratorTest do
+defmodule Goblin.Disk.BinarySearchIteratorTest do
   use ExUnit.Case, async: true
+
+  alias Goblin.Disk
+  alias Goblin.Disk.{BinarySearchIterator, Table}
+
   @moduletag :tmp_dir
 
   setup ctx do
@@ -30,12 +34,10 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
         {n, n - 1, "v-#{n}"}
       end
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, ctx.opts)
+    {:ok, [disk_table]} = Disk.into_table(data, ctx.opts)
 
-    assert %Goblin.DiskTable.BinarySearchIterator{} =
-             iterator =
-             Goblin.DiskTable.BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 1000)
+    assert %BinarySearchIterator{} =
+             iterator = BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 1000)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -50,28 +52,23 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     opts = [
       level_key: 0,
       compress?: false,
-      max_sst_size: 100 * Goblin.DiskTable.Encoder.sst_block_unit_size(),
+      max_sst_size: 100 * Table.block_size(),
       bf_fpp: 0.01,
       bf_bit_array_size: 100,
       next_file_f: ctx.opts[:next_file_f]
     ]
 
-    triple1 =
-      {1, 0, :crypto.strong_rand_bytes(3 * Goblin.DiskTable.Encoder.sst_block_unit_size())}
-
-    triple2 =
-      {2, 1, :crypto.strong_rand_bytes(5 * Goblin.DiskTable.Encoder.sst_block_unit_size())}
+    triple1 = {1, 0, :crypto.strong_rand_bytes(3 * Table.block_size())}
+    triple2 = {2, 1, :crypto.strong_rand_bytes(5 * Table.block_size())}
 
     data = [triple1, triple2]
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, opts)
+    {:ok, [disk_table]} = Disk.into_table(data, opts)
 
     assert disk_table.no_blocks > 2
 
-    assert %Goblin.DiskTable.BinarySearchIterator{} =
-             iterator =
-             Goblin.DiskTable.BinarySearchIterator.new(disk_table, [1], 2)
+    assert %BinarySearchIterator{} =
+             iterator = BinarySearchIterator.new(disk_table, [1], 2)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -79,9 +76,8 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
     assert :ok == Goblin.Iterable.next(iterator)
     assert :ok == Goblin.Iterable.deinit(iterator)
 
-    assert %Goblin.DiskTable.BinarySearchIterator{} =
-             iterator =
-             Goblin.DiskTable.BinarySearchIterator.new(disk_table, [2], 2)
+    assert %BinarySearchIterator{} =
+             iterator = BinarySearchIterator.new(disk_table, [2], 2)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -97,12 +93,11 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
       |> Enum.with_index(fn key, seq -> {key, seq, "v-#{seq}-#{key}"} end)
       |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, ctx.opts)
+    {:ok, [disk_table]} = Disk.into_table(data, ctx.opts)
 
     iterator =
       disk_table
-      |> Goblin.DiskTable.BinarySearchIterator.new([0], length(data))
+      |> BinarySearchIterator.new([0], length(data))
       |> Goblin.Iterable.init()
 
     zero_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 0.0 end)
@@ -110,7 +105,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
 
     iterator =
       disk_table
-      |> Goblin.DiskTable.BinarySearchIterator.new([0.0, 0, 0.0], length(data))
+      |> BinarySearchIterator.new([0.0, 0, 0.0], length(data))
       |> Goblin.Iterable.init()
 
     zero_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 0 end)
@@ -118,7 +113,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
 
     iterator =
       disk_table
-      |> Goblin.DiskTable.BinarySearchIterator.new([1], length(data))
+      |> BinarySearchIterator.new([1], length(data))
       |> Goblin.Iterable.init()
 
     one_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 1.0 end)
@@ -126,7 +121,7 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
 
     iterator =
       disk_table
-      |> Goblin.DiskTable.BinarySearchIterator.new([1.0], length(data))
+      |> BinarySearchIterator.new([1.0], length(data))
       |> Goblin.Iterable.init()
 
     one_key_triple = Enum.find(data, fn {key, _seq, _val} -> key == 1 end)
@@ -139,12 +134,10 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
         {n, n - 1, "v-#{n}"}
       end
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, ctx.opts)
+    {:ok, [disk_table]} = Disk.into_table(data, ctx.opts)
 
-    assert %Goblin.DiskTable.BinarySearchIterator{} =
-             iterator =
-             Goblin.DiskTable.BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 23)
+    assert %BinarySearchIterator{} =
+             iterator = BinarySearchIterator.new(disk_table, [5, 25, 1, 1], 23)
 
     assert iterator = Goblin.Iterable.init(iterator)
 
@@ -166,12 +159,11 @@ defmodule Goblin.DiskTable.BinarySearchIteratorTest do
 
     keys = Enum.map(data, &elem(&1, 0))
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, ctx.opts)
+    {:ok, [disk_table]} = Disk.into_table(data, ctx.opts)
 
     iterator =
       disk_table
-      |> Goblin.DiskTable.BinarySearchIterator.new(keys, length(data))
+      |> BinarySearchIterator.new(keys, length(data))
       |> Goblin.Iterable.init()
 
     data

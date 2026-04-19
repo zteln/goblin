@@ -1,5 +1,9 @@
-defmodule Goblin.DiskTable.StreamIteratorTest do
+defmodule Goblin.Disk.StreamIteratorTest do
   use ExUnit.Case, async: true
+
+  alias Goblin.Disk
+  alias Goblin.Disk.{StreamIterator, Table}
+
   @moduletag :tmp_dir
 
   setup ctx do
@@ -15,7 +19,7 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
     opts = [
       level_key: 0,
       compress?: false,
-      max_sst_size: 100 * Goblin.DiskTable.Encoder.sst_block_unit_size(),
+      max_sst_size: 100 * Table.block_size(),
       bf_fpp: 0.01,
       bf_bit_array_size: 100,
       next_file_f: next_file_f
@@ -26,18 +30,14 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
         {n, n - 1, "v-#{n}"}
       end
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, opts)
+    {:ok, [disk_table]} = Disk.into_table(data, opts)
 
     %{disk_table: disk_table, opts: opts}
   end
 
   test "is iterable", ctx do
-    assert %Goblin.DiskTable.StreamIterator{} =
-             iterator = Goblin.DiskTable.StreamIterator.new(ctx.disk_table)
-
-    assert %Goblin.DiskTable.StreamIterator{} =
-             iterator = Goblin.Iterable.init(iterator)
+    assert %StreamIterator{} = iterator = StreamIterator.new(ctx.disk_table)
+    assert %StreamIterator{} = iterator = Goblin.Iterable.init(iterator)
 
     iterator =
       for n <- 1..100, reduce: iterator do
@@ -54,11 +54,8 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
   end
 
   test "does not iterate past provided sequence number", ctx do
-    assert %Goblin.DiskTable.StreamIterator{} =
-             iterator = Goblin.DiskTable.StreamIterator.new(ctx.disk_table, 25)
-
-    assert %Goblin.DiskTable.StreamIterator{} =
-             iterator = Goblin.Iterable.init(iterator)
+    assert %StreamIterator{} = iterator = StreamIterator.new(ctx.disk_table, 25)
+    assert %StreamIterator{} = iterator = Goblin.Iterable.init(iterator)
 
     iterator =
       for n <- 1..26, reduce: iterator do
@@ -93,10 +90,9 @@ defmodule Goblin.DiskTable.StreamIteratorTest do
       end)
       |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
 
-    {:ok, [disk_table]} =
-      Goblin.DiskTable.into(data, opts)
+    {:ok, [disk_table]} = Disk.into_table(data, opts)
 
-    iterator = Goblin.DiskTable.StreamIterator.new(disk_table) |> Goblin.Iterable.init()
+    iterator = StreamIterator.new(disk_table) |> Goblin.Iterable.init()
 
     Enum.reduce(data, iterator, fn triple, acc ->
       assert {^triple, acc} = Goblin.Iterable.next(acc)
