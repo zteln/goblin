@@ -2,9 +2,9 @@ defmodule Goblin.Flusher do
   @moduledoc false
 
   alias Goblin.{
-    MemTable,
+    Mem,
     Iterator,
-    DiskTable
+    Disk
   }
 
   defstruct [
@@ -14,7 +14,7 @@ defmodule Goblin.Flusher do
 
   @type t :: %__MODULE__{
           opts: keyword(),
-          queue: :queue.queue({MemTable.t(), term()})
+          queue: :queue.queue({Mem.t(), term()})
         }
 
   @spec new(keyword()) :: t()
@@ -28,33 +28,33 @@ defmodule Goblin.Flusher do
     %__MODULE__{opts: opts}
   end
 
-  @spec enqueue(t(), MemTable.t()) :: t()
-  def enqueue(flusher, mem_table) do
-    queue = :queue.in(mem_table, flusher.queue)
+  @spec enqueue(t(), Mem.t()) :: t()
+  def enqueue(flusher, mt) do
+    queue = :queue.in(mt, flusher.queue)
     %{flusher | queue: queue}
   end
 
-  @spec dequeue(t()) :: {:noop, t()} | {:flush, MemTable.t(), t()}
+  @spec dequeue(t()) :: {:noop, t()} | {:flush, Mem.t(), t()}
   def dequeue(flusher) do
     case :queue.out(flusher.queue) do
       {:empty, _queue} ->
         {:noop, flusher}
 
-      {{:value, mem_table}, queue} ->
-        {:flush, mem_table, %{flusher | queue: queue}}
+      {{:value, mt}, queue} ->
+        {:flush, mt, %{flusher | queue: queue}}
     end
   end
 
-  @spec flush(t(), MemTable.t()) ::
-          {:ok, [DiskTable.t()], MemTable.t()} | {:error, term()}
-  def flush(flusher, mem_table) do
+  @spec flush(t(), Mem.t()) ::
+          {:ok, [Disk.Table.t()], Mem.t()} | {:error, term()}
+  def flush(flusher, mt) do
     stream =
       Iterator.linear_stream(fn ->
-        Goblin.Queryable.stream(mem_table, nil, nil, :infinity)
+        Mem.Iterator.new(mt, nil)
       end)
 
-    with {:ok, disk_tables} <- DiskTable.into(stream, flusher.opts) do
-      {:ok, disk_tables, mem_table}
+    with {:ok, dts} <- Disk.into_table(stream, flusher.opts) do
+      {:ok, dts, mt}
     end
   end
 end

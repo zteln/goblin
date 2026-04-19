@@ -3,7 +3,7 @@ defmodule Goblin.Compactor do
 
   alias Goblin.{
     Iterator,
-    DiskTable
+    Disk
   }
 
   defstruct [
@@ -14,7 +14,7 @@ defmodule Goblin.Compactor do
 
   @type t :: %__MODULE__{
           opts: keyword(),
-          levels: %{non_neg_integer() => [DiskTable.t()]},
+          levels: %{non_neg_integer() => [Disk.Table.t()]},
           queue: :queue.queue(non_neg_integer())
         }
 
@@ -23,7 +23,7 @@ defmodule Goblin.Compactor do
     %__MODULE__{opts: opts}
   end
 
-  @spec put_into_level(t(), DiskTable.t()) :: t()
+  @spec put_into_level(t(), Disk.Table.t()) :: t()
   def put_into_level(compactor, disk_table) do
     levels =
       Map.update(
@@ -41,8 +41,8 @@ defmodule Goblin.Compactor do
           | {
               :compact,
               non_neg_integer(),
-              list(DiskTable.t()),
-              list(DiskTable.t()),
+              list(Disk.Table.t()),
+              list(Disk.Table.t()),
               boolean(),
               t()
             }
@@ -66,8 +66,8 @@ defmodule Goblin.Compactor do
     end
   end
 
-  @spec compact(t(), non_neg_integer(), list(DiskTable.t()), list(DiskTable.t()), boolean()) ::
-          {:ok, [DiskTable.t()], [DiskTable.t()]} | {:error, term()}
+  @spec compact(t(), non_neg_integer(), list(Disk.Table.t()), list(Disk.Table.t()), boolean()) ::
+          {:ok, [Disk.Table.t()], [Disk.Table.t()]} | {:error, term()}
   def compact(compactor, target_level_key, source_dts, target_dts, filter_tombstones?) do
     opts =
       [
@@ -77,11 +77,11 @@ defmodule Goblin.Compactor do
 
     stream =
       Iterator.k_merge_stream(
-        fn -> Enum.map(source_dts ++ target_dts, &DiskTable.StreamIterator.new/1) end,
+        fn -> Enum.map(source_dts ++ target_dts, &Disk.StreamIterator.new/1) end,
         filter_tombstones?: filter_tombstones?
       )
 
-    with {:ok, disk_tables} <- DiskTable.into(stream, opts) do
+    with {:ok, disk_tables} <- Disk.into_table(stream, opts) do
       {:ok, disk_tables, source_dts ++ target_dts}
     end
   end

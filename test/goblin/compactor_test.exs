@@ -1,7 +1,8 @@
 defmodule Goblin.CompactorTest do
   use ExUnit.Case, async: true
 
-  alias Goblin.{Compactor, DiskTable}
+  alias Goblin.{Compactor, Disk}
+  alias Goblin.Disk.{StreamIterator, Table}
 
   @moduletag :tmp_dir
 
@@ -21,8 +22,8 @@ defmodule Goblin.CompactorTest do
 
   defp fake_disk_table(attrs) do
     struct!(
-      %DiskTable{
-        file: "default.goblin",
+      %Table{
+        path: "default.goblin",
         level_key: 0,
         key_range: {0, 100},
         seq_range: {1, 1},
@@ -54,7 +55,7 @@ defmodule Goblin.CompactorTest do
     opts =
       [level_key: level_key, compress?: false] ++ disk_table_opts(ctx)
 
-    {:ok, [disk_table]} = DiskTable.into(triples, opts)
+    {:ok, [disk_table]} = Disk.into_table(triples, opts)
     disk_table
   end
 
@@ -69,7 +70,7 @@ defmodule Goblin.CompactorTest do
 
   describe "put_into_level/2" do
     test "adds a disk table to the correct level" do
-      dt = fake_disk_table(level_key: 0, file: "a.goblin")
+      dt = fake_disk_table(level_key: 0, path: "a.goblin")
 
       compactor =
         new_compactor()
@@ -79,8 +80,8 @@ defmodule Goblin.CompactorTest do
     end
 
     test "accumulates multiple tables in the same level" do
-      dt1 = fake_disk_table(level_key: 1, file: "a.goblin")
-      dt2 = fake_disk_table(level_key: 1, file: "b.goblin")
+      dt1 = fake_disk_table(level_key: 1, path: "a.goblin")
+      dt2 = fake_disk_table(level_key: 1, path: "b.goblin")
 
       compactor =
         new_compactor()
@@ -93,7 +94,7 @@ defmodule Goblin.CompactorTest do
 
   describe "next/1" do
     test "returns :noop when no levels overflow" do
-      dt = fake_disk_table(level_key: 0, file: "a.goblin")
+      dt = fake_disk_table(level_key: 0, path: "a.goblin")
 
       compactor =
         new_compactor()
@@ -105,7 +106,7 @@ defmodule Goblin.CompactorTest do
     test "returns {:compact, ...} when level 0 exceeds file limit" do
       compactor =
         Enum.reduce(1..4, new_compactor(), fn i, acc ->
-          dt = fake_disk_table(level_key: 0, file: "#{i}.goblin", key_range: {i, i})
+          dt = fake_disk_table(level_key: 0, path: "#{i}.goblin", key_range: {i, i})
           Compactor.put_into_level(acc, dt)
         end)
 
@@ -116,8 +117,8 @@ defmodule Goblin.CompactorTest do
     test "returns {:compact, ...} when non-level-0 exceeds size limit" do
       # level_base_size is 256, level_size_multiplier is 10
       # level 1 threshold: 256 * 10^0 = 256 bytes
-      dt1 = fake_disk_table(level_key: 1, file: "a.goblin", size: 150, key_range: {1, 50})
-      dt2 = fake_disk_table(level_key: 1, file: "b.goblin", size: 150, key_range: {51, 100})
+      dt1 = fake_disk_table(level_key: 1, path: "a.goblin", size: 150, key_range: {1, 50})
+      dt2 = fake_disk_table(level_key: 1, path: "b.goblin", size: 150, key_range: {51, 100})
 
       compactor =
         new_compactor()
@@ -128,7 +129,7 @@ defmodule Goblin.CompactorTest do
     end
 
     test "returns :noop when only target level has tables" do
-      dt = fake_disk_table(level_key: 1, file: "a.goblin", size: 10)
+      dt = fake_disk_table(level_key: 1, path: "a.goblin", size: 10)
 
       compactor =
         new_compactor()
@@ -140,7 +141,7 @@ defmodule Goblin.CompactorTest do
     test "removes source and target tables from levels" do
       compactor =
         Enum.reduce(1..4, new_compactor(), fn i, acc ->
-          dt = fake_disk_table(level_key: 0, file: "#{i}.goblin", key_range: {i, i})
+          dt = fake_disk_table(level_key: 0, path: "#{i}.goblin", key_range: {i, i})
           Compactor.put_into_level(acc, dt)
         end)
 
@@ -176,8 +177,8 @@ defmodule Goblin.CompactorTest do
       assert Enum.all?(new_tables, &(&1.level_key == 1))
 
       # Verify old tables match what was compacted
-      old_files = Enum.map(old_tables, & &1.file) |> Enum.sort()
-      expected_files = Enum.map([dt1, dt2], & &1.file) |> Enum.sort()
+      old_files = Enum.map(old_tables, & &1.path) |> Enum.sort()
+      expected_files = Enum.map([dt1, dt2], & &1.path) |> Enum.sort()
       assert old_files == expected_files
 
       # Read back the merged data to verify correctness
@@ -185,7 +186,7 @@ defmodule Goblin.CompactorTest do
 
       data =
         Goblin.Iterator.linear_stream(fn ->
-          DiskTable.StreamIterator.new(merged)
+          StreamIterator.new(merged)
         end)
         |> Enum.to_list()
 
