@@ -140,6 +140,9 @@ defmodule Goblin.FileIO do
   @spec remove(Path.t()) :: :ok | {:error, term()}
   def remove(path), do: File.rm(path)
 
+  @spec size_of(Path.t()) :: non_neg_integer()
+  def size_of(path), do: :filelib.file_size(path)
+
   defp encode_to_iolist(terms, block_size, compress?) do
     opts = if compress?, do: [:compressed], else: []
     payload = :erlang.term_to_iovec(terms, opts)

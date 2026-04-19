@@ -266,6 +266,31 @@ defmodule Goblin.FileIOTest do
       assert (FileIO.stream!(io) |> Enum.to_list()) == entries
     end
 
+    test "truncate?: true trims a partially-flushed trailing block", ctx do
+      io = open_write(ctx)
+      entries = [{:put, 0, :a, "v1"}]
+      {:ok, valid_size} = FileIO.append(io, entries)
+      {:ok, _} = FileIO.append(io, [{:put, 1, :b, "v2"}])
+      :ok = FileIO.close(io)
+
+      # Simulate a crash mid-flush: keep the first full block, truncate the
+      # second block to a fragment (header-sized chunk of zeros is enough
+      # to guarantee an invalid header on the next read).
+      {:ok, f} = :file.open(file_path(ctx), [:read, :write, :raw, :binary])
+      {:ok, _} = :file.position(f, valid_size + 8)
+      :ok = :file.truncate(f)
+      :file.close(f)
+
+      assert :filelib.file_size(file_path(ctx)) == valid_size + 8
+
+      io = open_write(ctx)
+      streamed = FileIO.stream!(io, truncate?: true) |> Enum.to_list()
+      assert streamed == entries
+      :ok = FileIO.close(io)
+
+      assert :filelib.file_size(file_path(ctx)) == valid_size
+    end
+
     test "leaves trailing garbage in place when truncate? is not set", ctx do
       io = open_write(ctx)
       entries = [{:put, 0, :a, "v1"}]
