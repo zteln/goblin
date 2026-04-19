@@ -5,10 +5,8 @@ defmodule Goblin.ManifestTest do
 
   @moduletag :tmp_dir
 
-  defp manifest_name(ctx), do: :"#{ctx.test}"
-
   defp open_manifest(ctx) do
-    {:ok, manifest} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
+    {:ok, manifest} = Manifest.open(ctx.tmp_dir)
     manifest
   end
 
@@ -35,7 +33,7 @@ defmodule Goblin.ManifestTest do
 
       :ok = Manifest.close(manifest)
 
-      {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
       assert %{sequence: 42} = Manifest.snapshot(recovered, [:sequence])
     end
@@ -216,7 +214,7 @@ defmodule Goblin.ManifestTest do
 
       :ok = Manifest.close(manifest)
 
-      {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
       snapshot = Manifest.snapshot(recovered, [:sequence, :disk_tables])
 
       assert %{sequence: 5} = snapshot
@@ -238,7 +236,7 @@ defmodule Goblin.ManifestTest do
 
       :ok = Manifest.close(manifest)
 
-      {:ok, manifest} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
+      {:ok, manifest} = Manifest.open(ctx.tmp_dir)
       {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
 
       {:ok, manifest} =
@@ -251,7 +249,7 @@ defmodule Goblin.ManifestTest do
 
       :ok = Manifest.close(manifest)
 
-      {:ok, recovered} = Manifest.open(manifest_name(ctx), ctx.tmp_dir)
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
       assert %{sequence: 10} = Manifest.snapshot(recovered, [:sequence])
     end
   end
@@ -261,6 +259,109 @@ defmodule Goblin.ManifestTest do
       manifest = open_manifest(c)
 
       assert :ok = Manifest.close(manifest)
+    end
+  end
+
+  describe "crash recovery" do
+    defp manifest_path(ctx), do: Path.join(ctx.tmp_dir, "manifest.goblin")
+    defp manifest_tmp_path(ctx), do: manifest_path(ctx) <> ".tmp"
+
+    test "recovers from trailing garbage appended to the log after a crash", ctx do
+      manifest = open_manifest(ctx)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          7
+        )
+
+      :ok = Manifest.close(manifest)
+
+      valid_size = :filelib.file_size(manifest_path(ctx))
+      garbage = :binary.copy(<<0xFF>>, 512)
+      File.write!(manifest_path(ctx), garbage, [:append])
+
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
+
+      snapshot = Manifest.snapshot(recovered, [:sequence, :disk_tables])
+      assert %{sequence: 7} = snapshot
+      assert Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_0.goblin"))
+
+      :ok = Manifest.close(recovered)
+      # The garbage tail must be truncated by FileIO.stream!(truncate?: true).
+      assert :filelib.file_size(manifest_path(ctx)) == valid_size
+    end
+
+    test "recovers from a log truncated mid-block by a crash", ctx do
+      manifest = open_manifest(ctx)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          3
+        )
+
+      # Add an extra update, then chop the file so that its trailing block
+      # is cut off mid-header — simulating a crash mid-flush.
+      {:ok, manifest} =
+        Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
+
+      :ok = Manifest.close(manifest)
+
+      full_size = :filelib.file_size(manifest_path(ctx))
+      {:ok, f} = :file.open(manifest_path(ctx), [:read, :write, :raw, :binary])
+      {:ok, _} = :file.position(f, full_size - 512 + 8)
+      :ok = :file.truncate(f)
+      :file.close(f)
+
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
+
+      # The add_wal that was chopped off is lost; the prior flush survives.
+      snapshot = Manifest.snapshot(recovered, [:sequence, :wal])
+      assert %{sequence: 3} = snapshot
+      # The surviving wal is the one written before the truncated update.
+      assert snapshot.wal == nil or
+               String.ends_with?(snapshot.wal, "wal.goblin")
+
+      :ok = Manifest.close(recovered)
+      assert :filelib.file_size(manifest_path(ctx)) == full_size - 512
+    end
+
+    test "recovers from a rotation interrupted after the rename", ctx do
+      # Simulate: rotation renamed manifest.goblin → manifest.goblin.tmp and
+      # crashed before a new manifest.goblin could be created. On reopen,
+      # Manifest.open/1 must rename the .tmp back and recover state from it.
+      manifest = open_manifest(ctx)
+      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
+
+      {:ok, manifest} =
+        Manifest.add_flush(
+          manifest,
+          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
+          Path.join(ctx.tmp_dir, "wal.goblin"),
+          9
+        )
+
+      :ok = Manifest.close(manifest)
+
+      :ok = File.rename(manifest_path(ctx), manifest_tmp_path(ctx))
+      refute File.exists?(manifest_path(ctx))
+      assert File.exists?(manifest_tmp_path(ctx))
+
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
+
+      assert File.exists?(manifest_path(ctx))
+      refute File.exists?(manifest_tmp_path(ctx))
+
+      assert %{sequence: 9} = Manifest.snapshot(recovered, [:sequence])
+
+      :ok = Manifest.close(recovered)
     end
   end
 end

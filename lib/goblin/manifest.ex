@@ -1,38 +1,46 @@
 defmodule Goblin.Manifest do
   @moduledoc false
 
-  alias Goblin.Manifest.{
-    Snapshot,
-    Log
-  }
+  alias Goblin.FileIO
+  alias Goblin.Manifest.Snapshot
 
-  @log_key :manifest
   @log_file "manifest.goblin"
+  @max_size 10 * 1024 * 1024
 
   defstruct [
-    :log,
+    :io,
     :data_dir,
-    :snapshot
+    :path,
+    :snapshot,
+    size: 0
   ]
 
   @type t :: %__MODULE__{
-          log: any(),
+          io: FileIO.t(),
           data_dir: Path.t(),
           snapshot: Snapshot.t()
         }
 
-  @spec open(atom(), Path.t()) :: {:ok, t()} | {:error, term()}
-  def open(name, data_dir) do
-    log_file = Path.join(data_dir, @log_file)
-    manifest = %__MODULE__{data_dir: data_dir}
+  @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
+  def open(data_dir) do
+    path = Path.join(data_dir, @log_file)
 
-    with {:ok, log} <- Log.open_log({name, @log_key}, log_file) do
-      recover_manifest(%{manifest | log: log})
+    if File.exists?(tmp(path)),
+      do: FileIO.rename(tmp(path), path)
+
+    with {:ok, io} <- FileIO.open(path, write?: true) do
+      size = FileIO.size_of(path)
+
+      manifest =
+        %__MODULE__{path: path, data_dir: data_dir, io: io, size: size}
+        |> recover_manifest()
+
+      {:ok, manifest}
     end
   end
 
   @spec close(t()) :: :ok | {:error, term()}
-  def close(manifest), do: Log.close_log(manifest.log)
+  def close(manifest), do: FileIO.close(manifest.io)
 
   @spec current_files(t()) :: list(Path.t())
   def current_files(manifest) do
@@ -93,33 +101,40 @@ defmodule Goblin.Manifest do
   end
 
   defp apply_updates(manifest, updates) do
-    order = Snapshot.order(manifest.snapshot)
-
-    updates =
-      Enum.with_index(updates, fn {action, data}, idx ->
-        {idx + order + 1, action, data}
-      end)
-
     snapshot = Snapshot.update(manifest.snapshot, updates)
 
-    with :ok <- Log.append(manifest.log, updates, {:snapshot, snapshot}) do
-      {:ok, %{manifest | snapshot: snapshot}}
+    with {:ok, size} <- FileIO.append(manifest.io, updates),
+         :ok <- FileIO.sync(manifest.io) do
+      %{manifest | snapshot: snapshot, size: manifest.size + size}
+      |> maybe_rotate()
     end
   end
 
   defp recover_manifest(manifest) do
     snapshot = recover_snapshot(manifest)
-
-    with :ok <- Log.set_header(manifest.log, {:snapshot, snapshot}) do
-      {:ok, %{manifest | snapshot: snapshot}}
-    end
+    %{manifest | snapshot: snapshot}
   end
 
   defp recover_snapshot(manifest) do
-    manifest.log
-    |> Log.stream_log!()
+    FileIO.stream!(manifest.io, truncate?: true)
     |> Enum.reduce(%Snapshot{}, &Snapshot.update(&2, &1))
   end
 
+  defp maybe_rotate(%{size: size} = manifest) when size >= @max_size do
+    tmp_path = tmp(manifest.path)
+
+    with :ok <- FileIO.close(manifest.io),
+         :ok <- FileIO.rename(manifest.path, tmp_path),
+         {:ok, new_io} <- FileIO.open(manifest.path, write?: true),
+         {:ok, size} <- FileIO.append(new_io, {:snapshot, manifest.snapshot}),
+         :ok <- FileIO.sync(new_io),
+         :ok <- FileIO.remove(tmp_path) do
+      {:ok, %{manifest | io: new_io, size: size}}
+    end
+  end
+
+  defp maybe_rotate(manifest), do: {:ok, manifest}
+
   defp trim_dir(name), do: Path.basename(name)
+  defp tmp(path), do: path <> ".tmp"
 end
