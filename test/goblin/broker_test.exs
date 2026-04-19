@@ -3,63 +3,88 @@ defmodule Goblin.BrokerTest do
 
   alias Goblin.Broker
 
+  defmodule FakeTable do
+    defstruct [:id, :level_key, :on_remove]
+
+    defimpl Goblin.Brokerable do
+      def id(table), do: table.id
+      def level_key(table), do: table.level_key
+
+      def remove(table) do
+        if table.on_remove, do: table.on_remove.(table)
+        :ok
+      end
+    end
+  end
+
+  defp fake(id, level_key, on_remove \\ nil) do
+    %FakeTable{id: id, level_key: level_key, on_remove: on_remove}
+  end
+
   setup do
     ref = Broker.new()
     %{ref: ref}
   end
 
-  describe "add_table/5 and filter_tables/3" do
+  describe "add_table/2 and filter_tables/3" do
     test "added table is visible to a registered transaction", ctx do
-      Broker.add_table(ctx.ref, :t1, 0, :table_data, fn _ -> :ok end)
+      t1 = fake(:t1, 0)
+      Broker.add_table(ctx.ref, t1)
 
       tx_key = make_ref()
       {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      assert [:table_data] == Broker.filter_tables(ctx.ref, tx_id)
+      assert [t1] == Broker.filter_tables(ctx.ref, tx_id)
     end
 
     test "filter option excludes non-matching tables", ctx do
-      Broker.add_table(ctx.ref, :t1, 0, :keep, fn _ -> :ok end)
-      Broker.add_table(ctx.ref, :t2, 0, :skip, fn _ -> :ok end)
+      t1 = fake(:t1, 0)
+      t2 = fake(:t2, 0)
+      Broker.add_table(ctx.ref, t1)
+      Broker.add_table(ctx.ref, t2)
 
       tx_key = make_ref()
       {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      result = Broker.filter_tables(ctx.ref, tx_id, filter: &(&1 == :keep))
-      assert result == [:keep]
+      result = Broker.filter_tables(ctx.ref, tx_id, filter: &(&1.id == :t1))
+      assert result == [t1]
     end
 
     test "level_key option filters by level", ctx do
-      Broker.add_table(ctx.ref, :t1, 0, :level_0, fn _ -> :ok end)
-      Broker.add_table(ctx.ref, :t2, 1, :level_1, fn _ -> :ok end)
+      t1 = fake(:t1, 0)
+      t2 = fake(:t2, 1)
+      Broker.add_table(ctx.ref, t1)
+      Broker.add_table(ctx.ref, t2)
 
       tx_key = make_ref()
       {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      assert [:level_0] == Broker.filter_tables(ctx.ref, tx_id, level_key: 0)
-      assert [:level_1] == Broker.filter_tables(ctx.ref, tx_id, level_key: 1)
+      assert [t1] == Broker.filter_tables(ctx.ref, tx_id, level_key: 0)
+      assert [t2] == Broker.filter_tables(ctx.ref, tx_id, level_key: 1)
     end
   end
 
   describe "soft_delete_table/2 and hard_delete_table/2" do
-    test "hard_delete invokes callback when no snapshots reference table", ctx do
+    test "hard_delete invokes Brokerable.remove when no snapshots reference table", ctx do
       parent = self()
-      Broker.add_table(ctx.ref, :t1, 0, :data, fn _ -> send(parent, :deleted) end)
+      t1 = fake(:t1, 0, fn _ -> send(parent, :deleted) end)
+      Broker.add_table(ctx.ref, t1)
 
-      Broker.soft_delete_table(ctx.ref, :t1)
+      Broker.soft_delete_table(ctx.ref, t1)
       assert :ok == Broker.hard_delete_table(ctx.ref, :t1)
 
       assert_receive :deleted
     end
 
-    test "hard_delete does not invoke callback while snapshot holds reference", ctx do
+    test "hard_delete does not invoke Brokerable.remove while snapshot holds reference", ctx do
       parent = self()
-      Broker.add_table(ctx.ref, :t1, 0, :data, fn _ -> send(parent, :deleted) end)
+      t1 = fake(:t1, 0, fn _ -> send(parent, :deleted) end)
+      Broker.add_table(ctx.ref, t1)
 
       tx_key = make_ref()
       Broker.register_tx(ctx.ref, tx_key)
 
-      Broker.soft_delete_table(ctx.ref, :t1)
+      Broker.soft_delete_table(ctx.ref, t1)
       assert :ok == Broker.hard_delete_table(ctx.ref, :t1)
 
       refute_receive :deleted
@@ -72,13 +97,14 @@ defmodule Goblin.BrokerTest do
     end
 
     test "hard_delete returns error after exceeding max retries", ctx do
-      Broker.add_table(ctx.ref, :t1, 0, :data, fn _ -> :ok end)
+      t1 = fake(:t1, 0)
+      Broker.add_table(ctx.ref, t1)
 
       # Create a snapshot that holds the reference
       tx_key = make_ref()
       Broker.register_tx(ctx.ref, tx_key)
 
-      Broker.soft_delete_table(ctx.ref, :t1)
+      Broker.soft_delete_table(ctx.ref, t1)
 
       # Retry 61 times to exceed the @max_retries (60) limit
       for _ <- 1..61 do
@@ -89,18 +115,20 @@ defmodule Goblin.BrokerTest do
     end
 
     test "soft_delete of nonexistent table is a no-op", ctx do
-      assert :ok == Broker.soft_delete_table(ctx.ref, :nonexistent)
+      assert :ok == Broker.soft_delete_table(ctx.ref, fake(:nonexistent, 0))
     end
   end
 
   describe "hard_delete_tables/1" do
     test "deletes all eligible soft-deleted tables", ctx do
       parent = self()
-      Broker.add_table(ctx.ref, :t1, 0, :data1, fn _ -> send(parent, :deleted_t1) end)
-      Broker.add_table(ctx.ref, :t2, 0, :data2, fn _ -> send(parent, :deleted_t2) end)
+      t1 = fake(:t1, 0, fn _ -> send(parent, :deleted_t1) end)
+      t2 = fake(:t2, 0, fn _ -> send(parent, :deleted_t2) end)
+      Broker.add_table(ctx.ref, t1)
+      Broker.add_table(ctx.ref, t2)
 
-      Broker.soft_delete_table(ctx.ref, :t1)
-      Broker.soft_delete_table(ctx.ref, :t2)
+      Broker.soft_delete_table(ctx.ref, t1)
+      Broker.soft_delete_table(ctx.ref, t2)
 
       Broker.hard_delete_tables(ctx.ref)
 
@@ -110,14 +138,16 @@ defmodule Goblin.BrokerTest do
 
     test "skips tables held by active transaction", ctx do
       parent = self()
-      Broker.add_table(ctx.ref, :t1, 0, :data1, fn _ -> send(parent, :deleted_t1) end)
-      Broker.add_table(ctx.ref, :t2, 0, :data2, fn _ -> send(parent, :deleted_t2) end)
+      t1 = fake(:t1, 0, fn _ -> send(parent, :deleted_t1) end)
+      t2 = fake(:t2, 0, fn _ -> send(parent, :deleted_t2) end)
+      Broker.add_table(ctx.ref, t1)
+      Broker.add_table(ctx.ref, t2)
 
       tx_key = make_ref()
       Broker.register_tx(ctx.ref, tx_key)
 
-      Broker.soft_delete_table(ctx.ref, :t1)
-      Broker.soft_delete_table(ctx.ref, :t2)
+      Broker.soft_delete_table(ctx.ref, t1)
+      Broker.soft_delete_table(ctx.ref, t2)
 
       Broker.hard_delete_tables(ctx.ref)
 
@@ -128,8 +158,8 @@ defmodule Goblin.BrokerTest do
 
   describe "register_tx/2 and unregister_tx/2" do
     test "returns max_level_key and seq", ctx do
-      Broker.add_table(ctx.ref, :t1, 0, :data1, fn _ -> :ok end)
-      Broker.add_table(ctx.ref, :t2, 2, :data2, fn _ -> :ok end)
+      Broker.add_table(ctx.ref, fake(:t1, 0))
+      Broker.add_table(ctx.ref, fake(:t2, 2))
       Broker.put_sequence(ctx.ref, 42)
 
       tx_key = make_ref()
@@ -142,12 +172,13 @@ defmodule Goblin.BrokerTest do
     end
 
     test "unregister_tx removes snapshot entries", ctx do
-      Broker.add_table(ctx.ref, :t1, 0, :data, fn _ -> :ok end)
+      t1 = fake(:t1, 0)
+      Broker.add_table(ctx.ref, t1)
 
       tx_key = make_ref()
       {_, _, tx_id} = Broker.register_tx(ctx.ref, tx_key)
 
-      assert [:data] == Broker.filter_tables(ctx.ref, tx_id)
+      assert [t1] == Broker.filter_tables(ctx.ref, tx_id)
 
       Broker.unregister_tx(ctx.ref, tx_key)
 
