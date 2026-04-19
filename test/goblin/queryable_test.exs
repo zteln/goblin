@@ -1,9 +1,10 @@
 defmodule Goblin.QueryableTest do
   use ExUnit.Case, async: true
 
+  alias Goblin.Mem
   alias Goblin.Queryable
-  alias Goblin.MemTable
-  alias Goblin.MemTable.Store
+
+  @moduletag :tmp_dir
 
   describe "List implementation" do
     test "has_key?/2 checks for key presence" do
@@ -45,25 +46,28 @@ defmodule Goblin.QueryableTest do
     end
   end
 
-  describe "MemTable implementation" do
-    setup do
-      store = Store.new()
-      Store.insert(store, :a, 0, "v0")
-      Store.insert(store, :b, 1, "v1")
-      Store.insert(store, :a, 2, "v2")
+  describe "Mem implementation" do
+    setup ctx do
+      {:ok, mem} = Mem.new(Path.join(ctx.tmp_dir, "mem.goblin"), [])
 
-      mem_table = %MemTable{store: store, wal: nil}
-      %{mem_table: mem_table}
+      {:ok, mem} =
+        Mem.append_commits(mem, [
+          {:put, 0, :a, "v0"},
+          {:put, 1, :b, "v1"},
+          {:put, 2, :a, "v2"}
+        ])
+
+      %{mem: mem}
     end
 
-    test "has_key?/2 delegates to MemTable", ctx do
-      assert Queryable.has_key?(ctx.mem_table, :a)
-      assert Queryable.has_key?(ctx.mem_table, :b)
-      refute Queryable.has_key?(ctx.mem_table, :c)
+    test "has_key?/2 delegates to Mem", ctx do
+      assert Queryable.has_key?(ctx.mem, :a)
+      assert Queryable.has_key?(ctx.mem, :b)
+      refute Queryable.has_key?(ctx.mem, :c)
     end
 
     test "search/3 returns matching triples", ctx do
-      result = Queryable.search(ctx.mem_table, [:a, :b], 3)
+      result = Queryable.search(ctx.mem, [:a, :b], 3)
 
       # search returns the latest version below seq for each key
       assert {:a, 2, "v2"} in result
@@ -71,10 +75,10 @@ defmodule Goblin.QueryableTest do
       assert length(result) == 2
     end
 
-    test "stream/4 returns a MemTable.Iterator", ctx do
-      result = Queryable.stream(ctx.mem_table, nil, nil, 10)
+    test "stream/4 returns a Mem.Iterator", ctx do
+      result = Queryable.stream(ctx.mem, nil, nil, 10)
 
-      assert %MemTable.Iterator{} = result
+      assert %Mem.Iterator{} = result
       assert result.max_seq == 10
     end
   end
