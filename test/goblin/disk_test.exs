@@ -70,4 +70,78 @@ defmodule Goblin.DiskTest do
       assert parsed.no_blocks == written.no_blocks
     end
   end
+
+  describe "stream/4" do
+    test "yields all triples when no bounds given", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(1..5), ctx.opts)
+
+      result = Disk.stream(dt, nil, nil, 100) |> Enum.to_list()
+
+      assert result == [
+               {1, 1, "v-1"},
+               {2, 2, "v-2"},
+               {3, 3, "v-3"},
+               {4, 4, "v-4"},
+               {5, 5, "v-5"}
+             ]
+    end
+
+    test "filters by seq (yields only triples with seq <= max_seq)", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(1..5), ctx.opts)
+
+      result = Disk.stream(dt, nil, nil, 3) |> Enum.to_list()
+
+      assert result == [{1, 1, "v-1"}, {2, 2, "v-2"}, {3, 3, "v-3"}]
+    end
+
+    test "returns [] when table is out of bounds", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(10..20), ctx.opts)
+
+      # table has keys 10..20; asking for [1..5] is out of range
+      assert [] == Disk.stream(dt, 1, 5, 100)
+    end
+
+    test "streams table when bounds overlap its key_range", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(10..20), ctx.opts)
+
+      # bounds [5..15] overlap with table range [10..20]
+      result = Disk.stream(dt, 5, 15, 100) |> Enum.to_list()
+      # Disk.stream does not clip bounds — it yields the whole table when bounds overlap.
+      assert length(result) == 11
+    end
+  end
+
+  describe "search/3" do
+    test "yields only requested keys in ascending order", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(1..50), ctx.opts)
+
+      result = Disk.search(dt, [5, 10, 25], 100) |> Enum.to_list()
+
+      assert result == [{5, 5, "v-5"}, {10, 10, "v-10"}, {25, 25, "v-25"}]
+    end
+
+    test "skips missing keys", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(1..10), ctx.opts)
+
+      # 99 does not exist
+      result = Disk.search(dt, [5, 99], 100) |> Enum.to_list()
+      assert result == [{5, 5, "v-5"}]
+    end
+
+    test "filters by seq", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(1..10), ctx.opts)
+
+      # max_seq = 4 excludes keys with seq >= 4
+      result = Disk.search(dt, [1, 5], 4) |> Enum.to_list()
+      assert result == [{1, 1, "v-1"}]
+    end
+
+    test "is lazy: Enum.take/2 returns early without consuming the full stream", ctx do
+      {:ok, [dt]} = Disk.into_table(triples(1..100), ctx.opts)
+
+      stream = Disk.search(dt, [5, 10, 50], 1000)
+
+      assert [{5, _, _}] = Enum.take(stream, 1)
+    end
+  end
 end

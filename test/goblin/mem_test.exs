@@ -1,9 +1,7 @@
 defmodule Goblin.MemTest do
   use ExUnit.Case, async: true
 
-  alias Goblin.Brokerable
   alias Goblin.Mem
-  alias Goblin.Queryable
 
   @moduletag :tmp_dir
 
@@ -28,13 +26,13 @@ defmodule Goblin.MemTest do
       mem = open_mem(ctx)
 
       {:ok, mem} =
-        Mem.append_commits(mem, [{:put, 0, :a, "v1"}, {:put, 1, :b, "v2"}])
+        Mem.append_commits(mem, [{:a, 0, "v1"}, {:b, 1, "v2"}])
 
       :ok = Mem.close(mem)
 
       mem = open_mem(ctx)
 
-      results = Queryable.search(mem, [:a, :b], 2)
+      results = Mem.search(mem, [:a, :b], 2)
       assert {:a, 0, "v1"} in results
       assert {:b, 1, "v2"} in results
       assert Mem.sequence(mem) == 2
@@ -42,7 +40,7 @@ defmodule Goblin.MemTest do
 
     test "recovers from a WAL with trailing garbage appended after a crash", ctx do
       mem = open_mem(ctx)
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 0, :a, "v1"}, {:put, 1, :b, "v2"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:a, 0, "v1"}, {:b, 1, "v2"}])
       :ok = Mem.close(mem)
 
       valid_size = :filelib.file_size(mem_path(ctx))
@@ -51,7 +49,7 @@ defmodule Goblin.MemTest do
 
       mem = open_mem(ctx)
 
-      results = Queryable.search(mem, [:a, :b], 2)
+      results = Mem.search(mem, [:a, :b], 2)
       assert {:a, 0, "v1"} in results
       assert {:b, 1, "v2"} in results
       assert Mem.sequence(mem) == 2
@@ -62,8 +60,8 @@ defmodule Goblin.MemTest do
 
     test "recovers from a WAL truncated mid-block by a crash", ctx do
       mem = open_mem(ctx)
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 0, :a, "v1"}])
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 1, :b, "v2"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:a, 0, "v1"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:b, 1, "v2"}])
       :ok = Mem.close(mem)
 
       # Simulate a partial final flush: chop the last block off at a
@@ -76,8 +74,8 @@ defmodule Goblin.MemTest do
 
       mem = open_mem(ctx)
 
-      assert [{:a, 0, "v1"}] = Queryable.search(mem, [:a], 1)
-      assert [] = Queryable.search(mem, [:b], 2)
+      assert [{:a, 0, "v1"}] = Mem.search(mem, [:a], 1)
+      assert [] = Mem.search(mem, [:b], 2)
       assert Mem.sequence(mem) == 1
 
       :ok = Mem.close(mem)
@@ -90,30 +88,92 @@ defmodule Goblin.MemTest do
     test "appends put commits and makes data queryable", ctx do
       mem = open_mem(ctx)
 
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 0, :key, "value"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:key, 0, "value"}])
 
-      assert Queryable.has_key?(mem, :key)
-      assert [{:key, 0, "value"}] = Queryable.search(mem, [:key], 1)
+      assert Mem.has_key?(mem, :key)
+      assert [{:key, 0, "value"}] = Mem.search(mem, [:key], 1)
     end
 
     test "appends remove commits as tombstones", ctx do
       mem = open_mem(ctx)
 
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 0, :key, "value"}])
-      {:ok, mem} = Mem.append_commits(mem, [{:remove, 1, :key}])
+      {:ok, mem} = Mem.append_commits(mem, [{:key, 0, "value"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:key, 1, :"$goblin_tombstone"}])
 
-      assert [{:key, 0, "value"}] = Queryable.search(mem, [:key], 1)
-      assert [{:key, 1, :"$goblin_tombstone"}] = Queryable.search(mem, [:key], 2)
+      assert [{:key, 0, "value"}] = Mem.search(mem, [:key], 1)
+      assert [{:key, 1, :"$goblin_tombstone"}] = Mem.search(mem, [:key], 2)
     end
 
     test "advances sequence/1 to the last commit's seq + 1", ctx do
       mem = open_mem(ctx)
 
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 5, :a, "v"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:a, 5, "v"}])
       assert Mem.sequence(mem) == 6
 
-      {:ok, mem} = Mem.append_commits(mem, [{:put, 9, :b, "v"}])
+      {:ok, mem} = Mem.append_commits(mem, [{:b, 9, "v"}])
       assert Mem.sequence(mem) == 10
+    end
+  end
+
+  describe "stream/2" do
+    test "yields all entries in ascending key order", ctx do
+      mem = open_mem(ctx)
+
+      {:ok, mem} =
+        Mem.append_commits(mem, [
+          {:b, 0, "b0"},
+          {:a, 1, "a1"},
+          {:c, 2, "c2"}
+        ])
+
+      result = Mem.stream(mem, 100) |> Enum.to_list()
+
+      assert result == [
+               {:a, 1, "a1"},
+               {:b, 0, "b0"},
+               {:c, 2, "c2"}
+             ]
+    end
+
+    test "max_seq is exclusive", ctx do
+      mem = open_mem(ctx)
+
+      {:ok, mem} =
+        Mem.append_commits(mem, [
+          {:a, 0, "v0"},
+          {:b, 1, "v1"},
+          {:c, 2, "v2"}
+        ])
+
+      result = Mem.stream(mem, 2) |> Enum.to_list()
+      assert result == [{:a, 0, "v0"}, {:b, 1, "v1"}]
+    end
+
+    test "yields all versions of a key in descending seq order (dedup is k_merge's job)", ctx do
+      mem = open_mem(ctx)
+
+      {:ok, mem} =
+        Mem.append_commits(mem, [
+          {:k, 0, "old"},
+          {:k, 5, "new"}
+        ])
+
+      # Mem.stream emits raw triples; Iterator.k_merge dedups across sources.
+      result = Mem.stream(mem, 10) |> Enum.to_list()
+      assert result == [{:k, 5, "new"}, {:k, 0, "old"}]
+    end
+
+    test "empty table yields empty stream", ctx do
+      mem = open_mem(ctx)
+
+      assert [] == Mem.stream(mem, 100) |> Enum.to_list()
+    end
+
+    test "supports :infinity as max_seq", ctx do
+      mem = open_mem(ctx)
+      {:ok, mem} = Mem.append_commits(mem, [{:a, 0, "v0"}])
+
+      assert [{:a, 0, "v0"}] == Mem.stream(mem, :infinity) |> Enum.to_list()
     end
   end
 
@@ -129,20 +189,12 @@ defmodule Goblin.MemTest do
 
       commits =
         Enum.map(0..100, fn i ->
-          {:put, i, :"key_#{i}", String.duplicate("x", 100)}
+          {:"key_#{i}", i, String.duplicate("x", 100)}
         end)
 
       {:ok, mem} = Mem.append_commits(mem, commits)
 
       assert Mem.rotate?(mem, 1)
-    end
-  end
-
-  describe "disk_path/1" do
-    test "returns the path passed to new/2", ctx do
-      mem = open_mem(ctx)
-
-      assert Mem.disk_path(mem) == mem_path(ctx)
     end
   end
 
@@ -173,28 +225,16 @@ defmodule Goblin.MemTest do
     end
   end
 
-  describe "Brokerable" do
-    test "id/1 returns the disk path", ctx do
+  describe "delete/1" do
+    test "deletes the underlying ETS table", ctx do
       mem = open_mem(ctx)
+      table_ref = mem.table.ref
 
-      assert Brokerable.id(mem) == mem_path(ctx)
-    end
+      assert :ets.info(table_ref) != :undefined
 
-    test "level_key/1 returns -1", ctx do
-      mem = open_mem(ctx)
+      :ok = Mem.delete(mem)
 
-      assert Brokerable.level_key(mem) == -1
-    end
-
-    test "remove/1 deletes the underlying ETS table", ctx do
-      mem = open_mem(ctx)
-      table_id = mem.table.ref
-
-      assert :ets.info(table_id) != :undefined
-
-      :ok = Brokerable.remove(mem)
-
-      assert :ets.info(table_id) == :undefined
+      assert :ets.info(table_ref) == :undefined
     end
   end
 end

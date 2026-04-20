@@ -104,7 +104,9 @@ defmodule GoblinTest do
       assert :val1 == Goblin.get(ctx.db, :key1)
       assert :val2 == Goblin.get(ctx.db, :key2)
       assert nil == Goblin.get(ctx.db, :key3)
-      assert [{:key1, :val1}, {:key2, :val2}] == Goblin.get_multi(ctx.db, [:key1, :key2, :key3])
+      assert %{key1: :val1, key2: :val2} ==
+               Map.new(Goblin.get_multi(ctx.db, [:key1, :key2, :key3]))
+
       assert [{:key1, :val1}, {:key2, :val2}] == Goblin.scan(ctx.db) |> Enum.to_list()
     end
 
@@ -380,9 +382,9 @@ defmodule GoblinTest do
       end
       |> Task.await_many()
 
-      assert Goblin.get_multi(ctx.db, [:key1, :key2]) in for(
+      assert Map.new(Goblin.get_multi(ctx.db, [:key1, :key2])) in for(
                n <- 1..20,
-               do: [{:key1, n}, {:key2, n}]
+               do: %{key1: n, key2: n}
              )
     end
 
@@ -740,11 +742,10 @@ defmodule GoblinTest do
                 )
             ) do
         tag = make_ref()
-        sorted_pairs = List.keysort(pairs, 0)
-        keys = Enum.map(sorted_pairs, &elem(&1, 0))
+        keys = Enum.map(pairs, &elem(&1, 0))
 
         assert :ok == Goblin.put_multi(ctx.db, pairs, tag: tag)
-        assert sorted_pairs == Goblin.get_multi(ctx.db, keys, tag: tag)
+        assert Map.new(pairs) == Map.new(Goblin.get_multi(ctx.db, keys, tag: tag))
       end
     end
 
@@ -758,8 +759,7 @@ defmodule GoblinTest do
                   uniq_fun: &elem(&1, 0)
                 )
             ) do
-        sorted_pairs = List.keysort(pairs, 0)
-        keys = Enum.map(sorted_pairs, &elem(&1, 0))
+        keys = Enum.map(pairs, &elem(&1, 0))
 
         assert :ok ==
                  Goblin.transaction(ctx.db, fn tx ->
@@ -768,7 +768,7 @@ defmodule GoblinTest do
                    |> Goblin.Tx.commit()
                  end)
 
-        assert sorted_pairs == Goblin.get_multi(ctx.db, keys, tag: tag)
+        assert Map.new(pairs) == Map.new(Goblin.get_multi(ctx.db, keys, tag: tag))
 
         scan_result = Goblin.scan(ctx.db, tag: tag) |> Enum.to_list()
 

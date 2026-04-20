@@ -2,10 +2,8 @@ defmodule Goblin.Disk.TableTest do
   use ExUnit.Case, async: true
 
   alias Goblin.BloomFilter
-  alias Goblin.Brokerable
   alias Goblin.Disk
-  alias Goblin.Disk.{BinarySearchIterator, StreamIterator, Table}
-  alias Goblin.Queryable
+  alias Goblin.Disk.Table
 
   @moduletag :tmp_dir
 
@@ -107,73 +105,41 @@ defmodule Goblin.Disk.TableTest do
     end
   end
 
-  describe "Brokerable" do
-    test "id/1 returns the path" do
-      table = Table.new("my-path.goblin", 0, bf_opts())
-      assert Brokerable.id(table) == "my-path.goblin"
-    end
-
-    test "level_key/1 returns the level" do
-      table = Table.new("path", 3, bf_opts())
-      assert Brokerable.level_key(table) == 3
-    end
-
-    test "remove/1 deletes the backing file", ctx do
-      table = into_table(triples(1..5), ctx)
-      assert File.exists?(table.path)
-
-      assert :ok = Brokerable.remove(table)
-      refute File.exists?(table.path)
-    end
-  end
-
-  describe "Queryable.has_key?/2" do
+  describe "has_key?/2" do
     test "returns true for keys inside the range", ctx do
       table = into_table(triples(1..10), ctx)
 
       for n <- 1..10 do
-        assert Queryable.has_key?(table, n)
+        assert Table.has_key?(table, n)
       end
     end
 
     test "returns false for keys outside the range", ctx do
       table = into_table(triples(10..20), ctx)
 
-      refute Queryable.has_key?(table, 9)
-      refute Queryable.has_key?(table, 21)
+      refute Table.has_key?(table, 9)
+      refute Table.has_key?(table, 21)
     end
   end
 
-  describe "Queryable.search/3" do
-    test "returns a BinarySearchIterator when keys are in range", ctx do
-      table = into_table(triples(1..10), ctx)
-      assert %BinarySearchIterator{} = Queryable.search(table, [5], 100)
-    end
-
-    test "returns [] when no requested keys fall inside the range", ctx do
-      table = into_table(triples(10..20), ctx)
-      assert Queryable.search(table, [5, 25], 100) == []
-    end
-  end
-
-  describe "Queryable.stream/4" do
-    test "returns a StreamIterator when bounds overlap the range", ctx do
+  describe "within_bounds?/3" do
+    test "returns true when bounds overlap the key range", ctx do
       table = into_table(triples(10..20), ctx)
 
-      assert %StreamIterator{} = Queryable.stream(table, nil, nil, 100)
-      assert %StreamIterator{} = Queryable.stream(table, 15, nil, 100)
-      assert %StreamIterator{} = Queryable.stream(table, nil, 15, 100)
-      assert %StreamIterator{} = Queryable.stream(table, 5, 15, 100)
-      assert %StreamIterator{} = Queryable.stream(table, 10, 20, 100)
+      assert Table.within_bounds?(table, nil, nil)
+      assert Table.within_bounds?(table, 15, nil)
+      assert Table.within_bounds?(table, nil, 15)
+      assert Table.within_bounds?(table, 5, 15)
+      assert Table.within_bounds?(table, 10, 20)
     end
 
-    test "returns [] when bounds do not overlap", ctx do
+    test "returns false when bounds do not overlap", ctx do
       table = into_table(triples(10..20), ctx)
 
-      assert Queryable.stream(table, 21, nil, 100) == []
-      assert Queryable.stream(table, nil, 9, 100) == []
-      assert Queryable.stream(table, 21, 30, 100) == []
-      assert Queryable.stream(table, 1, 9, 100) == []
+      refute Table.within_bounds?(table, 21, nil)
+      refute Table.within_bounds?(table, nil, 9)
+      refute Table.within_bounds?(table, 21, 30)
+      refute Table.within_bounds?(table, 1, 9)
     end
   end
 end

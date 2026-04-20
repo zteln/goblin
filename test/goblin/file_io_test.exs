@@ -59,7 +59,7 @@ defmodule Goblin.FileIOTest do
   describe "append/3 and read/1" do
     test "round-trips a single term with block-aligned size", ctx do
       io = open_write(ctx)
-      term = {:put, 0, :a, "v1"}
+      term = {:a, 0, "v1"}
 
       assert {:ok, size} = FileIO.append(io, term)
       assert size > 0
@@ -232,8 +232,8 @@ defmodule Goblin.FileIOTest do
     test "streams appended entries in order and halts at EOF", ctx do
       io = open_write(ctx)
 
-      entries_a = [{:put, 0, :a, "v1"}, {:put, 1, :b, "v2"}]
-      entries_b = [{:remove, 2, :a}]
+      entries_a = [{:a, 0, "v1"}, {:b, 1, "v2"}]
+      entries_b = [{:a, 2, :"$goblin_tombstone"}]
 
       {:ok, _} = FileIO.append(io, entries_a)
       {:ok, _} = FileIO.append(io, entries_b)
@@ -246,7 +246,7 @@ defmodule Goblin.FileIOTest do
 
     test "truncate?: true trims trailing garbage", ctx do
       io = open_write(ctx)
-      entries = [{:put, 0, :a, "v1"}]
+      entries = [{:a, 0, "v1"}]
       {:ok, valid_size} = FileIO.append(io, entries)
       :ok = FileIO.close(io)
 
@@ -268,9 +268,9 @@ defmodule Goblin.FileIOTest do
 
     test "truncate?: true trims a partially-flushed trailing block", ctx do
       io = open_write(ctx)
-      entries = [{:put, 0, :a, "v1"}]
+      entries = [{:a, 0, "v1"}]
       {:ok, valid_size} = FileIO.append(io, entries)
-      {:ok, _} = FileIO.append(io, [{:put, 1, :b, "v2"}])
+      {:ok, _} = FileIO.append(io, [{:b, 1, "v2"}])
       :ok = FileIO.close(io)
 
       # Simulate a crash mid-flush: keep the first full block, truncate the
@@ -293,7 +293,7 @@ defmodule Goblin.FileIOTest do
 
     test "leaves trailing garbage in place when truncate? is not set", ctx do
       io = open_write(ctx)
-      entries = [{:put, 0, :a, "v1"}]
+      entries = [{:a, 0, "v1"}]
       {:ok, valid_size} = FileIO.append(io, entries)
       :ok = FileIO.close(io)
 
@@ -322,7 +322,7 @@ defmodule Goblin.FileIOTest do
   describe "sync/1" do
     test "syncs a writable handle", ctx do
       io = open_write(ctx)
-      {:ok, _size} = FileIO.append(io, {:put, 0, :a, "v1"})
+      {:ok, _size} = FileIO.append(io, {:a, 0, "v1"})
 
       assert :ok = FileIO.sync(io)
     end

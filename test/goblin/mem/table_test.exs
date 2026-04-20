@@ -29,15 +29,6 @@ defmodule Goblin.Mem.TableTest do
     end
   end
 
-  describe "remove/3" do
-    test "inserts a tombstone marker", ctx do
-      :ok = Table.insert(ctx.table, :key, 0, "value")
-      :ok = Table.remove(ctx.table, :key, 1)
-
-      assert {:key, 1, :"$goblin_tombstone"} == Table.get(ctx.table, :key, 1)
-    end
-  end
-
   describe "search/3" do
     test "finds the latest version before the given seq", ctx do
       :ok = Table.insert(ctx.table, :key, 0, "v0")

@@ -2,7 +2,8 @@ defmodule Goblin.CompactorTest do
   use ExUnit.Case, async: true
 
   alias Goblin.{Compactor, Disk}
-  alias Goblin.Disk.{StreamIterator, Table}
+  alias Goblin.Disk
+  alias Goblin.Disk.Table
 
   @moduletag :tmp_dir
 
@@ -184,11 +185,7 @@ defmodule Goblin.CompactorTest do
       # Read back the merged data to verify correctness
       [merged] = new_tables
 
-      data =
-        Goblin.Iterator.linear_stream(fn ->
-          StreamIterator.new(merged)
-        end)
-        |> Enum.to_list()
+      data = Disk.stream(merged) |> Enum.to_list()
 
       assert [{1, 0, "a"}, {2, 2, "b"}, {3, 1, "c"}, {4, 3, "d"}] == data
     end
