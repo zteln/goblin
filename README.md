@@ -17,7 +17,7 @@ Install by adding `:goblin` as a dependency:
 ```elixir
 def deps do
   [
-    {:goblin, "~> 0.9.0"}
+    {:goblin, "~> 0.10.0"}
   ]
 end
 ```
@@ -121,7 +121,7 @@ Goblin.transaction(db, fn tx ->
     Goblin.Tx.abort(tx)
   end
 end)
-# => 2 (if committed) or {:error, :aborted} (if aborted)
+# => :ok (if committed) or {:error, :aborted} (if aborted)
 ```
 
 Read transactions (`Goblin.read/2`) take a snapshot and do not block each other.
@@ -198,35 +198,7 @@ Goblin.get(MyApp.DB, :alice)
 # => "Alice"
 ```
 
-## Disk table format
-
-Database files use the `<number>.goblin` naming convention.
-
-| SST | SEPARATOR | FOOTER |
-| --- | --- | --- |
-| n * 1024 bytes | 16 bytes  | variable size |
-
-### Sorted String Table (SST)
-
-The SST consists of multiple blocks.
-Each block is a multiple of 1024 bytes and contains:
-- **Block ID** (16 bytes): `"GOBLINBLOCK00000"`
-- **Span** (2 bytes): Number of blocks this entry spans
-- **Data** (variable): Erlang term encoding of `{sequence, key, value}`
-- **Padding** (variable): Zero-filled to reach n * 1024 bytes
-
-### Footer
-
-The footer contains metadata for efficient lookups:
-- **Separator** (16 bytes): `"GOBLINSEP0000000"`
-- **Bloom filter** (variable): Encoded bloom filter for membership testing
-- **Key range** (variable): Min and max keys in the SST
-- **Sequence range** (variable): Lowest and highest sequence numbers
-- **Metadata** (57 bytes): Positions and sizes of footer components
-- **CRC** (32-bit): Checksum over SST, bloom filter, key range, sequence range and metadata
-- **Magic** (16 bytes): `"GOBLINFILE000000"`
-
-### Migration
+## Migrations
 
 Goblin does not perform automatic data migration between versions.
 To upgrade, stream entries from the old database into a new instance running the newer version.

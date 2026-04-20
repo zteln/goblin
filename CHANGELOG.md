@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.10.0 ()
+* Breaking changes
+    * Format for writes in the WAL have changed.
+* Changes
+    * Large refactoring of the code base, simplifying a lot of algorithms and unifying common code
+
 ## v0.9.0 (2026-04-14)
 * Enhancements
     * Transaction management has been optimized
