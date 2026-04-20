@@ -2,7 +2,7 @@ defmodule Goblin.Disk do
   @moduledoc false
 
   alias Goblin.FileIO
-  alias Goblin.Disk.Table
+  alias Goblin.Disk.{Table, BinarySearch}
 
   @spec into_table(Enumerable.t(Goblin.triple()), keyword()) ::
           {:ok, list(Table.t())} | {:error, term()}
@@ -68,6 +68,68 @@ defmodule Goblin.Disk do
     after
       FileIO.close(io)
     end
+  end
+
+  def has_key?(table, key) do
+    Table.has_key?(table, key)
+  end
+
+  def search(table, keys, seq) do
+    Stream.resource(
+      fn ->
+        io = FileIO.open!(table.path, block_size: Table.block_size())
+        BinarySearch.new(table, io, keys, seq)
+      end,
+      fn bs ->
+        case BinarySearch.next(bs) do
+          {:ok, triple, bs} ->
+            {[triple], bs}
+
+          {:ok, bs} ->
+            {:halt, bs}
+
+          error ->
+            FileIO.close(bs.io)
+            raise "iteration failed with error: #{inspect(error)}"
+        end
+      end,
+      fn bs ->
+        FileIO.close(bs.io)
+      end
+    )
+  end
+
+  def stream(table), do: stream_table(table, :infinity)
+
+  def stream(table, min, max, seq) do
+    if Table.within_bounds?(table, min, max) do
+      stream_table(table, seq)
+    else
+      []
+    end
+  end
+
+  defp stream_table(table, seq) do
+    Stream.resource(
+      fn -> FileIO.open!(table.path, block_size: Table.block_size()) end,
+      fn io ->
+        case FileIO.read(io) do
+          {:ok, {_, s, _} = triple} when s <= seq ->
+            {[triple], io}
+
+          {:ok, _} ->
+            {[], io}
+
+          :eof ->
+            {:halt, io}
+
+          error ->
+            FileIO.close(io)
+            raise "iteration failed with error: #{inspect(error)}"
+        end
+      end,
+      fn io -> FileIO.close(io) end
+    )
   end
 
   defp open_new_table(opts) do

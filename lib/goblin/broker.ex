@@ -1,8 +1,6 @@
 defmodule Goblin.Broker do
   @moduledoc false
 
-  alias Goblin.{Brokerable, Queryable}
-
   @max_retries 60
 
   @spec new() :: :ets.table()
@@ -21,15 +19,13 @@ defmodule Goblin.Broker do
     :ok
   end
 
-  @spec add_table(:ets.table(), Brokerable.t()) :: :ok
-  def add_table(broker, table) do
-    id = Brokerable.id(table)
-    level_key = Brokerable.level_key(table)
+  @spec add_table(:ets.table(), term(), -1 | non_neg_integer(), any(), (-> :ok)) :: :ok
+  def add_table(broker, id, level_key, table, remover) do
     counter = inc_get_counter(broker)
     key = {counter, :table, id}
     soft_deleted_at = nil
     retries = {nil, 0}
-    table_item = {key, soft_deleted_at, retries, level_key, table}
+    table_item = {key, soft_deleted_at, retries, level_key, table, remover}
     :ets.insert(broker, table_item)
 
     case :ets.lookup(broker, :meta) do
@@ -47,11 +43,10 @@ defmodule Goblin.Broker do
   end
 
   @spec soft_delete_table(:ets.table(), term()) :: :ok
-  def soft_delete_table(broker, table) do
-    id = Brokerable.id(table)
+  def soft_delete_table(broker, id) do
     soft_deleted_at = inc_get_counter(broker)
 
-    case :ets.match(broker, {{:"$1", :table, id}, :_, :_, :_, :_}) do
+    case :ets.match(broker, {{:"$1", :table, id}, :_, :_, :_, :_, :_}) do
       [] ->
         :ok
 
@@ -63,8 +58,8 @@ defmodule Goblin.Broker do
 
   @spec hard_delete_table(:ets.table(), term()) :: :ok | {:error, :too_many_retries}
   def hard_delete_table(broker, id) do
-    case :ets.match_object(broker, {{:_, :table, id}, :_, :_, :_, :_}) do
-      [{_, _, {_, retries}, _, _}] when retries > @max_retries ->
+    case :ets.match_object(broker, {{:_, :table, id}, :_, :_, :_, :_, :_}) do
+      [{_, _, {_, retries}, _, _, _}] when retries > @max_retries ->
         {:error, :too_many_retries}
 
       [table_item] ->
@@ -80,7 +75,7 @@ defmodule Goblin.Broker do
     |> Enum.each(&try_hard_delete(broker, &1))
   end
 
-  @spec filter_tables(:ets.table(), non_neg_integer(), keyword()) :: list(Queryable.t())
+  @spec filter_tables(:ets.table(), non_neg_integer(), keyword()) :: list(any())
   def filter_tables(broker, tx_counter, opts \\ []) do
     predicate = opts[:filter] || fn _ -> true end
     level_key = opts[:level_key] || :_
@@ -120,13 +115,14 @@ defmodule Goblin.Broker do
       soft_deleted_at,
       {_, retries},
       _,
-      table
+      table,
+      remover
     } = table_item
 
     case table_free?(broker, insert_counter, soft_deleted_at) do
       true ->
         :ets.delete(broker, key)
-        Brokerable.remove(table)
+        remover.(table)
 
       false ->
         timer_ref = Process.send_after(self(), {:retry_hard_delete, id}, 1000)
@@ -164,7 +160,7 @@ defmodule Goblin.Broker do
   defp visible_tables_ms(level_key, counter) do
     [
       {
-        {{:"$1", :table, :_}, :"$2", :_, level_key, :"$3"},
+        {{:"$1", :table, :_}, :"$2", :_, level_key, :"$3", :_},
         [{:andalso, {:is_integer, :"$1"}, {:<, :"$1", counter}, {:<, counter, :"$2"}}],
         [:"$3"]
       }
@@ -174,7 +170,7 @@ defmodule Goblin.Broker do
   defp soft_deleted_tables_ms() do
     [
       {
-        {{:_, :table, :_}, :"$2", {:"$3", :_}, :_, :_},
+        {{:_, :table, :_}, :"$2", {:"$3", :_}, :_, :_, :_},
         [{:andalso, {:is_integer, :"$2"}, {:==, :"$3", nil}}],
         [:"$_"]
       }

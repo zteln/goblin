@@ -1,54 +1,26 @@
 defmodule Goblin.Iterator do
   @moduledoc false
 
-  @spec linear_stream((-> Goblin.Iterable.t())) :: Enumerable.t(Goblin.triple())
-  def linear_stream(init_f) do
+  @spec k_merge((-> list(Enumerable.t())), keyword()) :: Enumerable.t()
+  def k_merge(init, opts \\ []) do
     Stream.resource(
-      fn ->
-        init_f.()
-        |> Goblin.Iterable.init()
-      end,
-      fn iterator ->
-        case iterate(iterator) do
-          :ok -> {:halt, nil}
-          {triple, iterator} -> {[triple], iterator}
-        end
-      end,
-      fn _ -> :ok end
+      fn -> init.() |> build_heap() end,
+      fn heap -> step(heap, opts) end,
+      fn heap -> close_all(heap, opts) end
     )
   end
 
-  @spec k_merge_stream((-> [Goblin.Iterable.t()]), keyword()) ::
-          Enumerable.t(Goblin.triple())
-  def k_merge_stream(init_f, opts \\ []) do
-    Stream.resource(
-      fn ->
-        init_f.()
-        |> Enum.reduce(:gb_trees.empty(), fn iterator, acc ->
-          iterator = Goblin.Iterable.init(iterator)
-
-          case iterate(iterator) do
-            :ok ->
-              acc
-
-            {{key, seq, _val} = triple, iterator} ->
-              :gb_trees.insert({key, -seq, make_ref()}, {iterator, triple}, acc)
-          end
-        end)
-      end,
-      &k_merge(&1, opts),
-      fn heap ->
-        :gb_trees.values(heap)
-        |> Enum.each(fn {iterator, _} ->
-          Goblin.Iterable.deinit(iterator)
-        end)
-
-        opts[:after] && opts[:after].()
+  defp build_heap(streams) do
+    Enum.reduce(streams, :gb_trees.empty(), fn stream, acc ->
+      cont = fn cmd ->
+        Enumerable.reduce(stream, cmd, fn e, _ -> {:suspend, e} end)
       end
-    )
+
+      insert_next(acc, cont)
+    end)
   end
 
-  defp k_merge(heap, opts) do
+  defp step(heap, opts) do
     filter_tombstones? = Keyword.get(opts, :filter_tombstones?, true)
     min = opts[:min]
     max = opts[:max]
@@ -71,56 +43,73 @@ defmodule Goblin.Iterator do
     end
   end
 
+  defp close_all(heap, opts) do
+    :gb_trees.values(heap)
+    |> Enum.each(fn {cont, _} -> cont.({:halt, nil}) end)
+
+    opts[:after] && opts[:after].()
+  end
+
+  defp insert_next(heap, cont) do
+    case advance(cont) do
+      {:ok, {k, s, _v} = triple, next_cont} ->
+        :gb_trees.insert({k, -s, make_ref()}, {next_cont, triple}, heap)
+
+      :done ->
+        heap
+    end
+  end
+
+  defp advance(cont) do
+    case cont.({:cont, nil}) do
+      {:suspended, triple, next_cont} -> {:ok, triple, next_cont}
+      _ -> :done
+    end
+  end
+
   defp take_smallest(heap) do
     if :gb_trees.is_empty(heap) do
       :empty
     else
-      {{key, _, _}, {_iterator, triple}} = :gb_trees.smallest(heap)
-      heap = advance_next_key(heap, key)
+      {{key, _, _}, {cont, triple}, heap} = :gb_trees.take_smallest(heap)
+
+      heap =
+        heap
+        |> drain_key(key)
+        |> advance_past_key(cont, key)
+
       {triple, heap}
     end
   end
 
-  defp advance_next_key(heap, key) do
+  defp drain_key(heap, key) do
     if :gb_trees.is_empty(heap) do
       heap
     else
-      case :gb_trees.smallest(heap) do
-        {{k, _, _}, _cursor} when k == key ->
-          {_, value, heap} = :gb_trees.take_smallest(heap)
-          heap = reinsert_advanced(heap, key, value)
-          advance_next_key(heap, key)
+      {{k, _, _}, _} = :gb_trees.smallest(heap)
 
-        _ ->
-          heap
+      if k == key do
+        {_, {cont, _}, heap} = :gb_trees.take_smallest(heap)
+
+        heap
+        |> advance_past_key(cont, key)
+        |> drain_key(key)
+      else
+        heap
       end
     end
   end
 
-  defp reinsert_advanced(heap, key, cursor) do
-    case advance_cursor(cursor, key) do
-      nil -> heap
-      {_, {k, s, _}} = cursor -> :gb_trees.insert({k, -s, make_ref()}, cursor, heap)
-    end
-  end
+  defp advance_past_key(heap, cont, key) do
+    case advance(cont) do
+      :done ->
+        heap
 
-  defp advance_cursor({iterator, {key1, _, _}}, key2) when key1 == key2 do
-    case iterate(iterator) do
-      :ok ->
-        nil
+      {:ok, {k, _, _}, next_cont} when k == key ->
+        advance_past_key(heap, next_cont, key)
 
-      {{k, _, _} = triple, iterator} when k == key2 ->
-        advance_cursor({iterator, triple}, key2)
-
-      {triple, iterator} ->
-        {iterator, triple}
-    end
-  end
-
-  defp iterate(iterator) do
-    case Goblin.Iterable.next(iterator) do
-      :ok -> Goblin.Iterable.deinit(iterator)
-      {out, iterator} -> {out, iterator}
+      {:ok, {k, s, _} = triple, next_cont} ->
+        :gb_trees.insert({k, -s, make_ref()}, {next_cont, triple}, heap)
     end
   end
 end

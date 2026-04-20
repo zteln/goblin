@@ -33,11 +33,6 @@ defmodule Goblin.Mem.Table do
     :ok
   end
 
-  @spec remove(t(), term(), non_neg_integer()) :: :ok
-  def remove(table, key, seq) do
-    insert(table, key, seq, :"$goblin_tombstone")
-  end
-
   @spec get(t(), term(), non_neg_integer()) :: {term(), non_neg_integer(), term()} | :not_found
   def get(table, key, seq) do
     case :ets.lookup(table.ref, {key, -seq}) do

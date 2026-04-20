@@ -3,7 +3,6 @@ defmodule Goblin.Flusher do
 
   alias Goblin.{
     Mem,
-    Iterator,
     Disk
   }
 
@@ -48,10 +47,7 @@ defmodule Goblin.Flusher do
   @spec flush(t(), Mem.t()) ::
           {:ok, [Disk.Table.t()], Mem.t()} | {:error, term()}
   def flush(flusher, mt) do
-    stream =
-      Iterator.linear_stream(fn ->
-        Mem.Iterator.new(mt, nil)
-      end)
+    stream = Mem.stream(mt, :infinity)
 
     with {:ok, dts} <- Disk.into_table(stream, flusher.opts) do
       {:ok, dts, mt}

@@ -76,8 +76,8 @@ defmodule Goblin.Compactor do
       ] ++ compactor.opts
 
     stream =
-      Iterator.k_merge_stream(
-        fn -> Enum.map(source_dts ++ target_dts, &Disk.StreamIterator.new/1) end,
+      Iterator.k_merge(
+        fn -> Enum.map(source_dts ++ target_dts, &Disk.stream/1) end,
         filter_tombstones?: filter_tombstones?
       )
 

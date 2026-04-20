@@ -66,54 +66,27 @@ defmodule Goblin.Disk.Table do
     }
   end
 
+  @spec has_key?(t(), term()) :: boolean()
+  def has_key?(table, key),
+    do: within_min_max?(table, key) and bloom_filter_member?(table, key)
+
   @spec block_size() :: non_neg_integer()
   def block_size, do: @table_block_size
 
-  defimpl Goblin.Brokerable do
-    alias Goblin.FileIO
+  @spec within_bounds?(t(), term(), term()) :: boolean()
+  def within_bounds?(_table, nil, nil), do: true
+  def within_bounds?(%{key_range: {_, max}}, min, nil), do: min <= max
+  def within_bounds?(%{key_range: {min, _}}, nil, max), do: min <= max
 
-    def id(table), do: table.path
-    def level_key(table), do: table.level_key
-    def remove(table), do: FileIO.remove(table.path)
-  end
+  def within_bounds?(%{key_range: {min1, max1}}, min2, max2),
+    do: min2 <= max1 and min1 <= max2
 
-  defimpl Goblin.Queryable do
-    alias Goblin.Disk.{BinarySearchIterator, StreamIterator}
+  defp within_min_max?(%{key_range: {min, max}}, key) when min <= key and key <= max,
+    do: true
 
-    def has_key?(table, key) do
-      within_min_max?(table, key) and bloom_filter_member?(table, key)
-    end
+  defp within_min_max?(_table, _key), do: false
 
-    def search(table, keys, seq) do
-      case Enum.filter(keys, fn key ->
-             within_min_max?(table, key) and bloom_filter_member?(table, key)
-           end) do
-        [] -> []
-        keys -> BinarySearchIterator.new(table, keys, seq)
-      end
-    end
-
-    def stream(table, min, max, seq) do
-      case within_bounds?(table, min, max) do
-        true -> StreamIterator.new(table, seq)
-        false -> []
-      end
-    end
-
-    defp within_min_max?(%{key_range: {min, max}}, key) when min <= key and key <= max,
-      do: true
-
-    defp within_min_max?(_table, _key), do: false
-
-    defp bloom_filter_member?(table, key) do
-      BloomFilter.member?(table.bloom_filter, key)
-    end
-
-    defp within_bounds?(_table, nil, nil), do: true
-    defp within_bounds?(%{key_range: {_, max}}, min, nil), do: min <= max
-    defp within_bounds?(%{key_range: {min, _}}, nil, max), do: min <= max
-
-    defp within_bounds?(%{key_range: {min1, max1}}, min2, max2),
-      do: min2 <= max1 and min1 <= max2
+  defp bloom_filter_member?(table, key) do
+    BloomFilter.member?(table.bloom_filter, key)
   end
 end

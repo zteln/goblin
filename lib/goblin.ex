@@ -170,8 +170,14 @@ defmodule Goblin do
     try do
       with :ok <- start_transaction(db, tx_key),
            {max_level_key, seq, tx_id} <- Broker.register_tx(ref, tx_key),
-           {:ok, tx, reply} <-
-             run_transaction(db, Tx.Write.new(ref, tx_id, seq, max_level_key), callback),
+           tx = %Tx{
+             mode: :write,
+             broker: ref,
+             tx_id: tx_id,
+             sequence: seq,
+             max_level_key: max_level_key
+           },
+           {:ok, tx, reply} <- run_transaction(db, tx, callback),
            :ok <- commit_transaction(db, tx) do
         reply
       end
@@ -334,7 +340,13 @@ defmodule Goblin do
     try do
       {max_level_key, seq, tx_id} = Broker.register_tx(ref, tx_key)
 
-      Tx.Read.new(ref, tx_id, seq, max_level_key)
+      %Tx{
+        mode: :read,
+        broker: ref,
+        tx_id: tx_id,
+        sequence: seq,
+        max_level_key: max_level_key
+      }
       |> callback.()
     after
       Broker.unregister_tx(ref, tx_key)
@@ -394,7 +406,7 @@ defmodule Goblin do
 
   ## Returns
 
-  - A list of `{key, value}` tuples for keys found, sorted by key
+  - A list of `{key, value}` tuples for keys found, in unspecified order
 
   ## Examples
 
@@ -444,39 +456,17 @@ defmodule Goblin do
   def scan(db, opts \\ []) do
     ref = ext_ref(db)
     tx_key = make_ref()
-    min = opts[:min]
-    max = opts[:max]
-    tag = opts[:tag]
 
-    {min, max} =
-      cond do
-        is_nil(tag) -> {min, max}
-        is_nil(min) and is_nil(max) -> {min, max}
-        is_nil(max) -> {{:"$goblin_tag", tag, min}, max}
-        is_nil(min) -> {min, {:"$goblin_tag", tag, max}}
-        true -> {{:"$goblin_tag", tag, min}, {:"$goblin_tag", tag, max}}
-      end
-
-    Goblin.Iterator.k_merge_stream(
+    Tx.scan(
       fn ->
         {_max_level_key, seq, tx_id} = Broker.register_tx(ref, tx_key)
-
-        Broker.filter_tables(ref, tx_id)
-        |> Enum.map(&Goblin.Queryable.stream(&1, min, max, seq))
+        {seq, Broker.filter_tables(ref, tx_id)}
       end,
-      after: fn ->
+      Keyword.put(opts, :after, fn ->
         Broker.unregister_tx(ref, tx_key)
         GenServer.cast(db, :try_clean_up)
-      end,
-      min: min,
-      max: max
+      end)
     )
-    |> Stream.flat_map(fn
-      {{:"$goblin_tag", ^tag, key}, _seq, value} -> [{key, value}]
-      {{:"$goblin_tag", _tag, _key}, _seq, _value} when is_nil(tag) -> []
-      {key, _seq, value} when is_nil(tag) -> [{key, value}]
-      _ -> []
-    end)
   end
 
   @doc """
@@ -591,6 +581,7 @@ defmodule Goblin do
   def handle_call({:commit_tx, tx}, {pid, _}, %{writer: {{pid, _}, _, monitor_ref}} = state) do
     Process.demonitor(monitor_ref)
     %{writes: writes, sequence: seq} = tx
+    writes = Enum.reverse(writes)
 
     with {:ok, mem_table} <- Mem.append_commits(state.mem_table, writes),
          :ok <- Broker.put_sequence(state.broker, seq) do
@@ -660,17 +651,17 @@ defmodule Goblin do
            Manifest.add_flush(
              state.manifest,
              Enum.map(dts, & &1.path),
-             Mem.disk_path(mt),
+             mt.path,
              Mem.sequence(mt)
            ),
          :ok <- Mem.remove_disk(mt) do
       compactor =
         Enum.reduce(dts, state.compactor, fn dt, acc ->
-          Broker.add_table(state.broker, dt)
+          Broker.add_table(state.broker, dt.path, dt.level_key, dt, &File.rm!(&1.path))
           Compactor.put_into_level(acc, dt)
         end)
 
-      Broker.soft_delete_table(state.broker, mt)
+      Broker.soft_delete_table(state.broker, mt.path)
       state = %{state | manifest: manifest, compactor: compactor, flushing: nil}
       {:noreply, state, {:continue, :flush}}
     else
@@ -691,11 +682,11 @@ defmodule Goblin do
            ) do
       compactor =
         Enum.reduce(new_dts, state.compactor, fn dt, acc ->
-          Broker.add_table(state.broker, dt)
+          Broker.add_table(state.broker, dt.path, dt.level_key, dt, &File.rm!(&1.path))
           Compactor.put_into_level(acc, dt)
         end)
 
-      Enum.each(old_dts, &Broker.soft_delete_table(state.broker, &1))
+      Enum.each(old_dts, &Broker.soft_delete_table(state.broker, &1.path))
 
       state = %{state | manifest: manifest, compactor: compactor, compacting: nil}
       {:noreply, state, {:continue, :flush}}
@@ -855,7 +846,7 @@ defmodule Goblin do
     dts
     |> Enum.reduce_while({:ok, state}, fn dt, {:ok, acc} ->
       with {:ok, dt} <- Disk.from_file(dt) do
-        Broker.add_table(acc.broker, dt)
+        Broker.add_table(acc.broker, dt.path, dt.level_key, dt, &File.rm!(&1.path))
         compactor = Compactor.put_into_level(acc.compactor, dt)
         {:cont, {:ok, %{acc | compactor: compactor}}}
       else
@@ -871,7 +862,7 @@ defmodule Goblin do
   end
 
   defp add_new_wal_to_manifest(state, nil) do
-    with {:ok, manifest} <- Manifest.add_wal(state.manifest, Mem.disk_path(state.mem_table)) do
+    with {:ok, manifest} <- Manifest.add_wal(state.manifest, state.mem_table.path) do
       {:ok, %{state | manifest: manifest}}
     end
   end
@@ -894,8 +885,7 @@ defmodule Goblin do
 
   defp open_mem_table(state, wal_path, opts) do
     with {:ok, mt} <- Mem.new(wal_path, opts) do
-      Broker.add_table(state.broker, mt)
-
+      Broker.add_table(state.broker, wal_path, -1, mt, &Mem.delete/1)
       {:ok, %{state | mem_table: mt}, Mem.sequence(mt)}
     end
   end
@@ -935,7 +925,7 @@ defmodule Goblin do
   defp run_transaction(db, tx, callback) do
     case callback.(tx) do
       {:commit, tx, reply} ->
-        {:ok, Tx.Write.complete(tx), reply}
+        {:ok, tx, reply}
 
       :abort ->
         abort_transaction(db)
