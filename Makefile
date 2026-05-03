@@ -1,6 +1,9 @@
 .PHONY: benchmarks release
 
-benchmarks:
+test:
+	mix test --include property_tests
+
+benchmarks: test
 	elixir benchmarks/create_fix_repos.exs
 	elixir benchmarks/put.exs
 	elixir benchmarks/put_multi.exs

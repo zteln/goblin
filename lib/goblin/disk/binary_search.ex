@@ -12,10 +12,15 @@ defmodule Goblin.Disk.BinarySearch do
     low: 1
   ]
 
+  @type t :: %__MODULE__{}
+
+  @spec new(Table.t(), FileIO.t(), list(term()), non_neg_integer()) :: t()
   def new(table, io, keys, seq) do
     %__MODULE__{io: io, keys: keys, max_seq: seq, high: table.no_blocks}
   end
 
+  @spec next(t()) ::
+          {:ok, t()} | {:ok, {term(), non_neg_integer(), term()}, t()} | {:error, term()}
   def next(%{keys: []} = bs), do: {:ok, bs}
 
   def next(bs) do
