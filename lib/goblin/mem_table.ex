@@ -4,10 +4,11 @@ defmodule Goblin.MemTable do
   alias Goblin.FileIO
 
   defstruct [
+    :id,
     :io,
-    :path,
     :ref,
-    :max_sequence
+    :max_sequence,
+    :mem_limit
   ]
 
   def new(path, opts) do
@@ -21,7 +22,14 @@ defmodule Goblin.MemTable do
           max(acc, seq)
         end)
 
-      {:ok, %__MODULE__{io: io, path: path, ref: ref, max_sequence: max_seq}}
+      {:ok,
+       %__MODULE__{
+         io: io,
+         id: path,
+         ref: ref,
+         max_sequence: max_seq,
+         mem_limit: opts[:mem_limit]
+       }}
     end
   end
 
@@ -34,7 +42,58 @@ defmodule Goblin.MemTable do
           seq
         end)
 
-      {:ok, %{mem_table | max_sequence: max_seq}}
+      mem_table = %{mem_table | max_sequence: max_seq}
+      maybe_rotate(mem_table)
+    end
+  end
+
+  def has_key?(mem_table, key) do
+    table_has_key?(mem_table.ref, key)
+  end
+
+  def search(mem_table, keys, seq) do
+    Enum.flat_map(keys, fn key ->
+      case search_table(mem_table.ref, key, seq) do
+        nil -> []
+        triple -> [triple]
+      end
+    end)
+  end
+
+  def stream(mem_table, max_seq \\ :infinity) do
+    Stream.resource(
+      fn -> iterate(mem_table.ref) end,
+      fn
+        :end_of_iteration ->
+          {:halt, nil}
+
+        {key, seq} = idx when seq < max_seq ->
+          case get(mem_table.ref, key, seq) do
+            nil -> {[], iterate(mem_table.ref, idx)}
+            triple -> {[triple], iterate(mem_table.ref, idx)}
+          end
+
+        idx ->
+          {[], iterate(mem_table.ref, idx)}
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  defp maybe_rotate(mem_table) do
+    if size(mem_table.ref) > mem_table.mem_limit do
+      rotate(mem_table)
+    else
+      {:ok, mem_table}
+    end
+  end
+
+  defp rotate(mem_table) do
+    with :ok <- FileIO.close(mem_table.io),
+         # increment path
+         {:ok, io} <- FileIO.open(mem_table.id, write?: true) do
+      ref = new_table()
+      {:ok, mem_table, %{mem_table | io: io, ref: ref}}
     end
   end
 
@@ -54,7 +113,7 @@ defmodule Goblin.MemTable do
     end
   end
 
-  defp search(ref, key, seq) do
+  defp search_table(ref, key, seq) do
     case :ets.next(ref, {key, -seq}) do
       {k, s} when key == k ->
         [{_, value}] = :ets.lookup(ref, {k, s})
@@ -65,7 +124,7 @@ defmodule Goblin.MemTable do
     end
   end
 
-  defp has_key?(ref, key) do
+  defp table_has_key?(ref, key) do
     case :ets.prev(ref, {key, 1}) do
       {k, _} when k == key -> true
       _ -> false
@@ -90,4 +149,8 @@ defmodule Goblin.MemTable do
   defp handle_iteration(_ref, :"$end_of_table"), do: :end_of_iteration
   defp handle_iteration(_ref, {key, seq}), do: {key, abs(seq)}
   defp handle_iteration(ref, idx), do: iterate(ref, idx)
+
+  defp size(ref) do
+    :ets.info(ref, :memory) * :erlang.system_info(:wordsize)
+  end
 end

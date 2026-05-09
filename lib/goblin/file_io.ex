@@ -59,6 +59,64 @@ defmodule Goblin.FileIO do
     end
   end
 
+  @spec stream_write(Enumerable.t(), any(), (any(), any() -> any()), keyword()) ::
+          Enumerable.t({:ok, any(), non_neg_integer()} | {:error, term()})
+  def stream_write(stream, init, reducer, opts) do
+    max_size = opts[:max_size]
+    block_size = opts[:block_size]
+    compress? = opts[:compress?]
+    filer = opts[:filer]
+
+    stream
+    |> Stream.transform(
+      fn -> {nil, init, 0} end,
+      fn
+        _data, :halt ->
+          {:halt, {nil, nil, 0}}
+
+        data, {file, acc, size} when size + block_size >= max_size ->
+          with {:ok, data_size} <- append(file, data, compress?: compress?),
+               acc = reducer.(data, acc, size + data_size),
+               {:ok, acc_size} <- append(file, acc, compress?: compress?),
+               :ok <- close(file) do
+            {[{:ok, acc, size + data_size + acc_size}], {nil, init, 0}}
+          else
+            error ->
+              close(file)
+              {[error], :halt}
+          end
+
+        data, {file, acc, size} ->
+          file = file || open!(filer.(), write?: true, block_size: block_size)
+
+          case append(file, data, compress?: compress?) do
+            {:ok, data_size} ->
+              size = size + data_size
+              acc = reducer.(data, acc, size)
+              {[], {file, acc, size}}
+
+            error ->
+              close(file)
+              {[error], :halt}
+          end
+      end,
+      fn
+        {file, acc, _size} ->
+          with {:ok, _acc_size} <- append(file, acc, compress?: compress?),
+               :ok <- close(file) do
+            {[{:ok, acc}], nil}
+          end
+
+        _ ->
+          {[], nil}
+      end,
+      fn
+        {file, _acc, _size} -> close(file)
+        _ -> :ok
+      end
+    )
+  end
+
   @spec pread(t(), non_neg_integer() | :eof) :: {:ok, term()} | {:error, term()} | :eof
   def pread(_file, pos) when pos < 0, do: {:error, :invalid_position}
 

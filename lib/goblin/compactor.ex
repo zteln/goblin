@@ -8,14 +8,12 @@ defmodule Goblin.Compactor do
 
   defstruct [
     :opts,
-    levels: %{},
-    queue: :queue.new()
+    levels: %{}
   ]
 
   @type t :: %__MODULE__{
           opts: keyword(),
-          levels: %{non_neg_integer() => [Disk.Table.t()]},
-          queue: :queue.queue(non_neg_integer())
+          levels: %{non_neg_integer() => [Disk.Table.t()]}
         }
 
   @spec new(keyword()) :: t()
