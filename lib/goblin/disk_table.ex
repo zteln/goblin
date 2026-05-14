@@ -18,7 +18,15 @@ defmodule Goblin.DiskTable do
     no_blocks: 0
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          id: Path.t(),
+          level_key: non_neg_integer(),
+          bloom_filter: BloomFilter.t(),
+          key_range: {term(), term()},
+          seq_range: {non_neg_integer(), non_neg_integer()},
+          size: non_neg_integer(),
+          no_blocks: non_neg_integer()
+        }
 
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}

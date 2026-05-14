@@ -17,7 +17,13 @@ defmodule Goblin.Manifest do
 
   # track dirt (removed files) and periodically clean
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          io: FileIO.t(),
+          data_dir: Path.t(),
+          path: Path.t(),
+          size: non_neg_integer(),
+          snapshot: {non_neg_integer(), non_neg_integer(), list(Path.t())}
+        }
 
   @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
   def open(data_dir) do

@@ -1,6 +1,6 @@
 # Goblin
 
-A lightweight, embedded database for Elixir.
+A lightweight, embedded, LSM-tree database for Elixir.
 
 ## Features
 

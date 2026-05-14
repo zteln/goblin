@@ -18,7 +18,11 @@ defmodule Goblin.FileIO do
     :block_size
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          path: Path.t(),
+          iodev: :file.io_device(),
+          block_size: non_neg_integer()
+        }
 
   @spec open!(Path.t(), keyword()) :: t()
   def open!(path, opts \\ []) do
@@ -91,7 +95,7 @@ defmodule Goblin.FileIO do
               {[], {file, acc, size + data_size}}
 
             error ->
-              file && close(file)
+              close(file)
               {[error], :halt}
           end
       end,

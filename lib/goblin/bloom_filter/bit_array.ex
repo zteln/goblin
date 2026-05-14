@@ -33,7 +33,7 @@ defmodule Goblin.BloomFilter.BitArray do
       |> Enum.reduce(bit_array.bits, fn hash, acc ->
         byte_pos = div(hash, 8)
         bit_offset = rem(hash, 8)
-        <<left::binary-size(byte_pos), byte::8, right::binary>> = acc
+        <<left::binary-size(^byte_pos), byte::8, right::binary>> = acc
         <<left::binary, Bitwise.bor(byte, Bitwise.bsl(1, bit_offset))::8, right::binary>>
       end)
 

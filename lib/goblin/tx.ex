@@ -28,7 +28,14 @@ defmodule Goblin.Tx do
     commits: []
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          mode: :write | :read,
+          sequence: non_neg_integer(),
+          tx_id: non_neg_integer(),
+          view: :ets.table(),
+          max_level_key: -1 | non_neg_integer(),
+          commits: list({term(), non_neg_integer(), term()})
+        }
 
   @doc """
   Writes a key-value pair within a transaction.

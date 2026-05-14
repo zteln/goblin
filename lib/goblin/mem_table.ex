@@ -12,7 +12,14 @@ defmodule Goblin.MemTable do
     :filer
   ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          id: Path.t(),
+          io: FileIO.t(),
+          ref: :ets.table(),
+          max_sequence: non_neg_integer(),
+          mem_limit: non_neg_integer(),
+          filer: (-> Path.t())
+        }
 
   @spec new(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(path, opts) do
