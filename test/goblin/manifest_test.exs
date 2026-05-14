@@ -6,275 +6,240 @@ defmodule Goblin.ManifestTest do
   @moduletag :tmp_dir
 
   defp open_manifest(ctx) do
-    {:ok, manifest} = Manifest.open(ctx.tmp_dir)
-    manifest
+    {:ok, m} = Manifest.open(ctx.tmp_dir)
+    m
   end
 
-  describe "open/2" do
-    test "opens a fresh manifest with empty snapshot", ctx do
+  defp data_path(ctx, name), do: Path.join(ctx.tmp_dir, name)
+  defp manifest_path(ctx), do: data_path(ctx, "manifest.goblin")
+  defp manifest_tmp_path(ctx), do: manifest_path(ctx) <> ".tmp"
+
+  describe "open/1" do
+    test "returns an empty snapshot for a fresh directory", ctx do
       manifest = open_manifest(ctx)
 
-      assert %{sequence: 0} = Manifest.snapshot(manifest, [:sequence])
-      assert %{wal: nil} = Manifest.snapshot(manifest, [:wal])
-      assert %{disk_tables: []} = Manifest.snapshot(manifest, [:disk_tables])
+      assert Manifest.snapshot(manifest) == {0, 0, []}
+      assert File.exists?(manifest_path(ctx))
     end
 
-    test "recovers state from an existing manifest log", ctx do
+    test "recovers state from an existing log", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(manifest, [{:mem, data_path(ctx, "wal.goblin")}], [], 0)
+
+      {:ok, manifest} =
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
-          42
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [{:mem, data_path(ctx, "wal.goblin")}],
+          7
         )
 
       :ok = Manifest.close(manifest)
 
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
-      assert %{sequence: 42} = Manifest.snapshot(recovered, [:sequence])
+      assert Manifest.snapshot(recovered) ==
+               {7, 2, [{:disk, data_path(ctx, "sst_0.goblin")}]}
     end
-  end
 
-  describe "add_wal/2" do
-    test "persists wal path and updates the snapshot", ctx do
+    test "renames manifest.goblin.tmp back when only the tmp file remains", ctx do
       manifest = open_manifest(ctx)
-
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
-
-      assert %{wal: wal} = Manifest.snapshot(manifest, [:wal])
-      assert String.ends_with?(wal, "wal.goblin")
-    end
-  end
-
-  describe "add_flush/3" do
-    test "adds disk tables and removes wal", ctx do
-      manifest = open_manifest(ctx)
-
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(manifest, [{:disk, data_path(ctx, "sst_0.goblin")}], [], 9)
+
+      :ok = Manifest.close(manifest)
+
+      :ok = File.rename(manifest_path(ctx), manifest_tmp_path(ctx))
+      refute File.exists?(manifest_path(ctx))
+      assert File.exists?(manifest_tmp_path(ctx))
+
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
+
+      assert File.exists?(manifest_path(ctx))
+      refute File.exists?(manifest_tmp_path(ctx))
+      assert Manifest.snapshot(recovered) ==
+               {9, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
+    end
+  end
+
+  describe "update/4" do
+    test "adds tagged files and returns full paths under data_dir", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} =
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
+          [
+            {:mem, data_path(ctx, "wal.goblin")},
+            {:disk, data_path(ctx, "sst_0.goblin")}
+          ],
+          [],
           0
         )
 
-      assert %{disk_tables: [dt]} = Manifest.snapshot(manifest, [:disk_tables])
-      assert String.ends_with?(dt, "sst_0.goblin")
-    end
-  end
+      {_, _, files} = Manifest.snapshot(manifest)
 
-  describe "snapshot/2" do
-    test "returns only requested keys with resolved paths", ctx do
+      assert {:mem, data_path(ctx, "wal.goblin")} in files
+      assert {:disk, data_path(ctx, "sst_0.goblin")} in files
+    end
+
+    test "removes files passed in del", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
-          10
-        )
-
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
-
-      seq_only = Manifest.snapshot(manifest, [:sequence])
-      assert seq_only == %{sequence: 10}
-      refute Map.has_key?(seq_only, :wal)
-
-      wal_only = Manifest.snapshot(manifest, [:wal])
-      assert %{wal: wal} = wal_only
-      assert wal == Path.join(ctx.tmp_dir, "wal2.goblin")
-      refute Map.has_key?(wal_only, :sequence)
-    end
-  end
-
-  describe "current_files/1" do
-    test "returns manifest log files", ctx do
-      manifest = open_manifest(ctx)
-
-      files = Manifest.current_files(manifest)
-      assert length(files) > 0
-      assert Enum.all?(files, &String.contains?(&1, "manifest.goblin"))
-    end
-
-    test "excludes unrelated files", ctx do
-      File.write!(Path.join(ctx.tmp_dir, "unrelated.txt"), "hello")
-      manifest = open_manifest(ctx)
-
-      files = Manifest.current_files(manifest)
-      refute Enum.any?(files, &String.contains?(&1, "unrelated.txt"))
-    end
-  end
-
-  describe "add_compaction/3" do
-    test "adds new disk tables and marks old ones for removal", ctx do
-      manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
-
-      {:ok, manifest} =
-        Manifest.add_flush(
-          manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
+          [{:mem, data_path(ctx, "wal.goblin")}, {:disk, data_path(ctx, "sst_0.goblin")}],
+          [],
           0
         )
 
       {:ok, manifest} =
-        Manifest.add_compaction(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_1.goblin")],
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")]
+          [],
+          [{:mem, data_path(ctx, "wal.goblin")}],
+          0
         )
 
-      snapshot = Manifest.snapshot(manifest, [:disk_tables, :dirt])
+      {_, _, files} = Manifest.snapshot(manifest)
 
-      assert Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_1.goblin"))
-      refute Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_0.goblin"))
-      assert Enum.any?(snapshot.dirt, &String.ends_with?(&1, "sst_0.goblin"))
+      refute {:mem, data_path(ctx, "wal.goblin")} in files
+      assert {:disk, data_path(ctx, "sst_0.goblin")} in files
     end
-  end
 
-  describe "clear_dirt/1" do
-    test "clears dirt after compaction", ctx do
+    test "ignores a del that does not match any current file", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [{:disk, data_path(ctx, "never_existed.goblin")}],
+          0
+        )
+
+      {_, _, files} = Manifest.snapshot(manifest)
+      assert files == [{:disk, data_path(ctx, "sst_0.goblin")}]
+    end
+
+    test "places newly added files before previously existing ones", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} =
+        Manifest.update(manifest, [{:disk, data_path(ctx, "a.goblin")}], [], 0)
+
+      {:ok, manifest} =
+        Manifest.update(manifest, [{:disk, data_path(ctx, "b.goblin")}], [], 0)
+
+      {_, _, files} = Manifest.snapshot(manifest)
+
+      assert files == [
+               {:disk, data_path(ctx, "b.goblin")},
+               {:disk, data_path(ctx, "a.goblin")}
+             ]
+    end
+
+    test "advances the snapshot sequence to the value passed", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} = Manifest.update(manifest, [], [], 100)
+
+      assert {100, 0, []} = Manifest.snapshot(manifest)
+    end
+
+    test "no_files counter is cumulative across updates", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} =
+        Manifest.update(manifest, [{:disk, data_path(ctx, "a.goblin")}], [], 0)
+
+      {:ok, manifest} =
+        Manifest.update(
+          manifest,
+          [{:disk, data_path(ctx, "b.goblin")}],
+          [{:disk, data_path(ctx, "a.goblin")}],
+          0
+        )
+
+      {_, no_files, files} = Manifest.snapshot(manifest)
+
+      assert no_files == 2
+      assert files == [{:disk, data_path(ctx, "b.goblin")}]
+    end
+
+    test "writes survive close + reopen", ctx do
+      manifest = open_manifest(ctx)
+
+      {:ok, manifest} =
+        Manifest.update(
+          manifest,
+          [{:mem, data_path(ctx, "wal.goblin")}],
+          [],
           0
         )
 
       {:ok, manifest} =
-        Manifest.add_compaction(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_1.goblin")],
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")]
-        )
-
-      manifest = Manifest.clear_dirt(manifest)
-      assert %{dirt: []} = Manifest.snapshot(manifest, [:dirt])
-    end
-
-    test "preserves other snapshot state", ctx do
-      manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
-
-      {:ok, manifest} =
-        Manifest.add_flush(
-          manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
-          10
-        )
-
-      {:ok, manifest} =
-        Manifest.add_compaction(
-          manifest,
-          [Path.join(ctx.tmp_dir, "sst_1.goblin")],
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")]
-        )
-
-      manifest = Manifest.clear_dirt(manifest)
-      snapshot = Manifest.snapshot(manifest, [:sequence, :disk_tables])
-
-      assert %{sequence: 10} = snapshot
-      assert Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_1.goblin"))
-    end
-  end
-
-  describe "recovery" do
-    test "recovers full state after lifecycle with compaction", ctx do
-      manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
-
-      {:ok, manifest} =
-        Manifest.add_flush(
-          manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
-          5
-        )
-
-      {:ok, manifest} =
-        Manifest.add_compaction(
-          manifest,
-          [Path.join(ctx.tmp_dir, "sst_1.goblin")],
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")]
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [{:mem, data_path(ctx, "wal.goblin")}],
+          11
         )
 
       :ok = Manifest.close(manifest)
 
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
-      snapshot = Manifest.snapshot(recovered, [:sequence, :disk_tables])
-
-      assert %{sequence: 5} = snapshot
-      assert Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_1.goblin"))
-      refute Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_0.goblin"))
+      assert Manifest.snapshot(recovered) == Manifest.snapshot(manifest)
     end
+  end
 
-    test "supports further updates after recovery", ctx do
+  describe "snapshot/1" do
+    test "returns {seq, no_files, files} with absolute paths rooted at data_dir", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
-          5
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [],
+          3
         )
 
-      :ok = Manifest.close(manifest)
+      assert {3, 1, [{:disk, path}]} = Manifest.snapshot(manifest)
+      assert Path.dirname(path) == ctx.tmp_dir
+      assert Path.basename(path) == "sst_0.goblin"
+    end
+  end
 
-      {:ok, manifest} = Manifest.open(ctx.tmp_dir)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
+  describe "current_file/1" do
+    test "returns the manifest log path under data_dir", ctx do
+      manifest = open_manifest(ctx)
 
-      {:ok, manifest} =
-        Manifest.add_flush(
-          manifest,
-          [Path.join(ctx.tmp_dir, "sst_1.goblin")],
-          Path.join(ctx.tmp_dir, "wal2.goblin"),
-          10
-        )
-
-      :ok = Manifest.close(manifest)
-
-      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
-      assert %{sequence: 10} = Manifest.snapshot(recovered, [:sequence])
+      assert Manifest.current_file(manifest) == manifest_path(ctx)
     end
   end
 
   describe "close/1" do
-    test "closes the manifest", c do
-      manifest = open_manifest(c)
+    test "closes a fresh manifest cleanly", ctx do
+      manifest = open_manifest(ctx)
 
       assert :ok = Manifest.close(manifest)
     end
   end
 
   describe "crash recovery" do
-    defp manifest_path(ctx), do: Path.join(ctx.tmp_dir, "manifest.goblin")
-    defp manifest_tmp_path(ctx), do: manifest_path(ctx) <> ".tmp"
-
-    test "recovers from trailing garbage appended to the log after a crash", ctx do
+    test "trailing garbage in the log is truncated on reopen", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [],
           7
         )
 
@@ -286,31 +251,33 @@ defmodule Goblin.ManifestTest do
 
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
-      snapshot = Manifest.snapshot(recovered, [:sequence, :disk_tables])
-      assert %{sequence: 7} = snapshot
-      assert Enum.any?(snapshot.disk_tables, &String.ends_with?(&1, "sst_0.goblin"))
+      assert Manifest.snapshot(recovered) ==
+               {7, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
 
       :ok = Manifest.close(recovered)
-      # The garbage tail must be truncated by FileIO.stream!(truncate?: true).
       assert :filelib.file_size(manifest_path(ctx)) == valid_size
     end
 
-    test "recovers from a log truncated mid-block by a crash", ctx do
+    test "a log truncated mid-block discards the partial trailing entry", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [],
           3
         )
 
-      # Add an extra update, then chop the file so that its trailing block
-      # is cut off mid-header — simulating a crash mid-flush.
+      survived_size = :filelib.file_size(manifest_path(ctx))
+
       {:ok, manifest} =
-        Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal2.goblin"))
+        Manifest.update(
+          manifest,
+          [{:mem, data_path(ctx, "wal2.goblin")}],
+          [],
+          4
+        )
 
       :ok = Manifest.close(manifest)
 
@@ -322,29 +289,21 @@ defmodule Goblin.ManifestTest do
 
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
-      # The add_wal that was chopped off is lost; the prior flush survives.
-      snapshot = Manifest.snapshot(recovered, [:sequence, :wal])
-      assert %{sequence: 3} = snapshot
-      # The surviving wal is the one written before the truncated update.
-      assert snapshot.wal == nil or
-               String.ends_with?(snapshot.wal, "wal.goblin")
+      assert Manifest.snapshot(recovered) ==
+               {3, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
 
       :ok = Manifest.close(recovered)
-      assert :filelib.file_size(manifest_path(ctx)) == full_size - 512
+      assert :filelib.file_size(manifest_path(ctx)) == survived_size
     end
 
-    test "recovers from a rotation interrupted after the rename", ctx do
-      # Simulate: rotation renamed manifest.goblin → manifest.goblin.tmp and
-      # crashed before a new manifest.goblin could be created. On reopen,
-      # Manifest.open/1 must rename the .tmp back and recover state from it.
+    test "rotation interrupted after the rename is healed on reopen", ctx do
       manifest = open_manifest(ctx)
-      {:ok, manifest} = Manifest.add_wal(manifest, Path.join(ctx.tmp_dir, "wal.goblin"))
 
       {:ok, manifest} =
-        Manifest.add_flush(
+        Manifest.update(
           manifest,
-          [Path.join(ctx.tmp_dir, "sst_0.goblin")],
-          Path.join(ctx.tmp_dir, "wal.goblin"),
+          [{:disk, data_path(ctx, "sst_0.goblin")}],
+          [],
           9
         )
 
@@ -358,8 +317,8 @@ defmodule Goblin.ManifestTest do
 
       assert File.exists?(manifest_path(ctx))
       refute File.exists?(manifest_tmp_path(ctx))
-
-      assert %{sequence: 9} = Manifest.snapshot(recovered, [:sequence])
+      assert Manifest.snapshot(recovered) ==
+               {9, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
 
       :ok = Manifest.close(recovered)
     end

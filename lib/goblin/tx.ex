@@ -17,15 +17,15 @@ defmodule Goblin.Tx do
       end)
   """
 
-  alias Goblin.{Broker, Mem, Disk, Iterator}
+  alias Goblin.{View, MemTable, DiskTable, KMerger}
 
   defstruct [
     :mode,
     :sequence,
     :tx_id,
-    :broker,
+    :view,
     :max_level_key,
-    writes: []
+    commits: []
   ]
 
   @type t :: %__MODULE__{}
@@ -57,8 +57,8 @@ defmodule Goblin.Tx do
 
   def put(tx, key, value, opts) do
     key = tag_key(key, opts[:tag])
-    write = {key, tx.sequence, value}
-    %{tx | sequence: tx.sequence + 1, writes: [write | tx.writes]}
+    commit = {key, tx.sequence, value}
+    %{tx | sequence: tx.sequence + 1, commits: [commit | tx.commits]}
   end
 
   @doc """
@@ -88,8 +88,8 @@ defmodule Goblin.Tx do
   def put_multi(tx, pairs, opts) do
     Enum.reduce(pairs, tx, fn {key, value}, acc ->
       key = tag_key(key, opts[:tag])
-      write = {key, acc.sequence, value}
-      %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
+      commit = {key, acc.sequence, value}
+      %{acc | sequence: acc.sequence + 1, commits: [commit | acc.commits]}
     end)
   end
 
@@ -117,8 +117,8 @@ defmodule Goblin.Tx do
 
   def remove(tx, key, opts) do
     key = tag_key(key, opts[:tag])
-    write = {key, tx.sequence, :"$goblin_tombstone"}
-    %{tx | sequence: tx.sequence + 1, writes: [write | tx.writes]}
+    commit = {key, tx.sequence, :"$goblin_tombstone"}
+    %{tx | sequence: tx.sequence + 1, commits: [commit | tx.commits]}
   end
 
   @doc """
@@ -146,8 +146,8 @@ defmodule Goblin.Tx do
   def remove_multi(tx, keys, opts) do
     Enum.reduce(keys, tx, fn key, acc ->
       key = tag_key(key, opts[:tag])
-      write = {key, acc.sequence, :"$goblin_tombstone"}
-      %{acc | sequence: acc.sequence + 1, writes: [write | acc.writes]}
+      commit = {key, acc.sequence, :"$goblin_tombstone"}
+      %{acc | sequence: acc.sequence + 1, commits: [commit | acc.commits]}
     end)
   end
 
@@ -177,16 +177,16 @@ defmodule Goblin.Tx do
   @spec get(t(), Goblin.db_key(), keyword()) :: Goblin.db_value()
   def get(tx, key, opts \\ []) do
     key = tag_key(key, opts[:tag])
-    tx_table = Enum.sort_by(tx.writes, fn {key, seq, _val} -> {key, -seq} end)
+    tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
     tables = fn level_key ->
       [
         tx_table
-        | Broker.filter_tables(
-            tx.broker,
+        | View.get_tables(
+            tx.view,
             tx.tx_id,
-            level_key: level_key,
-            filter: &table_has_key?(&1, key)
+            level_key,
+            &table_has_key?(&1, key)
           )
       ]
     end
@@ -227,16 +227,16 @@ defmodule Goblin.Tx do
           list({Goblin.db_key(), Goblin.db_value()})
   def get_multi(tx, keys, opts \\ []) do
     keys = Enum.map(keys, &tag_key(&1, opts[:tag]))
-    tx_table = Enum.sort_by(tx.writes, fn {key, seq, _val} -> {key, -seq} end)
+    tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
     tables = fn level_key ->
       [
         tx_table
-        | Broker.filter_tables(
-            tx.broker,
+        | View.get_tables(
+            tx.view,
             tx.tx_id,
-            level_key: level_key,
-            filter: fn table ->
+            level_key,
+            fn table ->
               Enum.any?(keys, &table_has_key?(table, &1))
             end
           )
@@ -337,7 +337,7 @@ defmodule Goblin.Tx do
       end)
 
     {acc, keys} =
-      Iterator.k_merge(
+      KMerger.k_merge(
         fn ->
           tables.(lk)
           |> Enum.map(&table_search(&1, reduced_keys, seq))
@@ -362,7 +362,7 @@ defmodule Goblin.Tx do
     min = opts[:min]
     max = opts[:max]
 
-    Iterator.k_merge(
+    KMerger.k_merge(
       fn ->
         {seq, tables} = seq_and_tables.()
         Enum.map(tables, &table_stream(&1, min, max, seq))
@@ -373,20 +373,22 @@ defmodule Goblin.Tx do
     )
   end
 
-  defp table_has_key?(%Mem{} = table, key), do: Mem.has_key?(table, key)
-  defp table_has_key?(%Disk.Table{} = table, key), do: Disk.has_key?(table, key)
+  defp table_has_key?(%MemTable{} = mt, key), do: MemTable.has_key?(mt, key)
+  defp table_has_key?(%DiskTable{} = dt, key), do: DiskTable.has_key?(dt, key)
 
   defp table_has_key?(table, key) when is_list(table),
     do: Enum.any?(table, fn {k, _, _} -> k == key end)
 
-  defp table_search(%Mem{} = table, keys, seq), do: Mem.search(table, keys, seq)
-  defp table_search(%Disk.Table{} = table, keys, seq), do: Disk.search(table, keys, seq)
+  defp table_search(%MemTable{} = mt, keys, seq), do: MemTable.search(mt, keys, seq)
+  defp table_search(%DiskTable{} = dt, keys, seq), do: DiskTable.search(dt, keys, seq)
 
   defp table_search(table, keys, seq) when is_list(table),
     do: Enum.filter(table, fn {k, s, _} -> s < seq and k in keys end)
 
-  defp table_stream(%Mem{} = table, _min, _max, seq), do: Mem.stream(table, seq)
-  defp table_stream(%Disk.Table{} = table, min, max, seq), do: Disk.stream(table, min, max, seq)
+  defp table_stream(%MemTable{} = mt, _min, _max, seq), do: MemTable.stream(mt, seq)
+
+  defp table_stream(%DiskTable{} = dt, min, max, seq),
+    do: DiskTable.stream(dt, bounds: {min, max}, seq: seq)
 
   defp table_stream(table, min, max, seq) when is_list(table) do
     cond do

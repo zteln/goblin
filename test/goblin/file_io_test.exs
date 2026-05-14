@@ -356,4 +356,182 @@ defmodule Goblin.FileIOTest do
       assert {:error, :enoent} = FileIO.remove(file_path(ctx))
     end
   end
+
+  describe "stream_write/4" do
+    defp filer_fn(ctx) do
+      counter = :counters.new(1, [])
+
+      fn ->
+        n = :counters.get(counter, 1)
+        :counters.add(counter, 1, 1)
+        Path.join(ctx.tmp_dir, "sw-#{n}.goblin")
+      end
+    end
+
+    defp default_opts(filer, overrides \\ []) do
+      Keyword.merge(
+        [max_size: :infinity, block_size: 512, compress?: false, filer: filer],
+        overrides
+      )
+    end
+
+    defp record_reducer, do: fn data, acc, params -> [{data, params} | acc] end
+
+    test "empty stream emits nothing and never calls the filer", ctx do
+      parent = self()
+
+      filer = fn ->
+        send(parent, :filer_called)
+        raise "filer should not be called for an empty stream"
+      end
+
+      opts = default_opts(filer)
+
+      assert FileIO.stream_write([], [], record_reducer(), opts) |> Enum.to_list() == []
+      assert File.ls!(ctx.tmp_dir) == []
+      refute_received :filer_called
+    end
+
+    test "writes a single file when max_size is not reached", ctx do
+      filer = filer_fn(ctx)
+      data = [{:a, 1}, {:b, 2}, {:c, 3}]
+
+      assert [{:ok, acc}] =
+               FileIO.stream_write(data, [], record_reducer(), default_opts(filer))
+               |> Enum.to_list()
+
+      assert length(acc) == 3
+
+      paths = acc |> Enum.map(fn {_, %{path: p}} -> p end) |> Enum.uniq()
+      assert [path] = paths
+      assert File.exists?(path)
+
+      Enum.each(acc, fn {_, %{size: s}} ->
+        assert s > 0
+        assert rem(s, 512) == 0
+      end)
+    end
+
+    test "appends the final accumulator as a trailing block readable at :eof", ctx do
+      filer = filer_fn(ctx)
+      data = [{:a, 1}, {:b, 2}, {:c, 3}]
+
+      [{:ok, acc}] =
+        FileIO.stream_write(data, [], record_reducer(), default_opts(filer))
+        |> Enum.to_list()
+
+      [{_, %{path: path}} | _] = acc
+
+      io = FileIO.open!(path, block_size: 512)
+
+      try do
+        for term <- data do
+          assert {:ok, ^term} = FileIO.read(io)
+        end
+
+        assert {:ok, ^acc} = FileIO.read(io)
+        assert :eof = FileIO.read(io)
+      after
+        FileIO.close(io)
+      end
+
+      io = FileIO.open!(path, block_size: 512)
+
+      try do
+        assert {:ok, ^acc} = FileIO.pread(io, :eof)
+      after
+        FileIO.close(io)
+      end
+    end
+
+    test "reducer params reflect the item's path and on-disk size", ctx do
+      filer = filer_fn(ctx)
+      small = {:small, 0}
+      large = {:large, :crypto.strong_rand_bytes(2_000)}
+
+      [{:ok, acc}] =
+        FileIO.stream_write([small, large], [], record_reducer(), default_opts(filer))
+        |> Enum.to_list()
+
+      [{^large, %{size: large_size, path: p1}}, {^small, %{size: small_size, path: p2}}] = acc
+
+      assert p1 == p2
+      assert small_size > 0
+      assert large_size > small_size
+      assert rem(large_size, 512) == 0
+    end
+
+    test "rolls over to a new file when max_size is exceeded", ctx do
+      filer = filer_fn(ctx)
+      block_size = 512
+      opts = default_opts(filer, max_size: 4 * block_size, block_size: block_size)
+      data = for n <- 1..10, do: {:item, n}
+
+      results =
+        FileIO.stream_write(data, 0, fn _data, acc, _params -> acc + 1 end, opts)
+        |> Enum.to_list()
+
+      counts = for {:ok, n} <- results, do: n
+      assert length(counts) == length(results)
+      assert Enum.sum(counts) == length(data)
+      assert length(results) >= 2
+
+      produced = File.ls!(ctx.tmp_dir) |> Enum.sort()
+      assert length(produced) == length(results)
+
+      for file <- produced do
+        io = FileIO.open!(Path.join(ctx.tmp_dir, file), block_size: block_size)
+
+        try do
+          assert {:ok, n} = FileIO.pread(io, :eof)
+          assert n in counts
+        after
+          FileIO.close(io)
+        end
+      end
+    end
+
+    test "each rolled-over file gets a fresh accumulator seeded from init", ctx do
+      filer = filer_fn(ctx)
+      block_size = 512
+      opts = default_opts(filer, max_size: 2 * block_size, block_size: block_size)
+      data = for n <- 1..6, do: {:item, n}
+
+      results =
+        FileIO.stream_write(data, [], record_reducer(), opts)
+        |> Enum.to_list()
+
+      # max_size = 2*block_size triggers rollover on every 2nd item, so 6 items
+      # produce 3 files. Each acc starts empty.
+      assert length(results) == 3
+
+      for {:ok, acc} <- results do
+        assert is_list(acc)
+        assert length(acc) > 0
+        assert Enum.all?(acc, &match?({_, %{size: _, path: _}}, &1))
+      end
+    end
+
+    test "halts and surfaces the failure when opening a file fails", ctx do
+      bad_filer = fn -> Path.join([ctx.tmp_dir, "missing", "dir", "x.goblin"]) end
+
+      assert_raise RuntimeError, ~r/failed to open file/, fn ->
+        FileIO.stream_write([:a], [], record_reducer(), default_opts(bad_filer))
+        |> Enum.to_list()
+      end
+    end
+
+    test "is lazy: Enum.take stops after the first file closes", ctx do
+      filer = filer_fn(ctx)
+      block_size = 512
+      opts = default_opts(filer, max_size: 2 * block_size, block_size: block_size)
+      data = for n <- 1..10, do: {:item, n}
+
+      assert [{:ok, _}] =
+               FileIO.stream_write(data, 0, fn _, acc, _ -> acc + 1 end, opts)
+               |> Enum.take(1)
+
+      assert length(File.ls!(ctx.tmp_dir)) == 1
+    end
+  end
 end

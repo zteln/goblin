@@ -8,16 +8,14 @@ defmodule Goblin.BloomFilter do
     :bit_arrays
   ]
 
-  @default_bit_array_size 10_000
-  @default_fpp 0.01
   @tightening_ratio 0.5
   @type t :: %__MODULE__{}
 
   @spec new(keyword()) :: t()
   def new(opts) do
-    fpp = opts[:fpp] || @default_fpp
+    fpp = opts[:fpp]
+    bit_array_size = opts[:bit_array_size]
     segment_fpp = calculate_fpp([], fpp)
-    bit_array_size = opts[:bit_array_size] || @default_bit_array_size
     bit_array = BitArray.new(bit_array_size, segment_fpp)
     %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
   end

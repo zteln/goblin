@@ -8,49 +8,52 @@ defmodule Goblin.MemTable do
     :io,
     :ref,
     :max_sequence,
-    :mem_limit
+    :mem_limit,
+    :filer
   ]
 
+  @type t :: %__MODULE__{}
+
+  @spec new(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(path, opts) do
-    with {:ok, io} <- FileIO.open(path, write?: Keyword.get(opts, :write?, true)) do
+    with {:ok, io} <- FileIO.open(path, write?: true) do
       ref = new_table()
 
       max_seq =
         FileIO.stream!(io, truncate?: true)
-        |> Enum.reduce(-1, fn {key, seq, val}, acc ->
-          insert(ref, key, seq, val)
-          max(acc, seq)
-        end)
+        |> insert_commits(ref)
 
       {:ok,
        %__MODULE__{
          io: io,
          id: path,
          ref: ref,
-         max_sequence: max_seq,
-         mem_limit: opts[:mem_limit]
+         max_sequence: max_seq + 1,
+         mem_limit: opts[:mem_limit],
+         filer: opts[:filer]
        }}
     end
   end
 
+  @spec close(t()) :: :ok | {:error, term()}
+  def close(mt), do: FileIO.close(mt.io)
+
+  @spec append(t(), list({term(), non_neg_integer(), term()})) :: {:ok, t()} | {:error, term()}
   def append(mem_table, commits) do
     with {:ok, _size} <- FileIO.append(mem_table.io, commits),
          :ok <- FileIO.sync(mem_table.io) do
-      max_seq =
-        Enum.reduce(commits, mem_table.max_sequence, fn {key, seq, val}, _acc ->
-          insert(mem_table.ref, key, seq, val)
-          seq
-        end)
-
-      mem_table = %{mem_table | max_sequence: max_seq}
+      max_seq = insert_commits(commits, mem_table.ref)
+      mem_table = %{mem_table | max_sequence: max_seq + 1}
       maybe_rotate(mem_table)
     end
   end
 
+  @spec has_key?(t(), term()) :: boolean()
   def has_key?(mem_table, key) do
     table_has_key?(mem_table.ref, key)
   end
 
+  @spec search(t(), list(term()), non_neg_integer()) :: list({term(), non_neg_integer(), term()})
   def search(mem_table, keys, seq) do
     Enum.flat_map(keys, fn key ->
       case search_table(mem_table.ref, key, seq) do
@@ -60,6 +63,8 @@ defmodule Goblin.MemTable do
     end)
   end
 
+  @spec stream(t(), non_neg_integer() | :infinity) ::
+          Enumerable.t({term(), non_neg_integer(), term()})
   def stream(mem_table, max_seq \\ :infinity) do
     Stream.resource(
       fn -> iterate(mem_table.ref) end,
@@ -90,15 +95,23 @@ defmodule Goblin.MemTable do
 
   defp rotate(mem_table) do
     with :ok <- FileIO.close(mem_table.io),
-         # increment path
-         {:ok, io} <- FileIO.open(mem_table.id, write?: true) do
+         new_id = mem_table.filer.(),
+         {:ok, io} <- FileIO.open(new_id, write?: true) do
       ref = new_table()
-      {:ok, mem_table, %{mem_table | io: io, ref: ref}}
+      {:ok, mem_table, %{mem_table | id: new_id, io: io, ref: ref}}
     end
   end
 
   defp new_table() do
     :ets.new(:mem_table, [:ordered_set])
+  end
+
+  defp insert_commits(commits, ref) do
+    commits
+    |> Enum.reduce(-1, fn {key, seq, val}, _acc ->
+      insert(ref, key, seq, val)
+      seq
+    end)
   end
 
   defp insert(ref, key, seq, value) do

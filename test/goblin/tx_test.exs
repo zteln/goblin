@@ -8,7 +8,7 @@ defmodule Goblin.TxTest do
       mode: opts[:mode] || :write,
       sequence: opts[:sequence] || 0,
       tx_id: opts[:tx_id] || 0,
-      broker: opts[:broker],
+      view: opts[:view],
       max_level_key: opts[:max_level_key] || -1
     }
   end
@@ -20,7 +20,7 @@ defmodule Goblin.TxTest do
         |> Tx.put(:key, :val, [])
 
       assert tx.sequence == 1
-      assert tx.writes == [{:key, 0, :val}]
+      assert tx.commits == [{:key, 0, :val}]
     end
 
     test "tag option wraps the key" do
@@ -28,7 +28,7 @@ defmodule Goblin.TxTest do
         new_tx(sequence: 0)
         |> Tx.put(:key, :val, tag: :users)
 
-      assert tx.writes == [{{:"$goblin_tag", :users, :key}, 0, :val}]
+      assert tx.commits == [{{:"$goblin_tag", :users, :key}, 0, :val}]
     end
   end
 
@@ -39,7 +39,7 @@ defmodule Goblin.TxTest do
         |> Tx.put_multi([{:a, 1}, {:b, 2}], [])
 
       assert tx.sequence == 2
-      assert tx.writes == [{:b, 1, 2}, {:a, 0, 1}]
+      assert tx.commits == [{:b, 1, 2}, {:a, 0, 1}]
     end
   end
 
@@ -50,7 +50,7 @@ defmodule Goblin.TxTest do
         |> Tx.remove(:key, [])
 
       assert tx.sequence == 1
-      assert tx.writes == [{:key, 0, :"$goblin_tombstone"}]
+      assert tx.commits == [{:key, 0, :"$goblin_tombstone"}]
     end
 
     test "tag option wraps the key on tombstone" do
@@ -58,7 +58,7 @@ defmodule Goblin.TxTest do
         new_tx(sequence: 0)
         |> Tx.remove(:key, tag: :users)
 
-      assert tx.writes == [{{:"$goblin_tag", :users, :key}, 0, :"$goblin_tombstone"}]
+      assert tx.commits == [{{:"$goblin_tag", :users, :key}, 0, :"$goblin_tombstone"}]
     end
   end
 
@@ -70,7 +70,7 @@ defmodule Goblin.TxTest do
 
       assert tx.sequence == 2
 
-      assert tx.writes == [
+      assert tx.commits == [
                {:b, 1, :"$goblin_tombstone"},
                {:a, 0, :"$goblin_tombstone"}
              ]
@@ -120,7 +120,7 @@ defmodule Goblin.TxTest do
 
       assert {:commit, committed, :ok} = Tx.commit(tx)
       # writes stay in prepend order (newest-first); commit does not reverse
-      assert committed.writes == [{:b, 1, 2}, {:a, 0, 1}]
+      assert committed.commits == [{:b, 1, 2}, {:a, 0, 1}]
     end
 
     test "commit/2 accepts a custom reply" do

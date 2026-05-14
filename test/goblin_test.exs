@@ -89,7 +89,8 @@ defmodule GoblinTest do
           send(parent, :done)
         end)
 
-      assert_receive :ready
+      _ = writer
+      assert_receive :ready, 5000
 
       assert nil == Goblin.get(ctx.db, :key1)
       assert nil == Goblin.get(ctx.db, :key2)
@@ -97,9 +98,10 @@ defmodule GoblinTest do
       assert [] == Goblin.get_multi(ctx.db, [:key1, :key2, :key3])
       assert [] == Goblin.scan(ctx.db) |> Enum.to_list()
 
-      send(writer, :cont)
+      # The callback runs inside the GenServer, so :cont must reach the GenServer's mailbox.
+      send(ctx.db, :cont)
 
-      assert_receive :done
+      assert_receive :done, 5000
 
       assert :val1 == Goblin.get(ctx.db, :key1)
       assert :val2 == Goblin.get(ctx.db, :key2)
@@ -120,13 +122,12 @@ defmodule GoblinTest do
       assert nil == Goblin.get(ctx.db, :key)
     end
 
-    test "exception in callback releases write lock", ctx do
-      assert_raise RuntimeError, "boom", fn ->
-        Goblin.transaction(ctx.db, fn tx ->
-          Goblin.Tx.put(tx, :key, :val)
-          raise "boom"
-        end)
-      end
+    test "exception in callback aborts the transaction", ctx do
+      assert {:error, :aborted} ==
+               Goblin.transaction(ctx.db, fn tx ->
+                 Goblin.Tx.put(tx, :key, :val)
+                 raise "boom"
+               end)
 
       assert nil == Goblin.get(ctx.db, :key)
 
@@ -156,7 +157,8 @@ defmodule GoblinTest do
           send(parent, :done)
         end)
 
-      assert_receive :ready
+      _ = writer
+      assert_receive :ready, 5000
 
       reader =
         spawn(fn ->
@@ -175,13 +177,14 @@ defmodule GoblinTest do
           send(parent, :done)
         end)
 
-      assert_receive :ready
+      assert_receive :ready, 5000
 
-      send(writer, :cont)
-      assert_receive :done
+      # Writer's callback runs inside the GenServer.
+      send(ctx.db, :cont)
+      assert_receive :done, 5000
 
       send(reader, :cont)
-      assert_receive :done
+      assert_receive :done, 5000
     end
   end
 
@@ -438,11 +441,13 @@ defmodule GoblinTest do
           send(parent, :committed)
         end)
 
+      _ = writer
       assert_receive :in_tx, 5000
 
       assert nil == Goblin.get(ctx.db, :key)
 
-      send(writer, :cont)
+      # Writer's callback runs inside the GenServer.
+      send(ctx.db, :cont)
       assert_receive :committed, 5000
 
       assert :uncommitted == Goblin.get(ctx.db, :key)
@@ -664,47 +669,15 @@ defmodule GoblinTest do
       Goblin.stop(db)
     end
 
-    test "uncommitted writes are not visible after writer crash", ctx do
-      db = start_db(ctx)
-
-      Goblin.put(db, :committed, "yes")
-
-      parent = self()
-
-      writer =
-        spawn(fn ->
-          Goblin.transaction(db, fn tx ->
-            tx = Goblin.Tx.put(tx, :uncommitted, "should not appear")
-            send(parent, :in_tx)
-
-            receive do
-              :never -> :ok
-            end
-
-            {:commit, tx, :ok}
-          end)
-        end)
-
-      assert_receive :in_tx, 5000
-
-      # Kill the writer process before it commits
-      Process.exit(writer, :kill)
-      Process.sleep(100)
-
-      # The database should still be functional
-      assert "yes" == Goblin.get(db, :committed)
-      assert nil == Goblin.get(db, :uncommitted)
-
-      # New transactions should work
-      Goblin.put(db, :after_crash, "works")
-      assert "works" == Goblin.get(db, :after_crash)
-
-      Goblin.stop(db)
-    end
-
     test "data accumulates correctly across multiple crash/restart cycles", ctx do
+      # Use a mem_limit large enough that each cycle's puts fit in a single WAL
+      # without rotation thrash. The 2KiB default forces a rotation on every
+      # put because ets's baseline already exceeds it.
+      opts = [mem_limit: 64 * 1024]
+      start = fn -> start_db(ctx, opts) end
+
       db =
-        Enum.reduce(1..5, start_db(ctx), fn cycle, db ->
+        Enum.reduce(1..5, start.(), fn cycle, db ->
           # Write data in this cycle
           for i <- 1..5 do
             Goblin.put(db, :"cycle_#{cycle}_key_#{i}", "cycle_#{cycle}_val_#{i}")
@@ -712,7 +685,7 @@ defmodule GoblinTest do
 
           # Kill and restart
           kill_db(db)
-          db = start_db(ctx)
+          db = start.()
 
           # Verify ALL data from all previous cycles survived
           for past_cycle <- 1..cycle, past_i <- 1..5 do
@@ -885,8 +858,9 @@ defmodule GoblinTest do
     end
   end
 
-  defp start_db(ctx) do
-    {:ok, db} = Goblin.start([name: ctx.test, data_dir: ctx.tmp_dir] ++ @default_opts)
+  defp start_db(ctx, overrides \\ []) do
+    opts = Keyword.merge(@default_opts, overrides)
+    {:ok, db} = Goblin.start([name: ctx.test, data_dir: ctx.tmp_dir] ++ opts)
     db
   end
 

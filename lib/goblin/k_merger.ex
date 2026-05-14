@@ -1,4 +1,4 @@
-defmodule Goblin.Iterator do
+defmodule Goblin.KMerger do
   @moduledoc false
 
   @spec k_merge((-> list(Enumerable.t())), keyword()) :: Enumerable.t()

@@ -1,14 +1,14 @@
-defmodule Goblin.IteratorTest do
+defmodule Goblin.KMergerTest do
   use ExUnit.Case, async: true
 
-  alias Goblin.Iterator
+  alias Goblin.KMerger
 
   describe "k_merge/2 — basic merging" do
     test "merges multiple sorted streams in ascending key order" do
       s1 = Stream.map([{:a, 1, "1"}, {:c, 3, "3"}, {:e, 5, "5"}], & &1)
       s2 = Stream.map([{:b, 2, "2"}, {:d, 4, "4"}, {:f, 6, "6"}], & &1)
 
-      result = Iterator.k_merge(fn -> [s1, s2] end) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [s1, s2] end) |> Enum.to_list()
 
       assert result == [
                {:a, 1, "1"},
@@ -22,7 +22,7 @@ defmodule Goblin.IteratorTest do
 
     test "empty streams produce an empty result" do
       result =
-        Iterator.k_merge(fn -> [Stream.map([], & &1), Stream.map([], & &1)] end)
+        KMerger.k_merge(fn -> [Stream.map([], & &1), Stream.map([], & &1)] end)
         |> Enum.to_list()
 
       assert result == []
@@ -30,7 +30,7 @@ defmodule Goblin.IteratorTest do
 
     test "handles a single source" do
       s = Stream.map([{1, 0, "a"}, {2, 0, "b"}], & &1)
-      assert [{1, 0, "a"}, {2, 0, "b"}] == Iterator.k_merge(fn -> [s] end) |> Enum.to_list()
+      assert [{1, 0, "a"}, {2, 0, "b"}] == KMerger.k_merge(fn -> [s] end) |> Enum.to_list()
     end
   end
 
@@ -39,7 +39,7 @@ defmodule Goblin.IteratorTest do
       s_new = Stream.map([{:x, 10, "new"}, {:z, 11, "z"}], & &1)
       s_old = Stream.map([{:x, 5, "old"}, {:y, 6, "y"}], & &1)
 
-      result = Iterator.k_merge(fn -> [s_new, s_old] end) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [s_new, s_old] end) |> Enum.to_list()
 
       assert result == [{:x, 10, "new"}, {:y, 6, "y"}, {:z, 11, "z"}]
     end
@@ -49,7 +49,7 @@ defmodule Goblin.IteratorTest do
       # {key, -seq}). k_merge must dedup within a source too.
       s = Stream.map([{:a, 1, "a"}, {:c, 10, "c_new"}, {:c, 5, "c_old"}, {:e, 7, "e"}], & &1)
 
-      result = Iterator.k_merge(fn -> [s] end) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [s] end) |> Enum.to_list()
 
       assert result == [{:a, 1, "a"}, {:c, 10, "c_new"}, {:e, 7, "e"}]
     end
@@ -59,7 +59,7 @@ defmodule Goblin.IteratorTest do
       l0 = Stream.map([{:c, 10, "l0"}], & &1)
       l1 = Stream.map([{:c, 1, "l1"}], & &1)
 
-      result = Iterator.k_merge(fn -> [mem, l0, l1] end) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [mem, l0, l1] end) |> Enum.to_list()
 
       assert result == [{:c, 20, "mem_new"}]
     end
@@ -67,7 +67,7 @@ defmodule Goblin.IteratorTest do
     test "three versions of same key in one stream collapse to one" do
       s = Stream.map([{:x, 30, "v30"}, {:x, 20, "v20"}, {:x, 10, "v10"}, {:y, 1, "y"}], & &1)
 
-      result = Iterator.k_merge(fn -> [s] end) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [s] end) |> Enum.to_list()
 
       assert result == [{:x, 30, "v30"}, {:y, 1, "y"}]
     end
@@ -81,7 +81,7 @@ defmodule Goblin.IteratorTest do
       s_disk = Stream.map([{:a, 1, "a_old"}, {:c, 2, "c"}], & &1)
 
       result =
-        Iterator.k_merge(fn -> [s_mem, s_disk] end, filter_tombstones?: true)
+        KMerger.k_merge(fn -> [s_mem, s_disk] end, filter_tombstones?: true)
         |> Enum.to_list()
 
       assert result == [{:b, 6, "b"}, {:c, 2, "c"}]
@@ -91,7 +91,7 @@ defmodule Goblin.IteratorTest do
       s = Stream.map([{:a, 5, :"$goblin_tombstone"}, {:b, 6, "b"}], & &1)
 
       result =
-        Iterator.k_merge(fn -> [s] end, filter_tombstones?: false)
+        KMerger.k_merge(fn -> [s] end, filter_tombstones?: false)
         |> Enum.to_list()
 
       assert result == [{:a, 5, :"$goblin_tombstone"}, {:b, 6, "b"}]
@@ -103,7 +103,7 @@ defmodule Goblin.IteratorTest do
       s_disk = Stream.map([{:k, 5, "old"}], & &1)
 
       result =
-        Iterator.k_merge(fn -> [s_mem, s_disk] end, filter_tombstones?: true)
+        KMerger.k_merge(fn -> [s_mem, s_disk] end, filter_tombstones?: true)
         |> Enum.to_list()
 
       assert result == []
@@ -112,14 +112,14 @@ defmodule Goblin.IteratorTest do
     test ":max bound halts emission" do
       s = Stream.map([{1, 0, "a"}, {2, 0, "b"}, {3, 0, "c"}, {4, 0, "d"}], & &1)
 
-      result = Iterator.k_merge(fn -> [s] end, max: 2) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [s] end, max: 2) |> Enum.to_list()
       assert result == [{1, 0, "a"}, {2, 0, "b"}]
     end
 
     test ":min bound skips smaller keys" do
       s = Stream.map([{1, 0, "a"}, {2, 0, "b"}, {3, 0, "c"}], & &1)
 
-      result = Iterator.k_merge(fn -> [s] end, min: 2) |> Enum.to_list()
+      result = KMerger.k_merge(fn -> [s] end, min: 2) |> Enum.to_list()
       assert result == [{2, 0, "b"}, {3, 0, "c"}]
     end
   end
@@ -130,7 +130,7 @@ defmodule Goblin.IteratorTest do
       s1 = tracked_stream(agent, :t1, [{:a, 1, "a"}, {:c, 3, "c"}])
       s2 = tracked_stream(agent, :t2, [{:b, 2, "b"}, {:d, 4, "d"}])
 
-      _ = Iterator.k_merge(fn -> [s1, s2] end) |> Enum.to_list()
+      _ = KMerger.k_merge(fn -> [s1, s2] end) |> Enum.to_list()
 
       events = Agent.get(agent, &Enum.reverse(&1))
       assert Enum.count(events, fn {_, e} -> e == :start end) == 2
@@ -142,7 +142,7 @@ defmodule Goblin.IteratorTest do
       s1 = tracked_stream(agent, :t1, [{:a, 1, "a"}, {:c, 3, "c"}, {:e, 5, "e"}])
       s2 = tracked_stream(agent, :t2, [{:b, 2, "b"}, {:d, 4, "d"}, {:f, 6, "f"}])
 
-      _ = Iterator.k_merge(fn -> [s1, s2] end) |> Enum.take(2)
+      _ = KMerger.k_merge(fn -> [s1, s2] end) |> Enum.take(2)
 
       events = Agent.get(agent, &Enum.reverse(&1))
       assert Enum.count(events, fn {_, e} -> e == :start end) == 2
@@ -154,7 +154,7 @@ defmodule Goblin.IteratorTest do
       s = Stream.map([{:a, 1, "a"}], & &1)
 
       _ =
-        Iterator.k_merge(fn -> [s] end, after: fn -> Agent.update(ref, fn _ -> true end) end)
+        KMerger.k_merge(fn -> [s] end, after: fn -> Agent.update(ref, fn _ -> true end) end)
         |> Enum.to_list()
 
       assert Agent.get(ref, & &1)
@@ -165,7 +165,7 @@ defmodule Goblin.IteratorTest do
       s = Stream.map([{:a, 1, "a"}, {:b, 2, "b"}, {:c, 3, "c"}], & &1)
 
       _ =
-        Iterator.k_merge(fn -> [s] end, after: fn -> Agent.update(ref, fn _ -> true end) end)
+        KMerger.k_merge(fn -> [s] end, after: fn -> Agent.update(ref, fn _ -> true end) end)
         |> Enum.take(1)
 
       assert Agent.get(ref, & &1)

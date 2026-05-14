@@ -18,11 +18,7 @@ defmodule Goblin.FileIO do
     :block_size
   ]
 
-  @type t :: %__MODULE__{
-          path: Path.t(),
-          iodev: :file.io_device(),
-          block_size: non_neg_integer()
-        }
+  @type t :: %__MODULE__{}
 
   @spec open!(Path.t(), keyword()) :: t()
   def open!(path, opts \\ []) do
@@ -72,14 +68,14 @@ defmodule Goblin.FileIO do
       fn -> {nil, init, 0} end,
       fn
         _data, :halt ->
-          {:halt, {nil, nil, 0}}
+          {:halt, nil}
 
         data, {file, acc, size} when size + block_size >= max_size ->
           with {:ok, data_size} <- append(file, data, compress?: compress?),
-               acc = reducer.(data, acc, size + data_size),
-               {:ok, acc_size} <- append(file, acc, compress?: compress?),
+               acc = reducer.(data, acc, %{path: file.path, size: data_size}),
+               {:ok, _acc_size} <- append(file, acc, compress?: compress?),
                :ok <- close(file) do
-            {[{:ok, acc, size + data_size + acc_size}], {nil, init, 0}}
+            {[{:ok, acc}], {nil, init, 0}}
           else
             error ->
               close(file)
@@ -91,17 +87,16 @@ defmodule Goblin.FileIO do
 
           case append(file, data, compress?: compress?) do
             {:ok, data_size} ->
-              size = size + data_size
-              acc = reducer.(data, acc, size)
-              {[], {file, acc, size}}
+              acc = reducer.(data, acc, %{path: file.path, size: data_size})
+              {[], {file, acc, size + data_size}}
 
             error ->
-              close(file)
+              file && close(file)
               {[error], :halt}
           end
       end,
       fn
-        {file, acc, _size} ->
+        {%__MODULE__{} = file, acc, _size} ->
           with {:ok, _acc_size} <- append(file, acc, compress?: compress?),
                :ok <- close(file) do
             {[{:ok, acc}], nil}
@@ -111,7 +106,7 @@ defmodule Goblin.FileIO do
           {[], nil}
       end,
       fn
-        {file, _acc, _size} -> close(file)
+        {file, _acc, _size} -> file && close(file)
         _ -> :ok
       end
     )
@@ -158,9 +153,13 @@ defmodule Goblin.FileIO do
       fn -> {file, 0} end,
       fn {file, pos} ->
         case read(file) do
-          {:ok, terms} ->
+          {:ok, terms} when is_list(terms) ->
             {:ok, pos} = :file.position(file.iodev, :cur)
             {terms, {file, pos}}
+
+          {:ok, term} ->
+            {:ok, pos} = :file.position(file.iodev, :cur)
+            {[term], {file, pos}}
 
           :eof ->
             {:halt, :eof}

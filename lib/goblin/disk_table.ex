@@ -18,22 +18,24 @@ defmodule Goblin.DiskTable do
     no_blocks: 0
   ]
 
+  @type t :: %__MODULE__{}
+
+  @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
+          {:ok, list(t())} | {:error, term()}
   def build(stream, opts) do
-    opts = [
-      block_size: @disk_table_block_size,
-      max_size: opts[:max_size],
-      filer: opts[:filer],
-      compress?: opts[:compress?]
-    ]
+    opts = Keyword.put(opts, :block_size, @disk_table_block_size)
+    bf = BloomFilter.new(opts)
+    dt = %__MODULE__{bloom_filter: bf, level_key: opts[:level_key]}
 
     stream
-    |> FileIO.stream_write(%__MODULE__{}, &add_to_table(&2, &1, &3), opts)
+    |> FileIO.stream_write(dt, &add_to_table(&2, &1, &3), opts)
     |> Enum.reduce_while({:ok, []}, fn
-      {:ok, table}, {:ok, tables} -> {:cont, {:ok, [table | tables]}}
+      {:ok, dt}, {:ok, dts} -> {:cont, {:ok, [dt | dts]}}
       error, _acc -> {:halt, error}
     end)
   end
 
+  @spec from_file(Path.t()) :: {:ok, t()} | {:error, term()}
   def from_file(path) do
     io = FileIO.open!(path, block_size: @disk_table_block_size)
 
@@ -48,10 +50,13 @@ defmodule Goblin.DiskTable do
     end
   end
 
+  @spec has_key?(t(), term()) :: boolean()
   def has_key?(dt, key) do
     within_min_max?(dt, key) and bloom_filter_member?(dt, key)
   end
 
+  @spec search(t(), list(term()), non_neg_integer()) ::
+          Enumerable.t({term(), non_neg_integer(), term()})
   def search(dt, keys, seq) do
     Stream.resource(
       fn ->
@@ -85,7 +90,8 @@ defmodule Goblin.DiskTable do
     )
   end
 
-  def stream(dt, opts) do
+  @spec stream(t(), keyword()) :: Enumerable.t({term(), non_neg_integer(), term()})
+  def stream(dt, opts \\ []) do
     {min, max} = opts[:bounds] || {nil, nil}
     seq = opts[:seq] || :infinity
 
@@ -94,7 +100,7 @@ defmodule Goblin.DiskTable do
         fn -> FileIO.open!(dt.id, block_size: @disk_table_block_size) end,
         fn io ->
           case FileIO.read(io) do
-            {:ok, {_, s, _} = triple} when s <= seq ->
+            {:ok, {_, s, _} = triple} when s < seq ->
               {[triple], io}
 
             {:ok, _} ->
@@ -115,7 +121,7 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp add_to_table(table, triple, size) do
+  defp add_to_table(table, triple, params) do
     {key, seq, _val} = triple
 
     key_range =
@@ -131,15 +137,16 @@ defmodule Goblin.DiskTable do
       end
 
     bloom_filter = BloomFilter.put(table.bloom_filter, key)
-    no_blocks = table.no_blocks + div(size, @disk_table_block_size)
+    no_blocks = table.no_blocks + div(params.size, @disk_table_block_size)
 
     %{
       table
-      | key_range: key_range,
+      | id: params.path,
+        key_range: key_range,
         seq_range: seq_range,
         bloom_filter: bloom_filter,
         no_blocks: no_blocks,
-        size: table.size + size
+        size: table.size + params.size
     }
   end
 
