@@ -635,6 +635,7 @@ defmodule Goblin do
                tag_id_with_type(old),
                state.mem_table.max_sequence
              ) do
+        # make into single operation
         state = make_visible(state, new)
         Enum.each(old, &View.soft_delete_table(state.view, &1.id))
 
@@ -756,6 +757,8 @@ defmodule Goblin do
 
     flush_ref = create_flush_job(mt, opts) |> start_job()
     flush_refs = MapSet.put(state.flush_refs, flush_ref)
+    # insert {flush_ref, mt}
+    # when updating View, add all mt's in set as well (not yet flushed) to -1 lk
     %{state | flush_refs: flush_refs}
   end
 
@@ -805,8 +808,14 @@ defmodule Goblin do
 
   defp remove([]), do: :ok
 
-  defp remove([table | rest]) do
-    with :ok <- FileIO.remove(table.id) do
+  defp remove([%MemTable{} = mt | rest]) do
+    with :ok <- MemTable.destroy(mt) do
+      remove(rest)
+    end
+  end
+
+  defp remove([%DiskTable{} = dt | rest]) do
+    with :ok <- FileIO.remove(dt.id) do
       remove(rest)
     end
   end

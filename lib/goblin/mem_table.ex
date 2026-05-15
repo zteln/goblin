@@ -45,6 +45,14 @@ defmodule Goblin.MemTable do
   @spec close(t()) :: :ok | {:error, term()}
   def close(mt), do: FileIO.close(mt.io)
 
+  @spec destroy(t()) :: :ok | {:error, term()}
+  def destroy(mt) do
+    with :ok <- FileIO.remove(mt.io) do
+      :ets.delete(mt.ref)
+      :ok
+    end
+  end
+
   @spec append(t(), list({term(), non_neg_integer(), term()})) :: {:ok, t()} | {:error, term()}
   def append(mem_table, commits) do
     with {:ok, _size} <- FileIO.append(mem_table.io, commits),
