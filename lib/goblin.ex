@@ -73,10 +73,11 @@ defmodule Goblin do
     :view,
     :manifest,
     :file_counter,
-    :compact_ref,
+    :compacting,
     :opts,
+    :sequence,
     levels: %{},
-    flush_refs: MapSet.new()
+    flushing: %{}
   ]
 
   @doc """
@@ -261,7 +262,7 @@ defmodule Goblin do
     tx_key = make_ref()
 
     try do
-      {max_lk, seq, tx_id} = View.acquire(view, tx_key)
+      {seq, max_lk, tx_id} = View.add_reader(view, tx_key)
 
       %Tx{
         mode: :read,
@@ -272,7 +273,7 @@ defmodule Goblin do
       }
       |> callback.()
     after
-      View.release(view, tx_key)
+      View.release_reader(view, tx_key)
       GenServer.cast(db, :try_sweep)
     end
   end
@@ -375,11 +376,11 @@ defmodule Goblin do
 
     Tx.scan(
       fn ->
-        {_max_lk, seq, tx_id} = View.acquire(view, tx_key)
+        {seq, _max_lk, tx_id} = View.add_reader(view, tx_key)
         {seq, View.get_tables(view, tx_id)}
       end,
       Keyword.put(opts, :after, fn ->
-        View.release(view, tx_key)
+        View.release_reader(view, tx_key)
         GenServer.cast(db, :try_sweep)
       end)
     )
@@ -517,28 +518,47 @@ defmodule Goblin do
 
     case restore_db(state, files) do
       {:ok, state} ->
-        seq = max(manifest_seq, state.mem_table.max_sequence)
-        View.update_sequence(state.view, seq)
+        publish_tables(state)
+        seq = max(manifest_seq, state.sequence)
+        View.put_sequence(state.view, seq)
         publish_ready(state.view)
-        {:noreply, state, {:continue, :compact}}
+        {:noreply, %{state | sequence: seq}, {:continue, :compact}}
 
       {:error, reason} ->
         {:stop, reason, state}
     end
   end
 
-  def handle_continue(:sweep, state) do
-    to_remove = View.sweep(state.view)
+  def handle_continue(:flush, state) do
+    if MemTable.size(state.mem_table) > state.opts[:mem_limit] do
+      filer = file_gen(state.file_counter, state.data_dir, @wal_suffix)
 
-    case remove(to_remove) do
-      :ok -> {:noreply, state, {:continue, :compact}}
-      {:error, reason} -> {:stop, reason, state}
+      with {:ok, new_mt} <- MemTable.rotate(state.mem_table, filer: filer),
+           {:ok, manifest} <-
+             Manifest.update(
+               state.manifest,
+               tag_id_with_type([new_mt]),
+               [],
+               state.sequence
+             ) do
+        state =
+          %{state | mem_table: new_mt, manifest: manifest}
+          |> merge(0, [state.mem_table])
+
+        publish_tables(state)
+        {:noreply, state, {:continue, :compact}}
+      else
+        {:error, reason} -> {:stop, reason, state}
+      end
+    else
+      {:noreply, state, {:continue, :compact}}
     end
   end
 
-  def handle_continue(:compact, %{compact_ref: nil} = state) do
+  def handle_continue(:compact, %{compacting: nil} = state) do
     opts =
       Keyword.take(state.opts, [
+        :mem_limit,
         :flush_level_file_limit,
         :level_base_size,
         :level_size_multiplier
@@ -549,17 +569,35 @@ defmodule Goblin do
         {:noreply, state}
 
       {:merge, lk, dts, filter_tombstones?, levels} ->
-        state = compact(state, lk, dts, filter_tombstones?)
-        {:noreply, %{state | levels: levels}}
+        state =
+          %{state | levels: levels}
+          |> merge(lk, dts, filter_tombstones?)
+
+        {:noreply, state}
     end
   end
 
   def handle_continue(:compact, state), do: {:noreply, state}
 
+  def handle_continue(:sweep, state) do
+    case View.sweep(state.view) do
+      [] ->
+        {:noreply, state, {:continue, :compact}}
+
+      to_remove ->
+        with :ok <- remove(to_remove),
+             {:ok, manifest} <- Manifest.sweep_dirt(state.manifest) do
+          {:noreply, %{state | manifest: manifest}, {:continue, :compact}}
+        else
+          {:error, reason} -> {:stop, reason, state}
+        end
+    end
+  end
+
   @impl GenServer
   def handle_call({:transaction, callback}, _from, state) do
     tx_key = make_ref()
-    {max_lk, seq, tx_id} = View.acquire(state.view, tx_key)
+    {seq, max_lk, tx_id} = View.add_reader(state.view, tx_key)
 
     tx = %Tx{
       mode: :write,
@@ -573,13 +611,12 @@ defmodule Goblin do
       try do
         case callback.(tx) do
           {:commit, tx, reply} ->
-            View.release(state.view, tx_key)
             new_seq = tx.sequence
             commits = Enum.reverse(tx.commits)
 
-            with {:ok, state} <- apply_commits(state, commits),
-                 :ok <- View.update_sequence(state.view, new_seq) do
-              {:ok, reply, state}
+            with {:ok, mem_table} <- MemTable.append(state.mem_table, commits) do
+              View.put_sequence(state.view, new_seq)
+              {:ok, reply, %{state | mem_table: mem_table, sequence: new_seq}}
             end
 
           :abort ->
@@ -591,10 +628,10 @@ defmodule Goblin do
         _, _ -> {:error, :aborted}
       end
 
-    View.release(state.view, tx_key)
+    View.release_reader(state.view, tx_key)
 
     case result do
-      {:ok, reply, state} -> {:reply, reply, state}
+      {:ok, reply, state} -> {:reply, reply, state, {:continue, :flush}}
       {:error, :aborted} -> {:reply, {:error, :aborted}, state}
       {:error, reason} = error -> {:stop, reason, error, state}
     end
@@ -612,7 +649,7 @@ defmodule Goblin do
   end
 
   def handle_call(:flushing?, _from, state),
-    do: {:reply, MapSet.size(state.flush_refs) != 0, state}
+    do: {:reply, map_size(state.flushing) != 0, state}
 
   def handle_call(:compacting?, _from, state),
     do: {:reply, state.compact_ref != nil, state}
@@ -624,28 +661,32 @@ defmodule Goblin do
 
   @impl GenServer
   def handle_info({ref, {:ok, new, old}}, state) do
-    if MapSet.member?(state.flush_refs, ref) or ref == state.compact_ref do
-      flush_refs = MapSet.delete(state.flush_refs, ref)
-      compact_ref = if ref == state.compact_ref, do: nil, else: state.compact_ref
+    if Map.has_key?(state.flushing, ref) or ref == state.compacting do
+      flushing = Map.delete(state.flushing, ref)
+      compacting = if ref == state.compacting, do: nil, else: state.compacting
 
       with {:ok, manifest} <-
              Manifest.update(
                state.manifest,
                tag_id_with_type(new),
                tag_id_with_type(old),
-               state.mem_table.max_sequence
+               state.sequence
              ) do
-        # make into single operation
-        state = make_visible(state, new)
-        Enum.each(old, &View.soft_delete_table(state.view, &1.id))
+        levels = Enum.reduce(new, state.levels, &Levels.put(&2, &1.level_key, &1))
 
-        {:noreply,
-         %{
-           state
-           | manifest: manifest,
-             flush_refs: flush_refs,
-             compact_ref: compact_ref
-         }, {:continue, :sweep}}
+        state = %{
+          state
+          | levels: levels,
+            manifest: manifest,
+            flushing: flushing,
+            compacting: compacting
+        }
+
+        publish_tables(state)
+
+        {:noreply, state, {:continue, :sweep}}
+      else
+        {:error, reason} -> {:stop, reason, state}
       end
     else
       {:noreply, state}
@@ -653,7 +694,7 @@ defmodule Goblin do
   end
 
   def handle_info({ref, {:error, reason}}, state) do
-    if MapSet.member?(state.flush_refs, ref) or ref == state.compact_ref,
+    if Map.has_key?(state.flushing, ref) or ref == state.compacting,
       do: {:stop, reason, state},
       else: {:noreply, state}
   end
@@ -667,29 +708,10 @@ defmodule Goblin do
     :ok
   end
 
-  defp apply_commits(state, commits) do
-    case MemTable.append(state.mem_table, commits) do
-      {:ok, mem_table} ->
-        {:ok, %{state | mem_table: mem_table}}
-
-      {:ok, old_mt, new_mt} ->
-        View.add_table(state.view, new_mt.id, -1, new_mt)
-        new = tag_id_with_type([new_mt])
-        state = flush(state, old_mt)
-
-        with {:ok, manifest} <- Manifest.update(state.manifest, new, [], old_mt.max_sequence) do
-          {:ok, %{state | mem_table: new_mt, manifest: manifest}}
-        end
-
-      error ->
-        error
-    end
-  end
-
   defp restore_db(%{mem_table: nil} = state, []) do
     with {:ok, state} <- open_mem_table(state),
          new = tag_id_with_type([state.mem_table]),
-         {:ok, manifest} <- Manifest.update(state.manifest, new, [], state.mem_table.max_sequence) do
+         {:ok, manifest} <- Manifest.update(state.manifest, new, [], state.sequence) do
       {:ok, %{state | manifest: manifest}}
     end
   end
@@ -700,7 +722,7 @@ defmodule Goblin do
     state =
       case state.mem_table do
         nil -> state
-        mt -> flush(state, mt)
+        mt -> merge(state, 0, [mt])
       end
 
     with {:ok, state} <- open_mem_table(state, file) do
@@ -710,7 +732,6 @@ defmodule Goblin do
 
   defp restore_db(state, [{:disk, file} | files]) do
     with {:ok, dt} <- DiskTable.from_file(file) do
-      make_visible(state, [dt])
       levels = Levels.put(state.levels, dt.level_key, dt)
       state = %{state | levels: levels}
       restore_db(state, files)
@@ -721,48 +742,17 @@ defmodule Goblin do
     filer = file_gen(state.file_counter, state.data_dir, @wal_suffix)
     file = file || filer.()
 
-    opts = [
-      mem_limit: state.opts[:mem_limit],
-      filer: filer
-    ]
-
-    with {:ok, mt} <- MemTable.new(file, opts) do
-      make_visible(state, [mt])
-      {:ok, %{state | mem_table: mt}}
+    with {:ok, seq, mt} <- MemTable.new(file) do
+      {:ok, %{state | mem_table: mt, sequence: seq}}
     end
   end
 
-  defp make_visible(state, []), do: state
-
-  defp make_visible(state, [%MemTable{} = mt | rest]) do
-    View.add_table(state.view, mt.id, -1, mt)
-    make_visible(state, rest)
+  defp publish_tables(state) do
+    mem_tables = [state.mem_table | Map.values(state.flushing)]
+    View.put_snapshot(state.view, mem_tables, state.levels)
   end
 
-  defp make_visible(state, [%DiskTable{} = dt | rest]) do
-    View.add_table(state.view, dt.id, dt.level_key, dt)
-    levels = Levels.put(state.levels, dt.level_key, dt)
-    make_visible(%{state | levels: levels}, rest)
-  end
-
-  defp flush(state, mt) do
-    opts = [
-      level_key: 0,
-      compress?: false,
-      bit_array_size: state.opts[:bit_array_size],
-      fpp: state.opts[:fpp],
-      max_size: state.opts[:max_sst_size],
-      filer: file_gen(state.file_counter, state.data_dir)
-    ]
-
-    flush_ref = create_flush_job(mt, opts) |> start_job()
-    flush_refs = MapSet.put(state.flush_refs, flush_ref)
-    # insert {flush_ref, mt}
-    # when updating View, add all mt's in set as well (not yet flushed) to -1 lk
-    %{state | flush_refs: flush_refs}
-  end
-
-  defp compact(state, lk, dts, filter_tombstones?) do
+  defp merge(state, lk, tables, filter_tombstones? \\ false) do
     opts = [
       level_key: lk,
       compress?: lk > 1,
@@ -773,37 +763,38 @@ defmodule Goblin do
       filter_tombstones?: filter_tombstones?
     ]
 
-    compact_ref = create_compaction_job(dts, opts) |> start_job()
-    %{state | compact_ref: compact_ref}
+    run_merge(state, tables, opts)
   end
 
-  defp create_flush_job(mt, opts) do
-    fn ->
-      stream = MemTable.stream(mt)
+  defp run_merge(state, [%MemTable{} = mt], opts) do
+    %{ref: ref} =
+      Task.async(fn ->
+        stream = MemTable.stream(mt)
 
-      with {:ok, dts} <- DiskTable.build(stream, opts) do
-        {:ok, dts, [mt]}
-      end
-    end
+        with {:ok, dts} <- DiskTable.build(stream, opts) do
+          {:ok, dts, [mt]}
+        end
+      end)
+
+    flushing = Map.put(state.flushing, ref, mt)
+    %{state | flushing: flushing}
   end
 
-  defp create_compaction_job(dts, opts) do
-    fn ->
-      stream =
-        KMerger.k_merge(
-          fn -> Enum.map(dts, &DiskTable.stream/1) end,
-          filter_tombstones?: opts[:filter_tombstones?]
-        )
+  defp run_merge(state, dts, opts) do
+    %{ref: ref} =
+      Task.async(fn ->
+        stream =
+          KMerger.k_merge(
+            fn -> Enum.map(dts, &DiskTable.stream/1) end,
+            filter_tombstones?: opts[:filter_tombstones?]
+          )
 
-      with {:ok, new_dts} <- DiskTable.build(stream, opts) do
-        {:ok, new_dts, dts}
-      end
-    end
-  end
+        with {:ok, new_dts} <- DiskTable.build(stream, opts) do
+          {:ok, new_dts, dts}
+        end
+      end)
 
-  defp start_job(job) do
-    %{ref: ref} = Task.async(job)
-    ref
+    %{state | compacting: ref}
   end
 
   defp remove([]), do: :ok
@@ -827,7 +818,9 @@ defmodule Goblin do
         |> Integer.to_string(16)
         |> String.pad_leading(20, "0")
 
-      Path.join(dir, "#{prefix}.#{suffix}")
+      path = Path.join(dir, "#{prefix}.#{suffix}")
+      if File.exists?(path), do: File.rm!(path)
+      path
     end
   end
 

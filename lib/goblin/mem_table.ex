@@ -6,23 +6,17 @@ defmodule Goblin.MemTable do
   defstruct [
     :id,
     :io,
-    :ref,
-    :max_sequence,
-    :mem_limit,
-    :filer
+    :ref
   ]
 
   @type t :: %__MODULE__{
           id: Path.t(),
           io: FileIO.t(),
-          ref: :ets.table(),
-          max_sequence: non_neg_integer(),
-          mem_limit: non_neg_integer(),
-          filer: (-> Path.t())
+          ref: :ets.table()
         }
 
-  @spec new(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def new(path, opts) do
+  @spec new(Path.t()) :: {:ok, t()} | {:error, term()}
+  def new(path) do
     with {:ok, io} <- FileIO.open(path, write?: true) do
       ref = new_table()
 
@@ -30,14 +24,11 @@ defmodule Goblin.MemTable do
         FileIO.stream!(io, truncate?: true)
         |> insert_commits(ref)
 
-      {:ok,
+      {:ok, max_seq,
        %__MODULE__{
          io: io,
          id: path,
-         ref: ref,
-         max_sequence: max_seq + 1,
-         mem_limit: opts[:mem_limit],
-         filer: opts[:filer]
+         ref: ref
        }}
     end
   end
@@ -47,7 +38,7 @@ defmodule Goblin.MemTable do
 
   @spec destroy(t()) :: :ok | {:error, term()}
   def destroy(mt) do
-    with :ok <- FileIO.remove(mt.io) do
+    with :ok <- FileIO.remove(mt.id) do
       :ets.delete(mt.ref)
       :ok
     end
@@ -57,9 +48,8 @@ defmodule Goblin.MemTable do
   def append(mem_table, commits) do
     with {:ok, _size} <- FileIO.append(mem_table.io, commits),
          :ok <- FileIO.sync(mem_table.io) do
-      max_seq = insert_commits(commits, mem_table.ref)
-      mem_table = %{mem_table | max_sequence: max_seq + 1}
-      maybe_rotate(mem_table)
+      insert_commits(commits, mem_table.ref)
+      {:ok, mem_table}
     end
   end
 
@@ -100,22 +90,19 @@ defmodule Goblin.MemTable do
     )
   end
 
-  defp maybe_rotate(mem_table) do
-    if size(mem_table.ref) > mem_table.mem_limit do
-      rotate(mem_table)
-    else
-      {:ok, mem_table}
+  @spec rotate(t(), keyword()) :: {:ok, t()} | {:error, term()}
+  def rotate(mem_table, opts) do
+    with :ok <- FileIO.close(mem_table.io),
+         new_id = opts[:filer].(),
+         {:ok, io} <- FileIO.open(new_id, write?: true) do
+      ref = new_table()
+      {:ok, %{mem_table | id: new_id, io: io, ref: ref}}
     end
   end
 
-  defp rotate(mem_table) do
-    with :ok <- FileIO.close(mem_table.io),
-         new_id = mem_table.filer.(),
-         {:ok, io} <- FileIO.open(new_id, write?: true) do
-      ref = new_table()
-      {:ok, mem_table, %{mem_table | id: new_id, io: io, ref: ref}}
-    end
-  end
+  @spec size(t()) :: non_neg_integer()
+  def size(mt),
+    do: :ets.info(mt.ref, :memory) * :erlang.system_info(:wordsize)
 
   defp new_table() do
     :ets.new(:mem_table, [:ordered_set])
@@ -177,8 +164,4 @@ defmodule Goblin.MemTable do
   defp handle_iteration(_ref, :"$end_of_table"), do: :end_of_iteration
   defp handle_iteration(_ref, {key, seq}), do: {key, abs(seq)}
   defp handle_iteration(ref, idx), do: iterate(ref, idx)
-
-  defp size(ref) do
-    :ets.info(ref, :memory) * :erlang.system_info(:wordsize)
-  end
 end

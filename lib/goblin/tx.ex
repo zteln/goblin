@@ -186,16 +186,12 @@ defmodule Goblin.Tx do
     key = tag_key(key, opts[:tag])
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    tables = fn level_key ->
-      [
-        tx_table
-        | View.get_tables(
-            tx.view,
-            tx.tx_id,
-            level_key,
-            &table_has_key?(&1, key)
-          )
-      ]
+    tables = fn lk ->
+      tables =
+        View.get_tables(tx.view, tx.tx_id, lk)
+        |> Enum.filter(&table_has_key?(&1, key))
+
+      [tx_table | tables]
     end
 
     search_opts = [
@@ -236,18 +232,12 @@ defmodule Goblin.Tx do
     keys = Enum.map(keys, &tag_key(&1, opts[:tag]))
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    tables = fn level_key ->
-      [
-        tx_table
-        | View.get_tables(
-            tx.view,
-            tx.tx_id,
-            level_key,
-            fn table ->
-              Enum.any?(keys, &table_has_key?(table, &1))
-            end
-          )
-      ]
+    tables = fn lk ->
+      tables =
+        View.get_tables(tx.view, tx.tx_id, lk)
+        |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
+
+      [tx_table | tables]
     end
 
     opts = [

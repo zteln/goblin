@@ -11,18 +11,17 @@ defmodule Goblin.Manifest do
     :data_dir,
     :path,
     size: 0,
-    snapshot: {0, 0, []}
-    # snapshot: {0, 0, [], []}
+    snapshot: {0, 0, [], []}
   ]
-
-  # track dirt (removed files) and periodically clean
 
   @type t :: %__MODULE__{
           io: FileIO.t(),
           data_dir: Path.t(),
           path: Path.t(),
           size: non_neg_integer(),
-          snapshot: {non_neg_integer(), non_neg_integer(), list(Path.t())}
+          snapshot:
+            {non_neg_integer(), non_neg_integer(), list({atom(), Path.t()}),
+             list({atom(), Path.t()})}
         }
 
   @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
@@ -52,33 +51,54 @@ defmodule Goblin.Manifest do
   @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()}), nil | non_neg_integer()) ::
           {:ok, t()} | {:error, term()}
   def update(manifest, add, del, seq) do
-    {_, no_files, files} = manifest.snapshot
+    {_, no_files, files, dirt} = manifest.snapshot
     add = Enum.map(add, &trim_dir/1)
     del = Enum.map(del, &trim_dir/1)
     seq = if seq, do: seq, else: manifest.sequence
 
     files =
-      (add ++ files)
+      (files ++ add)
       |> Enum.reject(&(&1 in del))
 
-    snapshot = {seq, length(add) + no_files, files}
-
-    with {:ok, size} <- FileIO.append(manifest.io, [snapshot]) do
-      manifest = %{manifest | snapshot: snapshot, size: manifest.size + size}
-      maybe_rotate(manifest)
-    end
+    dirt = del ++ dirt
+    snapshot = {seq, length(add) + no_files, files, dirt}
+    manifest = %{manifest | snapshot: snapshot}
+    write_snapshot(manifest)
   end
 
   @spec snapshot(t()) :: {non_neg_integer(), non_neg_integer(), list({atom(), Path.t()})}
   def snapshot(manifest) do
-    {seq, no_files, files} = manifest.snapshot
+    {seq, no_files, files, _dirt} = manifest.snapshot
 
     files =
-      Enum.map(files, fn {type, file} ->
-        {type, Path.join(manifest.data_dir, file)}
+      Enum.map(files, fn {type, name} ->
+        {type, Path.join(manifest.data_dir, name)}
       end)
 
     {seq, no_files, files}
+  end
+
+  @spec sweep_dirt(t()) :: {:ok, t()} | {:error, term()}
+  def sweep_dirt(manifest) do
+    {seq, no_files, files, dirt} = manifest.snapshot
+
+    dirt =
+      Enum.filter(dirt, fn {_, name} ->
+        path = Path.join(manifest.data_dir, name)
+        if File.exists?(path), do: File.rm!(path)
+        true
+      end)
+
+    snapshot = {seq, no_files, files, dirt}
+    manifest = %{manifest | snapshot: snapshot}
+    write_snapshot(manifest)
+  end
+
+  defp write_snapshot(manifest) do
+    with {:ok, size} <- FileIO.append(manifest.io, [manifest.snapshot]) do
+      manifest = %{manifest | size: manifest.size + size}
+      maybe_rotate(manifest)
+    end
   end
 
   defp recover_manifest(manifest) do
