@@ -77,7 +77,8 @@ defmodule Goblin do
     :sequence,
     levels: %{},
     flushing: %{},
-    compacting: %{}
+    compacting: %{},
+    readers: %{}
   ]
 
   @doc """
@@ -258,8 +259,9 @@ defmodule Goblin do
       # => {"Alice", "Bob"}
   """
   def read(db, callback) do
-    view = ext_ref(db)
+    view = get_view(db)
     tx_key = make_ref()
+    GenServer.cast(db, {:track_reader, self(), tx_key})
 
     try do
       {seq, max_lk, tx_id} = View.add_reader(view, tx_key)
@@ -273,6 +275,7 @@ defmodule Goblin do
       }
       |> callback.()
     after
+      GenServer.cast(db, {:untrack_reader, tx_key})
       View.release_reader(view, tx_key)
       GenServer.cast(db, :try_sweep)
     end
@@ -343,6 +346,7 @@ defmodule Goblin do
 
   @doc """
   Returns a stream of key-value pairs, optionally bounded by a range.
+  Captures snapshots at call.
 
   Entries are sorted by key in ascending order.
   Both `min` and `max` are inclusive.
@@ -369,17 +373,26 @@ defmodule Goblin do
 
       Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
       # => [{:alice, "Alice"}, {:bob, "Bob"}]
+
+      scan = Goblin.scan(db)
+      Enum.to_list(scan)
+      # => []
+      Goblin.put(db, :alice, "Alice")
+      Enum.to_list(scan)
+      # => [{:alice, "Alice"}]
   """
   def scan(db, opts \\ []) do
-    view = ext_ref(db)
+    view = get_view(db)
     tx_key = make_ref()
 
     Tx.scan(
       fn ->
+        GenServer.cast(db, {:track_reader, self(), tx_key})
         {seq, _max_lk, tx_id} = View.add_reader(view, tx_key)
         {seq, View.get_tables(view, tx_id)}
       end,
       Keyword.put(opts, :after, fn ->
+        GenServer.cast(db, {:untrack_reader, tx_key})
         View.release_reader(view, tx_key)
         GenServer.cast(db, :try_sweep)
       end)
@@ -522,7 +535,7 @@ defmodule Goblin do
       publish_tables(state)
       seq = max(manifest_seq, state.sequence)
       View.put_sequence(state.view, seq)
-      publish_ready(state.view)
+      mark_ready(self(), state.view)
       {:noreply, %{state | manifest: manifest, sequence: seq}, {:continue, :compact}}
     else
       {:error, reason} -> {:stop, reason, state}
@@ -660,6 +673,18 @@ defmodule Goblin do
     {:noreply, state, {:continue, :sweep}}
   end
 
+  def handle_cast({:track_reader, reader_pid, reader_key}, state) do
+    monitor_ref = Process.monitor(reader_pid)
+    readers = Map.put(state.readers, reader_key, monitor_ref)
+    {:noreply, %{state | readers: readers}}
+  end
+
+  def handle_cast({:untrack_reader, reader_key}, state) do
+    {monitor_ref, readers} = Map.pop(state.readers, reader_key)
+    monitor_ref && Process.demonitor(monitor_ref, [:flush])
+    {:noreply, %{state | readers: readers}}
+  end
+
   @impl GenServer
   def handle_info({ref, {:ok, new, old}}, state) do
     if Map.has_key?(state.flushing, ref) or Map.has_key?(state.compacting, ref) do
@@ -698,6 +723,26 @@ defmodule Goblin do
     if Map.has_key?(state.flushing, ref) or Map.has_key?(state.compacting, ref),
       do: {:stop, reason, state},
       else: {:noreply, state}
+  end
+
+  def handle_info(
+        {:DOWN, ref, _, _, reason},
+        %{flushing: flushing, compacting: compacting} = state
+      )
+      when is_map_key(flushing, ref) or is_map_key(compacting, ref) do
+    {:stop, reason, state}
+  end
+
+  def handle_info({:DOWN, ref, _, _, _}, state) do
+    case Enum.find(state.readers, fn {_, monitor_ref} -> monitor_ref == ref end) do
+      nil ->
+        {:noreply, state}
+
+      {reader_key, _} ->
+        View.release_reader(state.view, reader_key)
+        readers = Map.delete(state.readers, reader_key)
+        {:noreply, %{state | readers: readers}}
+    end
   end
 
   def handle_info(_, state), do: {:noreply, state}
@@ -849,24 +894,19 @@ defmodule Goblin do
   defp tag_id_with_type(%MemTable{} = mt), do: {:mem, mt.id}
   defp tag_id_with_type(%DiskTable{} = dt), do: {:disk, dt.id}
 
-  defp publish_ready(ref), do: Process.put(:"$goblin_ext_ref", ref)
+  defp mark_ready(db, ref), do: :persistent_term.put({__MODULE__, db}, ref)
 
-  defp ext_ref(pid_or_name, timeout \\ 20000)
-  defp ext_ref(_, timeout) when timeout <= 0, do: raise("no reference found")
-  defp ext_ref(nil, _timeout), do: raise("no reference found")
+  defp get_view(db, timeout \\ 20_000)
+  defp get_view(_, timeout) when timeout <= 0, do: raise("db not ready")
 
-  defp ext_ref(pid, timeout) when is_pid(pid) do
-    {:dictionary, dictionary} = Process.info(pid, :dictionary)
-
-    case Keyword.get(dictionary, :"$goblin_ext_ref") do
+  defp get_view(db, timeout) do
+    case :persistent_term.get({__MODULE__, db}, nil) do
       nil ->
         Process.sleep(50)
-        ext_ref(pid, timeout - 50)
+        get_view(db, timeout - 50)
 
-      ext_ref ->
-        ext_ref
+      view ->
+        view
     end
   end
-
-  defp ext_ref(name, timeout), do: ext_ref(Process.whereis(name), timeout - 50)
 end

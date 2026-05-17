@@ -99,7 +99,8 @@ defmodule Goblin.Manifest do
   end
 
   defp write_snapshot(manifest) do
-    with {:ok, size} <- FileIO.append(manifest.io, [manifest.snapshot]) do
+    with {:ok, size} <- FileIO.append(manifest.io, [manifest.snapshot]),
+         :ok <- FileIO.sync(manifest.io) do
       manifest = %{manifest | size: manifest.size + size}
       maybe_rotate(manifest)
     end
