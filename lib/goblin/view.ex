@@ -17,9 +17,9 @@ defmodule Goblin.View do
 
   @spec put_sequence(t(), non_neg_integer()) :: :ok
   def put_sequence(ref, seq) do
-    case :ets.prev(ref, {:snapshot, nil}) do
-      {:snapshot, _} = key -> :ets.update_element(ref, key, {2, seq})
-      _ -> :ets.insert(ref, {{:snapshot, 0}, seq, -1, [], %{}})
+    case current_meta(ref) do
+      {_, _, version} -> :ets.update_element(ref, {:snapshot, version}, {2, seq})
+      :empty -> raise "no existing snapshots"
     end
 
     :ok
@@ -27,7 +27,12 @@ defmodule Goblin.View do
 
   @spec put_snapshot(t(), list(Goblin.MemTable.t()), map()) :: :ok
   def put_snapshot(ref, mem_tables, levels) do
-    {seq, _, version} = current_meta(ref)
+    {seq, version} =
+      case current_meta(ref) do
+        :empty -> {0, 0}
+        {seq, _, version} -> {seq, version}
+      end
+
     max_lk = levels |> Map.keys() |> Enum.max(fn -> -1 end)
     :ets.insert(ref, {{:snapshot, version + 1}, seq, max_lk, mem_tables, levels})
     :ok
@@ -60,10 +65,17 @@ defmodule Goblin.View do
   @spec add_reader(t(), term()) :: {non_neg_integer(), level_key(), non_neg_integer()}
   def add_reader(ref, reader_key) do
     :ets.insert(ref, {{:reader, :pending, reader_key}})
-    {seq, max_lk, version} = current_meta(ref)
-    :ets.insert(ref, {{:reader, version, reader_key}})
-    :ets.delete(ref, {:reader, :pending, reader_key})
-    {seq, max_lk, version}
+
+    case current_meta(ref) do
+      {seq, max_lk, version} ->
+        :ets.insert(ref, {{:reader, version, reader_key}})
+        :ets.delete(ref, {:reader, :pending, reader_key})
+        {seq, max_lk, version}
+
+      :empty ->
+        :ets.delete(ref, {:reader, :pending, reader_key})
+        raise "cannot have a reader before any snapshots"
+    end
   end
 
   @spec release_reader(t(), term()) :: :ok
@@ -74,7 +86,11 @@ defmodule Goblin.View do
 
   @spec sweep(t()) :: list(Goblin.MemTable.t() | Goblin.DiskTable.t())
   def sweep(ref) do
-    {_, _, max_v} = current_meta(ref)
+    max_v =
+      case current_meta(ref) do
+        :empty -> 0
+        {_, _, max_v} -> max_v
+      end
 
     first_v =
       case :ets.next(ref, {:snapshot, -1}) do
@@ -134,7 +150,7 @@ defmodule Goblin.View do
         {seq, max_lk, version}
 
       _ ->
-        {0, -1, 0}
+        :empty
     end
   end
 

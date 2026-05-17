@@ -19,31 +19,34 @@ defmodule Goblin.MemTableTest do
 
   defp open_mt(ctx, opts \\ []) do
     path = Keyword.get(opts, :path, wal_path(ctx))
-    mem_limit = Keyword.get(opts, :mem_limit, 10 * 1024 * 1024)
-    filer = Keyword.get_lazy(opts, :filer, fn -> new_filer(ctx) end)
-    {:ok, mt} = MemTable.new(path, mem_limit: mem_limit, filer: filer)
+    {:ok, _next_seq, mt} = MemTable.new(path)
     mt
   end
 
-  describe "new/2" do
-    test "creates a fresh memtable with max_sequence 0 and an open WAL file", ctx do
+  describe "new/1" do
+    test "creates a fresh memtable backed by a WAL file", ctx do
       mt = open_mt(ctx)
 
       assert mt.id == wal_path(ctx)
-      assert mt.max_sequence == 0
       assert File.exists?(wal_path(ctx))
       refute MemTable.has_key?(mt, :anything)
       assert MemTable.stream(mt) |> Enum.to_list() == []
     end
 
-    test "replays persisted commits on reopen", ctx do
+    test "fresh file: next_seq is 0", ctx do
+      {:ok, next_seq, _mt} = MemTable.new(wal_path(ctx))
+
+      assert next_seq == 0
+    end
+
+    test "reopens with next_seq one past the largest persisted seq", ctx do
       mt = open_mt(ctx)
       {:ok, mt} = MemTable.append(mt, [{:a, 0, "v0"}, {:b, 1, "v1"}])
       :ok = MemTable.close(mt)
 
-      reopened = open_mt(ctx)
+      {:ok, next_seq, reopened} = MemTable.new(wal_path(ctx))
 
-      assert reopened.max_sequence == 2
+      assert next_seq == 2
       assert MemTable.search(reopened, [:a, :b], 10) == [{:a, 0, "v0"}, {:b, 1, "v1"}]
     end
 
@@ -55,10 +58,10 @@ defmodule Goblin.MemTableTest do
       valid_size = :filelib.file_size(wal_path(ctx))
       File.write!(wal_path(ctx), :binary.copy(<<0xFF>>, 512), [:append])
 
-      reopened = open_mt(ctx)
+      {:ok, next_seq, reopened} = MemTable.new(wal_path(ctx))
 
       assert MemTable.search(reopened, [:a, :b], 10) == [{:a, 0, "v0"}, {:b, 1, "v1"}]
-      assert reopened.max_sequence == 2
+      assert next_seq == 2
 
       :ok = MemTable.close(reopened)
       assert :filelib.file_size(wal_path(ctx)) == valid_size
@@ -77,11 +80,11 @@ defmodule Goblin.MemTableTest do
       :ok = :file.truncate(f)
       :file.close(f)
 
-      reopened = open_mt(ctx)
+      {:ok, next_seq, reopened} = MemTable.new(wal_path(ctx))
 
       assert MemTable.search(reopened, [:a], 10) == [{:a, 0, "v0"}]
       assert MemTable.search(reopened, [:b], 10) == []
-      assert reopened.max_sequence == 1
+      assert next_seq == 1
 
       :ok = MemTable.close(reopened)
       assert :filelib.file_size(wal_path(ctx)) == survived_size
@@ -108,33 +111,14 @@ defmodule Goblin.MemTableTest do
       assert MemTable.search(mt, [:k], 10) == [{:k, 1, :"$goblin_tombstone"}]
     end
 
-    test "max_sequence advances to the next available seq after each append", ctx do
+    test "writes persist across close + reopen", ctx do
       mt = open_mt(ctx)
+      {:ok, mt} = MemTable.append(mt, [{:a, 0, "v"}])
+      :ok = MemTable.close(mt)
 
-      {:ok, mt} = MemTable.append(mt, [{:a, 5, "v"}])
-      assert mt.max_sequence == 6
+      {:ok, _next_seq, reopened} = MemTable.new(wal_path(ctx))
 
-      {:ok, mt} = MemTable.append(mt, [{:b, 9, "v"}])
-      assert mt.max_sequence == 10
-    end
-
-    test "rotates when ets memory exceeds mem_limit", ctx do
-      filer = new_filer(ctx)
-      mt = open_mt(ctx, mem_limit: 0, filer: filer)
-
-      assert {:ok, old_mt, new_mt} = MemTable.append(mt, [{:k, 0, "v"}])
-
-      assert old_mt.id == wal_path(ctx)
-      assert new_mt.id != old_mt.id
-      assert File.exists?(old_mt.id)
-      assert File.exists?(new_mt.id)
-
-      assert MemTable.has_key?(old_mt, :k)
-      assert MemTable.search(old_mt, [:k], 10) == [{:k, 0, "v"}]
-
-      refute MemTable.has_key?(new_mt, :k)
-      assert MemTable.search(new_mt, [:k], 10) == []
-      assert new_mt.max_sequence == old_mt.max_sequence
+      assert MemTable.search(reopened, [:a], 10) == [{:a, 0, "v"}]
     end
   end
 
@@ -235,6 +219,64 @@ defmodule Goblin.MemTableTest do
     test "empty memtable yields an empty stream", ctx do
       mt = open_mt(ctx)
       assert MemTable.stream(mt) |> Enum.to_list() == []
+    end
+  end
+
+  describe "rotate/2" do
+    test "produces a new memtable backed by a different file with no contents", ctx do
+      mt = open_mt(ctx)
+      {:ok, mt} = MemTable.append(mt, [{:k, 0, "v"}])
+
+      {:ok, new_mt} = MemTable.rotate(mt, filer: new_filer(ctx))
+
+      assert new_mt.id != mt.id
+      assert File.exists?(new_mt.id)
+      refute MemTable.has_key?(new_mt, :k)
+      assert MemTable.search(new_mt, [:k], 10) == []
+      assert MemTable.stream(new_mt) |> Enum.to_list() == []
+    end
+
+    test "the rotated file remains readable on reopen", ctx do
+      mt = open_mt(ctx)
+      {:ok, mt} = MemTable.append(mt, [{:k, 0, "v"}])
+      original_id = mt.id
+
+      {:ok, _new_mt} = MemTable.rotate(mt, filer: new_filer(ctx))
+
+      {:ok, next_seq, reopened} = MemTable.new(original_id)
+
+      assert next_seq == 1
+      assert MemTable.search(reopened, [:k], 10) == [{:k, 0, "v"}]
+    end
+
+    test "the new memtable accepts independent appends", ctx do
+      mt = open_mt(ctx)
+      {:ok, mt} = MemTable.append(mt, [{:a, 0, "a"}])
+
+      {:ok, new_mt} = MemTable.rotate(mt, filer: new_filer(ctx))
+      {:ok, new_mt} = MemTable.append(new_mt, [{:b, 1, "b"}])
+
+      assert MemTable.search(new_mt, [:a, :b], 10) == [{:b, 1, "b"}]
+    end
+  end
+
+  describe "destroy/1" do
+    test "deletes the in-memory ETS table", ctx do
+      mt = open_mt(ctx)
+      assert :ets.info(mt.ref) != :undefined
+
+      :ok = MemTable.destroy(mt)
+
+      assert :ets.info(mt.ref) == :undefined
+    end
+
+    test "does not touch the WAL file on disk", ctx do
+      mt = open_mt(ctx)
+      assert File.exists?(wal_path(ctx))
+
+      :ok = MemTable.destroy(mt)
+
+      assert File.exists?(wal_path(ctx))
     end
   end
 

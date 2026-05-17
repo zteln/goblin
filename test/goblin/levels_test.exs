@@ -11,15 +11,15 @@ defmodule Goblin.LevelsTest do
 
   defp fake(attrs) do
     Map.merge(
-      %{id: "x.goblin", size: 0, key_range: {0, 100}, seq_range: {0, 0}},
+      %{id: "x.goblin", level_key: 0, size: 0, key_range: {0, 100}, seq_range: {0, 0}},
       Map.new(attrs)
     )
   end
 
-  describe "put/3" do
+  describe "put/2" do
     test "adds a table to an empty level" do
       dt = fake(id: "a")
-      assert Levels.put(%{}, 0, dt) == %{0 => [dt]}
+      assert Levels.put(%{}, dt) == %{0 => [dt]}
     end
 
     test "prepends to an existing level so the latest insert is first" do
@@ -28,20 +28,20 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(0, a)
-        |> Levels.put(0, b)
+        |> Levels.put(a)
+        |> Levels.put(b)
 
       assert levels[0] == [b, a]
     end
 
     test "puts at one level without touching others" do
       a = fake(id: "a")
-      b = fake(id: "b")
+      b = fake(id: "b", level_key: 2)
 
       levels =
         %{}
-        |> Levels.put(0, a)
-        |> Levels.put(2, b)
+        |> Levels.put(a)
+        |> Levels.put(b)
 
       assert levels == %{0 => [a], 2 => [b]}
     end
@@ -53,13 +53,13 @@ defmodule Goblin.LevelsTest do
     end
 
     test "level 0 below flush_level_file_limit returns nil" do
-      levels = Enum.reduce(1..3, %{}, &Levels.put(&2, 0, fake(id: "a#{&1}")))
+      levels = Enum.reduce(1..3, %{}, &Levels.put(&2, fake(id: "a#{&1}")))
       assert Levels.next(levels, @opts) == nil
     end
 
     test "level 1 below the size threshold returns nil" do
       dt = fake(level_key: 1, size: 100, key_range: {0, 10})
-      levels = Levels.put(%{}, 1, dt)
+      levels = Levels.put(%{}, dt)
       assert Levels.next(levels, @opts) == nil
     end
   end
@@ -68,7 +68,7 @@ defmodule Goblin.LevelsTest do
     test "exactly flush_level_file_limit tables triggers a merge" do
       levels =
         Enum.reduce(1..4, %{}, fn i, acc ->
-          Levels.put(acc, 0, fake(id: "a#{i}", key_range: {i, i}))
+          Levels.put(acc, fake(id: "a#{i}", key_range: {i, i}))
         end)
 
       assert {:merge, 1, sources, _filter?, levels_after} = Levels.next(levels, @opts)
@@ -79,7 +79,7 @@ defmodule Goblin.LevelsTest do
     test "filter_tombstones? is true when level 0 is the deepest populated level" do
       levels =
         Enum.reduce(1..4, %{}, fn i, acc ->
-          Levels.put(acc, 0, fake(id: "a#{i}", key_range: {i, i}))
+          Levels.put(acc, fake(id: "a#{i}", key_range: {i, i}))
         end)
 
       assert {:merge, 1, _sources, true, _levels} = Levels.next(levels, @opts)
@@ -88,9 +88,9 @@ defmodule Goblin.LevelsTest do
     test "filter_tombstones? is false when a deeper level exists" do
       levels =
         Enum.reduce(1..4, %{}, fn i, acc ->
-          Levels.put(acc, 0, fake(id: "a#{i}", key_range: {i, i}))
+          Levels.put(acc, fake(id: "a#{i}", key_range: {i, i}))
         end)
-        |> Levels.put(5, fake(id: "deep", key_range: {1000, 1001}))
+        |> Levels.put(fake(id: "deep", level_key: 5, key_range: {1000, 1001}))
 
       assert {:merge, 1, _sources, false, _levels} = Levels.next(levels, @opts)
     end
@@ -99,7 +99,7 @@ defmodule Goblin.LevelsTest do
   describe "next/2 — level >= 1 overflow" do
     test "a single table sized at the threshold triggers a merge into the next level" do
       dt = fake(level_key: 1, size: 256, key_range: {0, 10}, seq_range: {0, 5})
-      levels = Levels.put(%{}, 1, dt)
+      levels = Levels.put(%{}, dt)
 
       assert {:merge, 2, [^dt], _filter?, _levels} = Levels.next(levels, @opts)
     end
@@ -110,8 +110,8 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(1, old)
-        |> Levels.put(1, new)
+        |> Levels.put(old)
+        |> Levels.put(new)
 
       assert {:merge, 2, [^old], _filter?, levels_after} = Levels.next(levels, @opts)
       assert levels_after[1] == [new]
@@ -120,7 +120,7 @@ defmodule Goblin.LevelsTest do
     test "level 2's threshold scales by level_size_multiplier" do
       # Level 2 threshold: 256 * 10^1 = 2560 bytes. A 500-byte table is well under.
       dt = fake(level_key: 2, size: 500, key_range: {0, 10}, seq_range: {0, 5})
-      levels = Levels.put(%{}, 2, dt)
+      levels = Levels.put(%{}, dt)
 
       assert Levels.next(levels, @opts) == nil
     end
@@ -129,7 +129,7 @@ defmodule Goblin.LevelsTest do
   describe "next/2 — filter_tombstones?" do
     test "true when merging into the deepest level" do
       old = fake(id: "old", level_key: 1, size: 300, key_range: {0, 10}, seq_range: {0, 5})
-      levels = Levels.put(%{}, 1, old)
+      levels = Levels.put(%{}, old)
 
       assert {:merge, 2, _sources, true, _levels} = Levels.next(levels, @opts)
     end
@@ -140,8 +140,8 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(1, old)
-        |> Levels.put(5, bottom)
+        |> Levels.put(old)
+        |> Levels.put(bottom)
 
       assert {:merge, 2, _sources, false, _levels} = Levels.next(levels, @opts)
     end
@@ -156,8 +156,8 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(1, src)
-        |> Levels.put(2, overlap)
+        |> Levels.put(src)
+        |> Levels.put(overlap)
 
       assert {:merge, 2, dts, _filter?, levels_after} = Levels.next(levels, @opts)
 
@@ -174,8 +174,8 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(1, src)
-        |> Levels.put(2, far_away)
+        |> Levels.put(src)
+        |> Levels.put(far_away)
 
       assert {:merge, 2, dts, _filter?, levels_after} = Levels.next(levels, @opts)
 
@@ -200,13 +200,13 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(0, a)
-        |> Levels.put(0, b)
-        |> Levels.put(0, c)
-        |> Levels.put(0, d)
-        |> Levels.put(1, hits_a)
-        |> Levels.put(1, hits_d)
-        |> Levels.put(1, out_of_range)
+        |> Levels.put(a)
+        |> Levels.put(b)
+        |> Levels.put(c)
+        |> Levels.put(d)
+        |> Levels.put(hits_a)
+        |> Levels.put(hits_d)
+        |> Levels.put(out_of_range)
 
       assert {:merge, 1, dts, _filter?, levels_after} = Levels.next(levels, @opts)
 
@@ -221,7 +221,7 @@ defmodule Goblin.LevelsTest do
     test "after a level-0 overflow, level 0 is gone from the returned levels" do
       levels =
         Enum.reduce(1..4, %{}, fn i, acc ->
-          Levels.put(acc, 0, fake(id: "a#{i}", key_range: {i, i}))
+          Levels.put(acc, fake(id: "a#{i}", key_range: {i, i}))
         end)
 
       {:merge, _, _, _, levels_after} = Levels.next(levels, @opts)
@@ -235,8 +235,8 @@ defmodule Goblin.LevelsTest do
 
       levels =
         %{}
-        |> Levels.put(1, old)
-        |> Levels.put(1, stays)
+        |> Levels.put(old)
+        |> Levels.put(stays)
 
       {:merge, _, _, _, levels_after} = Levels.next(levels, @opts)
 

@@ -18,7 +18,7 @@ defmodule Goblin.ManifestTest do
     test "returns an empty snapshot for a fresh directory", ctx do
       manifest = open_manifest(ctx)
 
-      assert Manifest.snapshot(manifest) == {0, 0, []}
+      assert Manifest.snapshot(manifest) == {0, 0, [], []}
       assert File.exists?(manifest_path(ctx))
     end
 
@@ -41,7 +41,7 @@ defmodule Goblin.ManifestTest do
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
       assert Manifest.snapshot(recovered) ==
-               {7, 2, [{:disk, data_path(ctx, "sst_0.goblin")}]}
+               {7, 2, [{:disk, data_path(ctx, "sst_0.goblin")}], [data_path(ctx, "wal.goblin")]}
     end
 
     test "renames manifest.goblin.tmp back when only the tmp file remains", ctx do
@@ -61,7 +61,7 @@ defmodule Goblin.ManifestTest do
       assert File.exists?(manifest_path(ctx))
       refute File.exists?(manifest_tmp_path(ctx))
       assert Manifest.snapshot(recovered) ==
-               {9, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
+               {9, 1, [{:disk, data_path(ctx, "sst_0.goblin")}], []}
     end
   end
 
@@ -80,7 +80,7 @@ defmodule Goblin.ManifestTest do
           0
         )
 
-      {_, _, files} = Manifest.snapshot(manifest)
+      {_, _, files, _} = Manifest.snapshot(manifest)
 
       assert {:mem, data_path(ctx, "wal.goblin")} in files
       assert {:disk, data_path(ctx, "sst_0.goblin")} in files
@@ -105,7 +105,7 @@ defmodule Goblin.ManifestTest do
           0
         )
 
-      {_, _, files} = Manifest.snapshot(manifest)
+      {_, _, files, _} = Manifest.snapshot(manifest)
 
       refute {:mem, data_path(ctx, "wal.goblin")} in files
       assert {:disk, data_path(ctx, "sst_0.goblin")} in files
@@ -122,11 +122,11 @@ defmodule Goblin.ManifestTest do
           0
         )
 
-      {_, _, files} = Manifest.snapshot(manifest)
+      {_, _, files, _} = Manifest.snapshot(manifest)
       assert files == [{:disk, data_path(ctx, "sst_0.goblin")}]
     end
 
-    test "places newly added files before previously existing ones", ctx do
+    test "appends newly added files after previously existing ones, preserving insertion order", ctx do
       manifest = open_manifest(ctx)
 
       {:ok, manifest} =
@@ -135,11 +135,11 @@ defmodule Goblin.ManifestTest do
       {:ok, manifest} =
         Manifest.update(manifest, [{:disk, data_path(ctx, "b.goblin")}], [], 0)
 
-      {_, _, files} = Manifest.snapshot(manifest)
+      {_, _, files, _} = Manifest.snapshot(manifest)
 
       assert files == [
-               {:disk, data_path(ctx, "b.goblin")},
-               {:disk, data_path(ctx, "a.goblin")}
+               {:disk, data_path(ctx, "a.goblin")},
+               {:disk, data_path(ctx, "b.goblin")}
              ]
     end
 
@@ -148,7 +148,7 @@ defmodule Goblin.ManifestTest do
 
       {:ok, manifest} = Manifest.update(manifest, [], [], 100)
 
-      assert {100, 0, []} = Manifest.snapshot(manifest)
+      assert {100, 0, [], []} = Manifest.snapshot(manifest)
     end
 
     test "no_files counter is cumulative across updates", ctx do
@@ -165,7 +165,7 @@ defmodule Goblin.ManifestTest do
           0
         )
 
-      {_, no_files, files} = Manifest.snapshot(manifest)
+      {_, no_files, files, _} = Manifest.snapshot(manifest)
 
       assert no_files == 2
       assert files == [{:disk, data_path(ctx, "b.goblin")}]
@@ -198,7 +198,7 @@ defmodule Goblin.ManifestTest do
   end
 
   describe "snapshot/1" do
-    test "returns {seq, no_files, files} with absolute paths rooted at data_dir", ctx do
+    test "returns {seq, no_files, files, dirt} with absolute paths rooted at data_dir", ctx do
       manifest = open_manifest(ctx)
 
       {:ok, manifest} =
@@ -209,9 +209,20 @@ defmodule Goblin.ManifestTest do
           3
         )
 
-      assert {3, 1, [{:disk, path}]} = Manifest.snapshot(manifest)
+      assert {3, 1, [{:disk, path}], []} = Manifest.snapshot(manifest)
       assert Path.dirname(path) == ctx.tmp_dir
       assert Path.basename(path) == "sst_0.goblin"
+    end
+
+    test "exposes dirt entries as absolute paths after a del", ctx do
+      manifest = open_manifest(ctx)
+
+      sst_path = data_path(ctx, "sst_0.goblin")
+
+      {:ok, manifest} = Manifest.update(manifest, [{:disk, sst_path}], [], 0)
+      {:ok, manifest} = Manifest.update(manifest, [], [{:disk, sst_path}], 1)
+
+      assert {1, 1, [], [^sst_path]} = Manifest.snapshot(manifest)
     end
   end
 
@@ -228,6 +239,86 @@ defmodule Goblin.ManifestTest do
       manifest = open_manifest(ctx)
 
       assert :ok = Manifest.close(manifest)
+    end
+  end
+
+  describe "sweep_dirt/2" do
+    test "removes dirt entries whose paths are in the given list", ctx do
+      manifest = open_manifest(ctx)
+
+      sst_path = data_path(ctx, "sst_0.goblin")
+
+      {:ok, manifest} = Manifest.update(manifest, [{:disk, sst_path}], [], 0)
+      {:ok, manifest} = Manifest.update(manifest, [], [{:disk, sst_path}], 1)
+
+      {1, 1, [], [^sst_path]} = Manifest.snapshot(manifest)
+
+      {:ok, manifest} = Manifest.sweep_dirt(manifest, [sst_path])
+
+      assert {1, 1, [], []} = Manifest.snapshot(manifest)
+    end
+
+    test "does not touch files on disk", ctx do
+      manifest = open_manifest(ctx)
+
+      sst_path = data_path(ctx, "sst_0.goblin")
+      File.write!(sst_path, "data")
+
+      {:ok, manifest} = Manifest.update(manifest, [{:disk, sst_path}], [], 0)
+      {:ok, manifest} = Manifest.update(manifest, [], [{:disk, sst_path}], 1)
+
+      {:ok, _manifest} = Manifest.sweep_dirt(manifest, [sst_path])
+
+      assert File.exists?(sst_path)
+    end
+
+    test "leaves dirt entries not in the given list untouched", ctx do
+      manifest = open_manifest(ctx)
+
+      a_path = data_path(ctx, "a.goblin")
+      b_path = data_path(ctx, "b.goblin")
+
+      {:ok, manifest} =
+        Manifest.update(manifest, [{:disk, a_path}, {:disk, b_path}], [], 0)
+
+      {:ok, manifest} =
+        Manifest.update(manifest, [], [{:disk, a_path}, {:disk, b_path}], 1)
+
+      {1, 2, [], dirt} = Manifest.snapshot(manifest)
+      assert Enum.sort(dirt) == Enum.sort([a_path, b_path])
+
+      {:ok, manifest} = Manifest.sweep_dirt(manifest, [a_path])
+
+      assert {1, 2, [], [^b_path]} = Manifest.snapshot(manifest)
+    end
+
+    test "is a no-op when given paths that are not in dirt", ctx do
+      manifest = open_manifest(ctx)
+
+      sst_path = data_path(ctx, "sst_0.goblin")
+
+      {:ok, manifest} = Manifest.update(manifest, [{:disk, sst_path}], [], 0)
+      {:ok, manifest} = Manifest.update(manifest, [], [{:disk, sst_path}], 1)
+
+      unrelated = data_path(ctx, "never_existed.goblin")
+      {:ok, manifest} = Manifest.sweep_dirt(manifest, [unrelated])
+
+      assert {1, 1, [], [^sst_path]} = Manifest.snapshot(manifest)
+    end
+
+    test "pruned dirt list persists across close + reopen", ctx do
+      manifest = open_manifest(ctx)
+
+      sst_path = data_path(ctx, "sst_0.goblin")
+
+      {:ok, manifest} = Manifest.update(manifest, [{:disk, sst_path}], [], 0)
+      {:ok, manifest} = Manifest.update(manifest, [], [{:disk, sst_path}], 1)
+      {:ok, manifest} = Manifest.sweep_dirt(manifest, [sst_path])
+
+      :ok = Manifest.close(manifest)
+      {:ok, recovered} = Manifest.open(ctx.tmp_dir)
+
+      assert {1, 1, [], []} = Manifest.snapshot(recovered)
     end
   end
 
@@ -252,7 +343,7 @@ defmodule Goblin.ManifestTest do
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
       assert Manifest.snapshot(recovered) ==
-               {7, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
+               {7, 1, [{:disk, data_path(ctx, "sst_0.goblin")}], []}
 
       :ok = Manifest.close(recovered)
       assert :filelib.file_size(manifest_path(ctx)) == valid_size
@@ -290,7 +381,7 @@ defmodule Goblin.ManifestTest do
       {:ok, recovered} = Manifest.open(ctx.tmp_dir)
 
       assert Manifest.snapshot(recovered) ==
-               {3, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
+               {3, 1, [{:disk, data_path(ctx, "sst_0.goblin")}], []}
 
       :ok = Manifest.close(recovered)
       assert :filelib.file_size(manifest_path(ctx)) == survived_size
@@ -318,7 +409,7 @@ defmodule Goblin.ManifestTest do
       assert File.exists?(manifest_path(ctx))
       refute File.exists?(manifest_tmp_path(ctx))
       assert Manifest.snapshot(recovered) ==
-               {9, 1, [{:disk, data_path(ctx, "sst_0.goblin")}]}
+               {9, 1, [{:disk, data_path(ctx, "sst_0.goblin")}], []}
 
       :ok = Manifest.close(recovered)
     end

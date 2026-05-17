@@ -5,7 +5,7 @@ defmodule GoblinTest do
 
   @moduletag :tmp_dir
 
-  @default_opts [mem_limit: 2 * 1024, bf_bit_array_size: 1000]
+  @default_opts [mem_limit: 2 * 1024, bit_array_size: 1000]
 
   # setup c do
   #   db =

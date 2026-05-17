@@ -3,9 +3,9 @@ defmodule Goblin.Levels do
 
   @type t :: map()
 
-  @spec put(t(), non_neg_integer(), Goblin.DiskTable.t()) :: t()
-  def put(levels, lk, dt) do
-    Map.update(levels, lk, [dt], &[dt | &1])
+  @spec put(t(), Goblin.DiskTable.t()) :: t()
+  def put(levels, dt) do
+    Map.update(levels, dt.level_key, [dt], &[dt | &1])
   end
 
   @spec next(t(), keyword()) ::

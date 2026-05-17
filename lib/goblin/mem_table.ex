@@ -24,7 +24,7 @@ defmodule Goblin.MemTable do
         FileIO.stream!(io, truncate?: true)
         |> insert_commits(ref)
 
-      {:ok, max_seq,
+      {:ok, max_seq + 1,
        %__MODULE__{
          io: io,
          id: path,
@@ -36,12 +36,10 @@ defmodule Goblin.MemTable do
   @spec close(t()) :: :ok | {:error, term()}
   def close(mt), do: FileIO.close(mt.io)
 
-  @spec destroy(t()) :: :ok | {:error, term()}
+  @spec destroy(t()) :: :ok
   def destroy(mt) do
-    with :ok <- FileIO.remove(mt.id) do
-      :ets.delete(mt.ref)
-      :ok
-    end
+    :ets.delete(mt.ref)
+    :ok
   end
 
   @spec append(t(), list({term(), non_neg_integer(), term()})) :: {:ok, t()} | {:error, term()}

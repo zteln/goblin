@@ -73,11 +73,11 @@ defmodule Goblin do
     :view,
     :manifest,
     :file_counter,
-    :compacting,
     :opts,
     :sequence,
     levels: %{},
-    flushing: %{}
+    flushing: %{},
+    compacting: %{}
   ]
 
   @doc """
@@ -513,19 +513,19 @@ defmodule Goblin do
 
   @impl GenServer
   def handle_continue(:recover, state) do
-    {manifest_seq, no_files, files} = Manifest.snapshot(state.manifest)
+    {manifest_seq, no_files, files, dirt} = Manifest.snapshot(state.manifest)
     :atomics.put(state.file_counter, 1, no_files)
 
-    case restore_db(state, files) do
-      {:ok, state} ->
-        publish_tables(state)
-        seq = max(manifest_seq, state.sequence)
-        View.put_sequence(state.view, seq)
-        publish_ready(state.view)
-        {:noreply, %{state | sequence: seq}, {:continue, :compact}}
-
-      {:error, reason} ->
-        {:stop, reason, state}
+    with {:ok, orphans} <- clear_tables(dirt),
+         {:ok, state} <- restore_db(state, files),
+         {:ok, manifest} <- Manifest.sweep_dirt(state.manifest, orphans) do
+      publish_tables(state)
+      seq = max(manifest_seq, state.sequence)
+      View.put_sequence(state.view, seq)
+      publish_ready(state.view)
+      {:noreply, %{state | manifest: manifest, sequence: seq}, {:continue, :compact}}
+    else
+      {:error, reason} -> {:stop, reason, state}
     end
   end
 
@@ -555,7 +555,8 @@ defmodule Goblin do
     end
   end
 
-  def handle_continue(:compact, %{compacting: nil} = state) do
+  def handle_continue(:compact, %{compacting: compacting} = state)
+      when map_size(compacting) == 0 do
     opts =
       Keyword.take(state.opts, [
         :mem_limit,
@@ -585,8 +586,8 @@ defmodule Goblin do
         {:noreply, state, {:continue, :compact}}
 
       to_remove ->
-        with :ok <- remove(to_remove),
-             {:ok, manifest} <- Manifest.sweep_dirt(state.manifest) do
+        with {:ok, paths} <- clear_tables(to_remove),
+             {:ok, manifest} <- Manifest.sweep_dirt(state.manifest, paths) do
           {:noreply, %{state | manifest: manifest}, {:continue, :compact}}
         else
           {:error, reason} -> {:stop, reason, state}
@@ -638,7 +639,7 @@ defmodule Goblin do
   end
 
   def handle_call({:export, export_dir}, _from, state) do
-    {_, _, files} = Manifest.snapshot(state.manifest)
+    {_, _, files, _} = Manifest.snapshot(state.manifest)
     files = Enum.map(files, &elem(&1, 1))
     manifest_file = Manifest.current_file(state.manifest)
 
@@ -652,7 +653,7 @@ defmodule Goblin do
     do: {:reply, map_size(state.flushing) != 0, state}
 
   def handle_call(:compacting?, _from, state),
-    do: {:reply, state.compact_ref != nil, state}
+    do: {:reply, map_size(state.compacting) != 0, state}
 
   @impl GenServer
   def handle_cast(:try_sweep, state) do
@@ -661,9 +662,9 @@ defmodule Goblin do
 
   @impl GenServer
   def handle_info({ref, {:ok, new, old}}, state) do
-    if Map.has_key?(state.flushing, ref) or ref == state.compacting do
+    if Map.has_key?(state.flushing, ref) or Map.has_key?(state.compacting, ref) do
       flushing = Map.delete(state.flushing, ref)
-      compacting = if ref == state.compacting, do: nil, else: state.compacting
+      compacting = Map.delete(state.compacting, ref)
 
       with {:ok, manifest} <-
              Manifest.update(
@@ -672,7 +673,7 @@ defmodule Goblin do
                tag_id_with_type(old),
                state.sequence
              ) do
-        levels = Enum.reduce(new, state.levels, &Levels.put(&2, &1.level_key, &1))
+        levels = Enum.reduce(new, state.levels, &Levels.put(&2, &1))
 
         state = %{
           state
@@ -694,7 +695,7 @@ defmodule Goblin do
   end
 
   def handle_info({ref, {:error, reason}}, state) do
-    if Map.has_key?(state.flushing, ref) or ref == state.compacting,
+    if Map.has_key?(state.flushing, ref) or Map.has_key?(state.compacting, ref),
       do: {:stop, reason, state},
       else: {:noreply, state}
   end
@@ -732,7 +733,7 @@ defmodule Goblin do
 
   defp restore_db(state, [{:disk, file} | files]) do
     with {:ok, dt} <- DiskTable.from_file(file) do
-      levels = Levels.put(state.levels, dt.level_key, dt)
+      levels = Levels.put(state.levels, dt)
       state = %{state | levels: levels}
       restore_db(state, files)
     end
@@ -749,7 +750,14 @@ defmodule Goblin do
 
   defp publish_tables(state) do
     mem_tables = [state.mem_table | Map.values(state.flushing)]
-    View.put_snapshot(state.view, mem_tables, state.levels)
+
+    levels =
+      state.compacting
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.reduce(state.levels, &Levels.put(&2, &1))
+
+    View.put_snapshot(state.view, mem_tables, levels)
   end
 
   defp merge(state, lk, tables, filter_tombstones? \\ false) do
@@ -794,20 +802,29 @@ defmodule Goblin do
         end
       end)
 
-    %{state | compacting: ref}
+    compacting = Map.put(state.compacting, ref, dts)
+    %{state | compacting: compacting}
   end
 
-  defp remove([]), do: :ok
+  defp clear_tables(tables, acc \\ [])
+  defp clear_tables([], acc), do: {:ok, acc}
 
-  defp remove([%MemTable{} = mt | rest]) do
-    with :ok <- MemTable.destroy(mt) do
-      remove(rest)
+  defp clear_tables([%MemTable{} = mt | rest], acc) do
+    with :ok <- FileIO.remove(mt.id) do
+      MemTable.destroy(mt)
+      clear_tables(rest, [mt.id | acc])
     end
   end
 
-  defp remove([%DiskTable{} = dt | rest]) do
+  defp clear_tables([%DiskTable{} = dt | rest], acc) do
     with :ok <- FileIO.remove(dt.id) do
-      remove(rest)
+      clear_tables(rest, [dt.id | acc])
+    end
+  end
+
+  defp clear_tables([path | rest], acc) do
+    with :ok <- FileIO.remove(path) do
+      clear_tables(rest, [path | acc])
     end
   end
 

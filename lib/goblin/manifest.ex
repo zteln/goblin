@@ -48,13 +48,12 @@ defmodule Goblin.Manifest do
   @spec current_file(t()) :: Path.t()
   def current_file(manifest), do: Path.join(manifest.data_dir, @log_file)
 
-  @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()}), nil | non_neg_integer()) ::
+  @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()}), non_neg_integer()) ::
           {:ok, t()} | {:error, term()}
   def update(manifest, add, del, seq) do
     {_, no_files, files, dirt} = manifest.snapshot
     add = Enum.map(add, &trim_dir/1)
     del = Enum.map(del, &trim_dir/1)
-    seq = if seq, do: seq, else: manifest.sequence
 
     files =
       (files ++ add)
@@ -66,27 +65,32 @@ defmodule Goblin.Manifest do
     write_snapshot(manifest)
   end
 
-  @spec snapshot(t()) :: {non_neg_integer(), non_neg_integer(), list({atom(), Path.t()})}
+  @spec snapshot(t()) ::
+          {non_neg_integer(), non_neg_integer(), list({atom(), Path.t()}), list(Path.t())}
   def snapshot(manifest) do
-    {seq, no_files, files, _dirt} = manifest.snapshot
+    {seq, no_files, files, dirt} = manifest.snapshot
 
     files =
       Enum.map(files, fn {type, name} ->
         {type, Path.join(manifest.data_dir, name)}
       end)
 
-    {seq, no_files, files}
+    dirt =
+      Enum.map(dirt, fn {_type, name} ->
+        Path.join(manifest.data_dir, name)
+      end)
+
+    {seq, no_files, files, dirt}
   end
 
-  @spec sweep_dirt(t()) :: {:ok, t()} | {:error, term()}
-  def sweep_dirt(manifest) do
+  @spec sweep_dirt(t(), list(Path.t())) :: {:ok, t()} | {:error, term()}
+  def sweep_dirt(manifest, paths) do
     {seq, no_files, files, dirt} = manifest.snapshot
 
     dirt =
-      Enum.filter(dirt, fn {_, name} ->
+      Enum.reject(dirt, fn {_, name} ->
         path = Path.join(manifest.data_dir, name)
-        if File.exists?(path), do: File.rm!(path)
-        true
+        path in paths
       end)
 
     snapshot = {seq, no_files, files, dirt}
