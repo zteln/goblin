@@ -28,15 +28,63 @@ defmodule Goblin.DiskTable do
           no_blocks: non_neg_integer()
         }
 
-  @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
-          {:ok, list(t())} | {:error, term()}
+  @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) :: list(t())
   def build(stream, opts) do
-    opts = Keyword.put(opts, :block_size, @disk_table_block_size)
+    max_size = opts[:max_size]
+    filer = opts[:filer]
+    compress? = opts[:compress?]
     bf = BloomFilter.new(opts)
     dt = %__MODULE__{bloom_filter: bf, level_key: opts[:level_key]}
 
     stream
-    |> FileIO.stream_write(dt, &add_to_table(&2, &1, &3), opts)
+    |> Stream.transform(
+      fn -> {nil, 0, nil} end,
+      fn
+        _, {:halt, file} ->
+          FileIO.close(file)
+          {:halt, nil}
+
+        triple, {file, size, acc} ->
+          file = file || FileIO.open!(filer.(), write?: true, block_size: @disk_table_block_size)
+          acc = acc || %{dt | id: file.path}
+
+          case FileIO.append(file, triple, compress?: compress?) do
+            {:ok, triple_size} ->
+              acc = add_to_table(acc, triple, triple_size)
+              size = size + triple_size
+
+              if size >= max_size do
+                with {:ok, _} <- FileIO.append(file, acc, compress?: compress?),
+                     :ok <- FileIO.close(file) do
+                  {[{:ok, acc}], {nil, 0, nil}}
+                else
+                  error -> {[error], {:halt, file}}
+                end
+              else
+                {[], {file, size, acc}}
+              end
+
+            error ->
+              {[error], {:halt, file}}
+          end
+      end,
+      fn
+        {%FileIO{} = file, _, acc} ->
+          with {:ok, _} <- FileIO.append(file, acc, compress?: compress?),
+               :ok <- FileIO.close(file) do
+            {[{:ok, acc}], nil}
+          else
+            error -> {[error], nil}
+          end
+
+        _ ->
+          {[], nil}
+      end,
+      fn
+        {%FileIO{} = file, _, _} -> FileIO.close(file)
+        _ -> :ok
+      end
+    )
     |> Enum.reduce_while({:ok, []}, fn
       {:ok, dt}, {:ok, dts} -> {:cont, {:ok, [dt | dts]}}
       error, _acc -> {:halt, error}
@@ -129,32 +177,31 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp add_to_table(table, triple, params) do
+  defp add_to_table(dt, triple, size) do
     {key, seq, _val} = triple
 
     key_range =
-      case table.key_range do
+      case dt.key_range do
         nil -> {key, key}
         {min, _} -> {min, key}
       end
 
     seq_range =
-      case table.seq_range do
+      case dt.seq_range do
         nil -> {seq, seq}
         {min, _} -> {min, seq}
       end
 
-    bloom_filter = BloomFilter.put(table.bloom_filter, key)
-    no_blocks = table.no_blocks + div(params.size, @disk_table_block_size)
+    bloom_filter = BloomFilter.put(dt.bloom_filter, key)
+    no_blocks = dt.no_blocks + div(size, @disk_table_block_size)
 
     %{
-      table
-      | id: params.path,
-        key_range: key_range,
+      dt
+      | key_range: key_range,
         seq_range: seq_range,
         bloom_filter: bloom_filter,
         no_blocks: no_blocks,
-        size: table.size + params.size
+        size: dt.size + size
     }
   end
 

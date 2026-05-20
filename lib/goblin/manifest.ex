@@ -33,12 +33,8 @@ defmodule Goblin.Manifest do
 
     with {:ok, io} <- FileIO.open(path, write?: true) do
       size = FileIO.size_of(path)
-
-      manifest =
-        %__MODULE__{path: path, data_dir: data_dir, io: io, size: size}
-        |> recover_manifest()
-
-      {:ok, manifest}
+      manifest = %__MODULE__{path: path, data_dir: data_dir, io: io, size: size}
+      recover_manifest(manifest)
     end
   end
 
@@ -99,7 +95,7 @@ defmodule Goblin.Manifest do
   end
 
   defp write_snapshot(manifest) do
-    with {:ok, size} <- FileIO.append(manifest.io, [manifest.snapshot]),
+    with {:ok, size} <- FileIO.append(manifest.io, manifest.snapshot),
          :ok <- FileIO.sync(manifest.io) do
       manifest = %{manifest | size: manifest.size + size}
       maybe_rotate(manifest)
@@ -107,12 +103,31 @@ defmodule Goblin.Manifest do
   end
 
   defp recover_manifest(manifest) do
-    snapshot =
-      manifest.io
-      |> FileIO.stream!(truncate?: true)
-      |> Enum.reduce(manifest.snapshot, fn next, _acc -> next end)
+    with {:ok, snapshot} <- recover_snapshot(manifest) do
+      {:ok, %{manifest | snapshot: snapshot}}
+    end
+  end
 
-    %{manifest | snapshot: snapshot}
+  defp recover_snapshot(manifest) do
+    manifest.io
+    |> FileIO.stream()
+    |> Enum.reduce_while({:ok, manifest.snapshot}, fn
+      {:ok, snapshot}, _acc ->
+        {:cont, {:ok, snapshot}}
+
+      {:corrupt, pos}, {:ok, acc} ->
+        case valid_snapshot?(acc, manifest.data_dir) do
+          true ->
+            FileIO.truncate(manifest.io, pos)
+            {:halt, {:ok, acc}}
+
+          false ->
+            {:halt, {:error, :corrupt_manifest}}
+        end
+
+      error, _acc ->
+        {:halt, error}
+    end)
   end
 
   defp maybe_rotate(%{size: size} = manifest) when size >= @max_size do
@@ -129,6 +144,12 @@ defmodule Goblin.Manifest do
   end
 
   defp maybe_rotate(manifest), do: {:ok, manifest}
+
+  defp valid_snapshot?({_, _, files, _}, dir) do
+    files
+    |> Enum.map(&Path.join(dir, &1))
+    |> Enum.all?(&File.exists?/1)
+  end
 
   defp trim_dir({type, path}), do: {type, Path.basename(path)}
   defp tmp(path), do: path <> ".tmp"

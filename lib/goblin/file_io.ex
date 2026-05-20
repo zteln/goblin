@@ -2,7 +2,7 @@ defmodule Goblin.FileIO do
   @moduledoc false
 
   @magic "GOBLIN00"
-  @header_size byte_size(<<@magic::binary, 0::integer-32, 0::integer-32>>)
+  @header_size byte_size(<<@magic::binary, 0::integer-32, 0::integer-32, 0::integer-32>>)
   @default_block_size 512
 
   @default_modes [
@@ -59,63 +59,6 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec stream_write(Enumerable.t(), any(), (any(), any() -> any()), keyword()) ::
-          Enumerable.t({:ok, any(), non_neg_integer()} | {:error, term()})
-  def stream_write(stream, init, reducer, opts) do
-    max_size = opts[:max_size]
-    block_size = opts[:block_size]
-    compress? = opts[:compress?]
-    filer = opts[:filer]
-
-    stream
-    |> Stream.transform(
-      fn -> {nil, init, 0} end,
-      fn
-        _data, :halt ->
-          {:halt, nil}
-
-        data, {file, acc, size} when size + block_size >= max_size ->
-          with {:ok, data_size} <- append(file, data, compress?: compress?),
-               acc = reducer.(data, acc, %{path: file.path, size: data_size}),
-               {:ok, _acc_size} <- append(file, acc, compress?: compress?),
-               :ok <- close(file) do
-            {[{:ok, acc}], {nil, init, 0}}
-          else
-            error ->
-              close(file)
-              {[error], :halt}
-          end
-
-        data, {file, acc, size} ->
-          file = file || open!(filer.(), write?: true, block_size: block_size)
-
-          case append(file, data, compress?: compress?) do
-            {:ok, data_size} ->
-              acc = reducer.(data, acc, %{path: file.path, size: data_size})
-              {[], {file, acc, size + data_size}}
-
-            error ->
-              close(file)
-              {[error], :halt}
-          end
-      end,
-      fn
-        {%__MODULE__{} = file, acc, _size} ->
-          with {:ok, _acc_size} <- append(file, acc, compress?: compress?),
-               :ok <- close(file) do
-            {[{:ok, acc}], nil}
-          end
-
-        _ ->
-          {[], nil}
-      end,
-      fn
-        {file, _acc, _size} -> file && close(file)
-        _ -> :ok
-      end
-    )
-  end
-
   @spec pread(t(), non_neg_integer() | :eof) :: {:ok, term()} | {:error, term()} | :eof
   def pread(_file, pos) when pos < 0, do: {:error, :invalid_position}
 
@@ -128,10 +71,11 @@ defmodule Goblin.FileIO do
 
   def pread(file, pos) do
     with {:ok, header} <- :file.pread(file.iodev, pos, @header_size),
-         {:ok, no_blocks, block_size} <- decode_header(header),
+         {:ok, no_blocks, block_size, crc} <- decode_header(header),
          {:ok, payload} <-
            :file.pread(file.iodev, pos + @header_size, no_blocks * block_size - @header_size),
-         :ok <- validate_size(byte_size(payload), no_blocks * block_size - @header_size) do
+         :ok <- validate_size(byte_size(payload), no_blocks * block_size - @header_size),
+         :ok <- validate_crc(payload, crc) do
       {:ok, :erlang.binary_to_term(payload)}
     else
       {:error, :invalid_header} -> pread(file, pos - file.block_size)
@@ -142,50 +86,50 @@ defmodule Goblin.FileIO do
   @spec read(t()) :: {:ok, term()} | {:error, term()} | :eof
   def read(file) do
     with {:ok, header} <- :file.read(file.iodev, @header_size),
-         {:ok, no_blocks, block_size} <- decode_header(header),
+         {:ok, no_blocks, block_size, crc} <- decode_header(header),
          {:ok, payload} <- :file.read(file.iodev, no_blocks * block_size - @header_size),
-         :ok <- validate_size(byte_size(payload), no_blocks * block_size - @header_size) do
+         :ok <- validate_size(byte_size(payload), no_blocks * block_size - @header_size),
+         :ok <- validate_crc(payload, crc) do
       {:ok, :erlang.binary_to_term(payload)}
     end
   end
 
-  @spec stream!(t(), keyword()) :: Enumerable.t(term())
-  def stream!(file, opts \\ []) do
-    truncate? = opts[:truncate?]
-
+  @spec stream(t()) ::
+          Enumerable.t({:ok, any()} | {:corrupt, non_neg_integer(), any()} | {:error, term()})
+  def stream(file) do
     Stream.resource(
       fn -> {file, 0} end,
-      fn {file, pos} ->
-        case read(file) do
-          {:ok, terms} when is_list(terms) ->
-            {:ok, pos} = :file.position(file.iodev, :cur)
-            {terms, {file, pos}}
-
-          {:ok, term} ->
-            {:ok, pos} = :file.position(file.iodev, :cur)
-            {[term], {file, pos}}
-
-          :eof ->
-            {:halt, :eof}
-
-          {:error, :invalid_size} ->
-            {:halt, {:truncate, pos}}
-
-          {:error, :invalid_header} ->
-            {:halt, {:truncate, pos}}
-
-          {:error, reason} ->
-            raise "stream! failed with reason: #{inspect(reason)}"
-        end
-      end,
       fn
-        {:truncate, pos} when truncate? ->
-          :file.position(file.iodev, pos)
-          :file.truncate(file.iodev)
+        :halt ->
+          {:halt, nil}
 
-        _ ->
-          :ok
-      end
+        {file, pos} ->
+          case read(file) do
+            {:ok, terms} when is_list(terms) ->
+              {:ok, pos} = :file.position(file.iodev, :cur)
+              {[{:ok, terms}], {file, pos}}
+
+            {:ok, term} ->
+              {:ok, pos} = :file.position(file.iodev, :cur)
+              {[{:ok, term}], {file, pos}}
+
+            :eof ->
+              {:halt, :eof}
+
+            {:error, :invalid_size} ->
+              {[{:corrupt, pos}], :halt}
+
+            {:error, :invalid_header} ->
+              {[{:corrupt, pos}], :halt}
+
+            {:error, :invalid_crc} ->
+              {[{:corrupt, pos}], :halt}
+
+            {:error, _reason} = error ->
+              {[error], :halt}
+          end
+      end,
+      fn _ -> :ok end
     )
   end
 
@@ -194,6 +138,13 @@ defmodule Goblin.FileIO do
 
   @spec sync(t()) :: :ok | {:error, term()}
   def sync(file), do: :file.datasync(file.iodev)
+
+  @spec truncate(t(), non_neg_integer()) :: :ok | {:error, term()}
+  def truncate(file, pos) do
+    with {:ok, _} <- :file.position(file.iodev, pos) do
+      :file.truncate(file.iodev)
+    end
+  end
 
   @spec rename(Path.t(), Path.t()) :: :ok | {:error, term()}
   def rename(from, to), do: File.rename(from, to)
@@ -207,28 +158,41 @@ defmodule Goblin.FileIO do
   defp encode_to_iolist(terms, block_size, compress?) do
     opts = if compress?, do: [:compressed], else: []
     payload = :erlang.term_to_iovec(terms, opts)
-    data_size = @header_size + :erlang.iolist_size(payload)
-    no_blocks = div(data_size + block_size - 1, block_size)
-    padding = no_blocks * block_size - data_size
+    payload_size = @header_size + :erlang.iolist_size(payload)
+    no_blocks = div(payload_size + block_size - 1, block_size)
+    padding = no_blocks * block_size - payload_size
+
+    data = [
+      payload,
+      <<0::size(padding)-unit(8)>>
+    ]
 
     [
       <<@magic::binary>>,
       <<no_blocks::integer-32>>,
       <<block_size::integer-32>>,
-      payload,
-      <<0::size(padding)-unit(8)>>
+      <<:erlang.crc32(data)::integer-32>>
+      | data
     ]
   end
 
   defp decode_header(<<
          @magic::binary,
          no_blocks::integer-32,
-         block_size::integer-32
+         block_size::integer-32,
+         crc::integer-32
        >>),
-       do: {:ok, no_blocks, block_size}
+       do: {:ok, no_blocks, block_size, crc}
 
   defp decode_header(_), do: {:error, :invalid_header}
 
   defp validate_size(size, size), do: :ok
   defp validate_size(_, _), do: {:error, :invalid_size}
+
+  defp validate_crc(payload, crc) do
+    case :erlang.crc32(payload) == crc do
+      true -> :ok
+      false -> {:error, :invalid_crc}
+    end
+  end
 end

@@ -346,7 +346,7 @@ defmodule Goblin do
 
   @doc """
   Returns a stream of key-value pairs, optionally bounded by a range.
-  Captures snapshots at call.
+  Captures snapshots at enumeration.
 
   Entries are sorted by key in ascending order.
   Both `min` and `max` are inclusive.

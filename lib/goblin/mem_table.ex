@@ -3,11 +3,7 @@ defmodule Goblin.MemTable do
 
   alias Goblin.FileIO
 
-  defstruct [
-    :id,
-    :io,
-    :ref
-  ]
+  defstruct [:id, :io, :ref]
 
   @type t :: %__MODULE__{
           id: Path.t(),
@@ -21,8 +17,18 @@ defmodule Goblin.MemTable do
       ref = new_table()
 
       max_seq =
-        FileIO.stream!(io, truncate?: true)
-        |> insert_commits(ref)
+        FileIO.stream(io)
+        |> Enum.reduce_while(-1, fn
+          {:ok, commits}, _acc ->
+            {:cont, insert_commits(commits, ref)}
+
+          {:corrupt, pos}, acc ->
+            FileIO.truncate(io, pos)
+            {:halt, acc}
+
+          {:error, _reason}, acc ->
+            {:halt, acc}
+        end)
 
       {:ok, max_seq + 1,
        %__MODULE__{

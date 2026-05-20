@@ -1,6 +1,5 @@
 defmodule Goblin.FileIOTest do
   use ExUnit.Case, async: true
-
   alias Goblin.FileIO
 
   @moduletag :tmp_dir
@@ -263,7 +262,7 @@ defmodule Goblin.FileIOTest do
       assert :filelib.file_size(file_path(ctx)) == valid_size
 
       io = open_read(ctx)
-      assert (FileIO.stream!(io) |> Enum.to_list()) == entries
+      assert FileIO.stream!(io) |> Enum.to_list() == entries
     end
 
     test "truncate?: true trims a partially-flushed trailing block", ctx do

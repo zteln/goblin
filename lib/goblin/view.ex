@@ -124,14 +124,16 @@ defmodule Goblin.View do
       |> MapSet.new()
 
     {all, in_use} =
-      if in_use?(ref, v) do
-        in_use = MapSet.union(in_use, tables)
-        all = MapSet.union(all, tables)
-        {all, in_use}
-      else
-        all = MapSet.union(all, tables)
-        :ets.delete(ref, key)
-        {all, in_use}
+      case in_use?(ref, v) do
+        true ->
+          in_use = MapSet.union(in_use, tables)
+          all = MapSet.union(all, tables)
+          {all, in_use}
+
+        false ->
+          all = MapSet.union(all, tables)
+          :ets.delete(ref, key)
+          {all, in_use}
       end
 
     case :ets.next(ref, key) do
