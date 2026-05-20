@@ -1,4 +1,4 @@
-Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}], force: true)
+Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}])
 
 profile? = "--profile" in System.argv()
 
