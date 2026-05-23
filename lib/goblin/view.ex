@@ -25,12 +25,12 @@ defmodule Goblin.View do
     :ok
   end
 
-  @spec put_snapshot(t(), list(Goblin.MemTable.t()), map()) :: :ok
-  def put_snapshot(ref, mem_tables, levels) do
-    {seq, version} =
+  @spec put_snapshot(t(), list(Goblin.MemTable.t()), map(), non_neg_integer()) :: :ok
+  def put_snapshot(ref, mem_tables, levels, seq) do
+    version =
       case current_meta(ref) do
-        :empty -> {0, 0}
-        {seq, _, version} -> {seq, version}
+        :empty -> 0
+        {_, _, version} -> version
       end
 
     max_lk = levels |> Map.keys() |> Enum.max(fn -> -1 end)
