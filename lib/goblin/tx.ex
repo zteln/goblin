@@ -278,10 +278,11 @@ defmodule Goblin.Tx do
   ## Parameters
 
   - `tx` - The transaction to abort
+  - `reply` - Teh reply after aborting (default: `:error`)
 
   ## Returns
 
-  - The abort atom, i.e. `:abort`.
+  - The abort tuple, i.e. `{:abort, reply}`.
 
   ## Examples
 
@@ -289,8 +290,8 @@ defmodule Goblin.Tx do
       |> Goblin.Tx.put(:alice, "Alice")
       |> Goblin.Tx.abort()
   """
-  @spec abort(t()) :: :abort
-  def abort(_tx), do: :abort
+  @spec abort(t(), any()) :: :abort
+  def abort(_tx, reply \\ :error), do: {:abort, reply}
 
   @doc false
   @spec scan((-> {non_neg_integer(), list(term())}), keyword()) ::
