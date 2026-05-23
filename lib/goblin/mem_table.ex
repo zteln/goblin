@@ -48,12 +48,12 @@ defmodule Goblin.MemTable do
     :ok
   end
 
-  @spec append(t(), list({term(), non_neg_integer(), term()})) :: {:ok, t()} | {:error, term()}
+  @spec append(t(), list({term(), non_neg_integer(), term()})) :: :ok | {:error, term()}
   def append(mem_table, commits) do
     with {:ok, _size} <- FileIO.append(mem_table.io, commits),
          :ok <- FileIO.sync(mem_table.io) do
-      insert_commits(commits, mem_table.ref)
-      {:ok, mem_table}
+      _ = insert_commits(commits, mem_table.ref)
+      :ok
     end
   end
 
@@ -92,16 +92,6 @@ defmodule Goblin.MemTable do
       end,
       fn _ -> :ok end
     )
-  end
-
-  @spec rotate(t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def rotate(mem_table, opts) do
-    with :ok <- FileIO.close(mem_table.io),
-         new_id = opts[:filer].(),
-         {:ok, io} <- FileIO.open(new_id, write?: true) do
-      ref = new_table()
-      {:ok, %{mem_table | id: new_id, io: io, ref: ref}}
-    end
   end
 
   @spec size(t()) :: non_neg_integer()
