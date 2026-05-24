@@ -168,5 +168,23 @@ defmodule Goblin.FileIOTest do
                |> FileIO.stream()
                |> Enum.to_list()
     end
+
+    test "indicates if a file is corrupt via invalid crc", ctx do
+      {:ok, io} = FileIO.open(ctx.test_path, write?: true)
+      {:ok, valid_size1} = FileIO.append(io, :foo)
+      {:ok, valid_size2} = FileIO.append(io, :bar)
+      FileIO.close(io)
+      # simulate corrupt payload
+      # change last byte to "1"
+      {:ok, file} = :file.open(ctx.test_path, [:raw, :read, :binary, :write])
+      :file.pwrite(file, valid_size1 + valid_size2 - 1, "1")
+
+      {:ok, io} = FileIO.open(ctx.test_path)
+
+      assert [{:ok, :foo}, {:corrupt, valid_size1}] ==
+               io
+               |> FileIO.stream()
+               |> Enum.to_list()
+    end
   end
 end
