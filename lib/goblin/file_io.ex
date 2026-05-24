@@ -59,13 +59,24 @@ defmodule Goblin.FileIO do
     end
   end
 
+  @spec read(t()) :: {:ok, term()} | {:error, term()} | :eof
+  def read(file) do
+    with {:ok, header} <- :file.read(file.iodev, @header_size),
+         {:ok, no_blocks, block_size, crc} <- decode_header(header),
+         {:ok, payload} <- :file.read(file.iodev, no_blocks * block_size - @header_size),
+         :ok <- validate_size(byte_size(payload), no_blocks * block_size - @header_size),
+         :ok <- validate_crc(payload, crc) do
+      {:ok, :erlang.binary_to_term(payload)}
+    end
+  end
+
   @spec pread(t(), non_neg_integer() | :eof) :: {:ok, term()} | {:error, term()} | :eof
   def pread(_file, pos) when pos < 0, do: {:error, :invalid_position}
 
   def pread(file, :eof) do
     case :filelib.file_size(file.path) do
       0 -> {:error, :empty}
-      size -> pread(file, size - file.block_size)
+      size -> pread(file, (div(size, file.block_size) - 1) * file.block_size)
     end
   end
 
@@ -78,24 +89,13 @@ defmodule Goblin.FileIO do
          :ok <- validate_crc(payload, crc) do
       {:ok, :erlang.binary_to_term(payload)}
     else
-      {:error, :invalid_header} -> pread(file, pos - file.block_size)
+      {:error, :invalid_header} -> pread(file, (div(pos, file.block_size) - 1) * file.block_size)
       error -> error
     end
   end
 
-  @spec read(t()) :: {:ok, term()} | {:error, term()} | :eof
-  def read(file) do
-    with {:ok, header} <- :file.read(file.iodev, @header_size),
-         {:ok, no_blocks, block_size, crc} <- decode_header(header),
-         {:ok, payload} <- :file.read(file.iodev, no_blocks * block_size - @header_size),
-         :ok <- validate_size(byte_size(payload), no_blocks * block_size - @header_size),
-         :ok <- validate_crc(payload, crc) do
-      {:ok, :erlang.binary_to_term(payload)}
-    end
-  end
-
   @spec stream(t()) ::
-          Enumerable.t({:ok, any()} | {:corrupt, non_neg_integer(), any()} | {:error, term()})
+          Enumerable.t({:ok, any()} | {:corrupt, non_neg_integer()} | {:error, term()})
   def stream(file) do
     Stream.resource(
       fn -> {file, 0} end,
