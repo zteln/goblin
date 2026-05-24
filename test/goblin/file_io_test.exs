@@ -4,6 +4,46 @@ defmodule Goblin.FileIOTest do
 
   @moduletag :tmp_dir
 
+  describe "open/2, open!/2" do
+    test "can open for writing", ctx do
+    end
+
+    test "can open for reading only", ctx do
+    end
+
+    test "raises on failure", ctx do
+    end
+  end
+
+  describe "append/3" do
+    test "writing round-trips", ctx do
+    end
+
+    test "respects provided block-size", ctx do
+    end
+  end
+
+  describe "read/1, pread/1/2" do
+    test "can read sequentially", ctx do
+    end
+
+    test "can read via position", ctx do
+    end
+
+    test "only reads at start of block", ctx do
+    end
+  end
+
+  describe "stream/1" do
+    test "returns stream over entire file", ctx do
+    end
+
+    test "indicates if block is corrupt", ctx do
+    end
+  end
+
+  ####
+
   defp file_path(ctx), do: Path.join(ctx.tmp_dir, "test.goblin")
 
   defp open_write(ctx, opts \\ []) do
