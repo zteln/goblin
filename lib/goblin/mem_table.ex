@@ -1,6 +1,5 @@
 defmodule Goblin.MemTable do
   @moduledoc false
-
   alias Goblin.FileIO
 
   defstruct [:id, :io, :ref]
