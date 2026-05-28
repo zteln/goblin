@@ -60,6 +60,8 @@ defmodule Goblin do
   @goblin_suffix "goblin"
   @wal_suffix "wal"
 
+  @default_timeout 5000
+
   @default_flush_level_file_limit 4
   @default_mem_limit 64 * 1024 * 1024
   @default_level_base_size 256 * 1024 * 1024
@@ -94,6 +96,8 @@ defmodule Goblin do
 
   - `db` - The database server (PID or registered name)
   - `callback` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
+  - `opts` - A keyword list with options:
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
 
   ## Returns
 
@@ -116,10 +120,10 @@ defmodule Goblin do
       end)
       # => :error
   """
-  def transaction(db, callback) do
+  def transaction(db, callback, opts \\ []) do
     view = get_view(db)
     tx_key = make_ref()
-    start_transaction(db, tx_key)
+    start_transaction(db, tx_key, opts)
     {seq, max_lk, tx_id} = View.add_reader(view, tx_key)
 
     tx = %Tx{
@@ -135,15 +139,15 @@ defmodule Goblin do
         callback.(tx)
       rescue
         exception ->
-          cancel_transaction(db)
+          cancel_transaction(db, tx_key, opts)
           reraise(exception, __STACKTRACE__)
       catch
         :throw, val ->
-          cancel_transaction(db)
+          cancel_transaction(db, tx_key, opts)
           throw(val)
 
         :exit, val ->
-          cancel_transaction(db)
+          cancel_transaction(db, tx_key, opts)
           exit(val)
       after
         View.release_reader(view, tx_key)
@@ -151,14 +155,14 @@ defmodule Goblin do
 
     case result do
       {:commit, tx, reply} ->
-        with :ok <- commit_transaction(db, tx), do: reply
+        with :ok <- commit_transaction(db, tx, opts), do: reply
 
       {:abort, reply} ->
-        cancel_transaction(db)
+        cancel_transaction(db, tx_key, opts)
         reply
 
       _ ->
-        cancel_transaction(db)
+        cancel_transaction(db, tx_key, opts)
         raise "Invalid return from `Goblin.transaction/2`"
     end
   end
@@ -173,6 +177,7 @@ defmodule Goblin do
   - `value` - Any Elixir term to be associated with `key`
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the key under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
 
   ## Returns
 
@@ -203,6 +208,7 @@ defmodule Goblin do
   - `pairs` - A list of `{key, value}` tuples
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
 
   ## Returns
 
@@ -230,6 +236,7 @@ defmodule Goblin do
   - `key` - The key to remove
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag the key is namespaced under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
 
   ## Returns
 
@@ -260,6 +267,7 @@ defmodule Goblin do
   - `keys` - A list of keys to remove
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag the keys are namespaced under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
 
   ## Returns
 
@@ -466,25 +474,26 @@ defmodule Goblin do
       Goblin.export(db, "/backups")
       # => {:ok, "/backups/goblin_20260220T120000Z.tar.gz"}
   """
-  @spec export(:gen_statem.server_ref(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
-  def export(db, export_dir) do
-    :gen_statem.call(db, {:export, export_dir})
+  @spec export(:gen_statem.server_ref(), Path.t(), keyword()) ::
+          {:ok, Path.t()} | {:error, term()}
+  def export(db, export_dir, opts \\ []) do
+    :gen_statem.call(db, {:export, export_dir}, opts[:timeout] || @default_timeout)
   end
 
   @doc """
   Returns whether a memory-to-disk flush is currently running.
   """
-  @spec flushing?(:gen_statem.server_ref()) :: boolean()
-  def flushing?(db) do
-    :gen_statem.call(db, :flushing?)
+  @spec flushing?(:gen_statem.server_ref(), keyword()) :: boolean()
+  def flushing?(db, opts \\ []) do
+    :gen_statem.call(db, :flushing?, opts[:timeout] || @default_timeout)
   end
 
   @doc """
   Returns whether background compaction is currently running.
   """
-  @spec compacting?(:gen_statem.server_ref()) :: boolean()
-  def compacting?(db) do
-    :gen_statem.call(db, :compacting?)
+  @spec compacting?(:gen_statem.server_ref(), keyword()) :: boolean()
+  def compacting?(db, opts \\ []) do
+    :gen_statem.call(db, :compacting?, opts[:timeout] || @default_timeout)
   end
 
   @doc """
@@ -594,21 +603,6 @@ defmodule Goblin do
     end
   end
 
-  def idle(:internal, :sweep, db) do
-    case View.sweep(db.view) do
-      [] ->
-        {:keep_state, db}
-
-      to_sweep ->
-        with {:ok, paths} <- cleanup(to_sweep),
-             {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, paths) do
-          {:keep_state, %{db | manifest: manifest}}
-        else
-          {:error, reason} -> {:stop, reason, db}
-        end
-    end
-  end
-
   def idle({:call, {pid, _} = from}, {:start_tx, tx_key}, db) do
     monitor_ref = Process.monitor(pid)
     writer = {tx_key, monitor_ref, from}
@@ -633,33 +627,28 @@ defmodule Goblin do
   end
 
   def idle(:cast, {:untrack_reader, tx_key}, db) do
-    {:keep_state, handle_untrack_reader(db, tx_key), [{:next_event, :internal, :sweep}]}
+    {:next_state, :sweeping, handle_untrack_reader(db, tx_key),
+     [{:next_event, :internal, :sweep}]}
   end
 
-  def idle(:info, {ref, result}, db) do
-    case handle_merge(db, ref, result) do
-      {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :sweep}]}
+  def idle(:info, {ref, merge_result}, db) do
+    case handle_merge(db, ref, merge_result) do
+      {:ok, db} -> {:next_state, :sweeping, db, [{:next_event, :internal, :sweep}]}
       {:error, reason} -> {:stop, reason, db}
     end
   end
 
   def idle(:info, {:DOWN, _, _, _, _} = down, db) do
     case handle_down(db, down) do
-      {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :sweep}]}
+      {:ok, db} -> {:next_state, :sweeping, db, [{:next_event, :internal, :sweep}]}
       {:error, reason} -> {:stop, reason, db}
     end
-  end
-
-  def idle(_, _, db), do: {:keep_state, db}
-
-  def occupied(:internal, :release, db) do
-    {:next_state, :idle, db, [{:next_event, :internal, :sweep}]}
   end
 
   def occupied(:internal, :next_writer, db) do
     case :queue.out(db.writer_queue) do
       {:empty, _} ->
-        {:keep_state, db, [{:next_event, :internal, :release}]}
+        {:next_state, :sweeping, db, [{:next_event, :internal, :sweep}]}
 
       {{:value, {_, _, from} = writer}, writer_queue} ->
         db = %{db | writer: writer, writer_queue: writer_queue}
@@ -668,17 +657,9 @@ defmodule Goblin do
   end
 
   def occupied(:internal, :flush, db) do
-    if MemTable.size(db.mem_table) >= db.opts[:mem_limit] do
-      with {:ok, db} <- flush(db),
-           {:ok, manifest} <- Manifest.update(db.manifest, tag([db.mem_table]), [], db.sequence) do
-        db = %{db | manifest: manifest}
-        publish_snapshot(db)
-        {:keep_state, db, [{:next_event, :internal, :next_writer}]}
-      else
-        {:error, reason} -> {:stop, reason, db}
-      end
-    else
-      {:keep_state, db, [{:next_event, :internal, :next_writer}]}
+    case maybe_flush(db) do
+      {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :next_writer}]}
+      {:error, reason} -> {:stop, reason, db}
     end
   end
 
@@ -704,11 +685,16 @@ defmodule Goblin do
     end
   end
 
-  def occupied({:call, from}, :cancel_tx, db) do
-    {_, monitor_ref, _} = db.writer
+  def occupied({:call, from}, {:cancel_tx, tx_key}, %{writer: {tx_key, _, _} = writer} = db) do
+    {_, monitor_ref, _} = writer
     Process.demonitor(monitor_ref)
-    db = %{db | writer: nil}
-    {:keep_state, db, [{:reply, from, :ok}, {:next_event, :internal, :next_writer}]}
+
+    {:keep_state, %{db | writer: nil},
+     [{:reply, from, :ok}, {:next_event, :internal, :next_writer}]}
+  end
+
+  def occupied({:call, from}, {:cancel_tx, _}, db) do
+    {:keep_state, db, [{:reply, from, {:error, :not_writer}}]}
   end
 
   def occupied({:call, from}, {:export, export_dir}, db) do
@@ -732,8 +718,8 @@ defmodule Goblin do
     {:keep_state, handle_untrack_reader(db, tx_key)}
   end
 
-  def occupied(:info, {ref, result}, db) do
-    case handle_merge(db, ref, result) do
+  def occupied(:info, {ref, merge_result}, db) do
+    case handle_merge(db, ref, merge_result) do
       {:ok, db} -> {:keep_state, db}
       {:error, reason} -> {:stop, reason, db}
     end
@@ -747,7 +733,20 @@ defmodule Goblin do
     end
   end
 
-  def occupied(_, _, db), do: {:keep_state, db}
+  def sweeping(:internal, :sweep, db) do
+    case View.sweep(db.view) do
+      [] ->
+        {:next_state, :idle, db}
+
+      to_sweep ->
+        with {:ok, paths} <- cleanup(to_sweep),
+             {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, paths) do
+          {:next_state, :idle, %{db | manifest: manifest}}
+        else
+          {:error, reason} -> {:stop, reason, db}
+        end
+    end
+  end
 
   defp handle_merge(db, ref, {:ok, new, old}) do
     if Map.has_key?(db.flushing, ref) or Map.has_key?(db.compacting, ref) do
@@ -786,38 +785,43 @@ defmodule Goblin do
     Export.into_tar(export_dir, [manifest_file | files])
   end
 
-  defp handle_down(%{flushing: flushing, compacting: compacting}, {_, ref, _, _, reason})
-       when is_map_key(flushing, ref) or is_map_key(compacting, ref) do
-    {:error, reason}
-  end
-
-  defp handle_down(%{readers: readers} = db, {_, ref, _, _, _}) when is_map_key(readers, ref) do
-    {tx_key, readers} = Map.pop(readers, ref)
-    View.release_reader(db.view, tx_key)
-    {:ok, %{db | readers: readers}}
-  end
-
-  defp handle_down(db, {_, ref, _, _, _}) do
-    case db.writer do
-      {tx_key, ^ref, _} ->
+  defp handle_down(db, {_, ref, _, _, reason}) do
+    cond do
+      match?({_, ^ref, _}, db.writer) ->
+        {tx_key, _, _} = db.writer
         View.release_reader(db.view, tx_key)
         {:ok, %{db | writer: nil}}
 
-      _ ->
-        writer_queue =
-          :queue.filter(
-            fn
-              {tx_key, ^ref, _} ->
-                View.release_reader(db.view, tx_key)
-                false
+      Map.has_key?(db.flushing, ref) ->
+        {:error, reason}
 
-              _ ->
-                true
+      Map.has_key?(db.compacting, ref) ->
+        {:error, reason}
+
+      Map.has_key?(db.readers, ref) ->
+        {tx_key, readers} = Map.pop(db.readers, ref)
+        View.release_reader(db.view, tx_key)
+        {:ok, %{db | readers: readers}}
+
+      true ->
+        {out, writer_queue} =
+          :queue.fold(
+            fn
+              {_, ^ref, _} = queued_writer, {_, acc} -> {queued_writer, acc}
+              queued_writer, {out, acc} -> {out, :queue.in(queued_writer, acc)}
             end,
+            {nil, :queue.new()},
             db.writer_queue
           )
 
-        {:ok, %{db | writer_queue: writer_queue}}
+        case out do
+          nil ->
+            {:ok, db}
+
+          {tx_key, _, _} ->
+            View.release_reader(db.view, tx_key)
+            {:ok, %{db | writer_queue: writer_queue}}
+        end
     end
   end
 
@@ -828,11 +832,13 @@ defmodule Goblin do
   end
 
   defp handle_untrack_reader(db, tx_key) do
-    Enum.find_value(db.readers, fn
-      {monitor_ref, ^tx_key} -> monitor_ref
-      _ -> false
-    end)
-    |> case do
+    monitor_ref =
+      Enum.find_value(db.readers, fn
+        {monitor_ref, ^tx_key} -> monitor_ref
+        _ -> false
+      end)
+
+    case monitor_ref do
       nil ->
         db
 
@@ -862,7 +868,9 @@ defmodule Goblin do
         {:ok, %{db | manifest: manifest}}
       end
     else
-      {:ok, db}
+      with {:ok, db} <- maybe_flush(db) do
+        {:ok, compact(db)}
+      end
     end
   end
 
@@ -880,10 +888,24 @@ defmodule Goblin do
     end
   end
 
+  defp maybe_flush(db) do
+    if MemTable.size(db.mem_table) >= db.opts[:mem_limit] do
+      with {:ok, db} <- flush(db),
+           {:ok, manifest} <- Manifest.update(db.manifest, tag([db.mem_table]), [], db.sequence) do
+        db = %{db | manifest: manifest}
+        publish_snapshot(db)
+        {:ok, db}
+      end
+    else
+      {:ok, db}
+    end
+  end
+
   defp flush(db, file \\ nil) do
     file = file || gen_file(db.file_counter, db.data_dir, @wal_suffix)
 
-    with {:ok, seq, new_mt} <- MemTable.new(file) do
+    with {:ok, seq, new_mt} <- MemTable.new(file),
+         :ok <- close_wal(db.mem_table) do
       db =
         case db.mem_table do
           nil -> db
@@ -952,14 +974,20 @@ defmodule Goblin do
     %{db | compacting: compacting}
   end
 
-  defp start_transaction(db, tx_key),
-    do: :gen_statem.call(db, {:start_tx, tx_key}, :infinity)
+  defp start_transaction(db, tx_key, opts),
+    do: :gen_statem.call(db, {:start_tx, tx_key}, opts[:timeout] || @default_timeout)
 
-  defp commit_transaction(db, tx), do: :gen_statem.call(db, {:commit_tx, tx})
-  defp cancel_transaction(db), do: :gen_statem.call(db, :cancel_tx)
+  defp commit_transaction(db, tx, opts),
+    do: :gen_statem.call(db, {:commit_tx, tx}, opts[:timeout] || @default_timeout)
+
+  defp cancel_transaction(db, tx_key, opts),
+    do: :gen_statem.call(db, {:cancel_tx, tx_key}, opts[:timeout] || @default_timeout)
 
   defp db_flushing?(db), do: map_size(db.flushing) != 0
   defp db_compacting?(db), do: map_size(db.compacting) != 0
+
+  defp close_wal(nil), do: :ok
+  defp close_wal(mt), do: MemTable.close(mt)
 
   defp cleanup(tables, acc \\ [])
   defp cleanup([], acc), do: {:ok, acc}

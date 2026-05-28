@@ -11,10 +11,50 @@ defmodule Goblin.MemTableTest do
     %{test_path: path, mem_table: mem_table}
   end
 
-  # Properties:
-  # - "Inverse" put + read
-  # - "Idempotent" put + put
-  # - "Sorted invariance" {put + put} -> a b c
+  describe "new/1, close/1, destroy/1" do
+    test "creates new file", ctx do
+      path = uniq_rand_path(ctx.tmp_dir)
+      refute File.exists?(path)
+      assert {:ok, _, _} = MemTable.new(path)
+      assert File.exists?(path)
+    end
+
+    test "data is durable", ctx do
+      path = uniq_rand_path(ctx.tmp_dir)
+      commits = [{:foo, 0, :bar}, {:baz, 1, :baq}]
+      assert {:ok, _, mt} = MemTable.new(path)
+      MemTable.append(mt, commits)
+      assert :ok == MemTable.close(mt)
+      assert :ok == MemTable.destroy(mt)
+
+      assert {:ok, _, mt} = MemTable.new(path)
+      assert Enum.sort_by(commits, &elem(&1, 0)) == MemTable.stream(mt) |> Enum.to_list()
+    end
+  end
+
+  describe "append/2" do
+    test "can round-trip", ctx do
+    end
+  end
+
+  describe "has_key?/2, search/3" do
+    test "provides correct membership status", ctx do
+    end
+
+    test "returns correct value for provided key(s)", ctx do
+    end
+
+    test "returns empty list if key not in MemTable", ctx do
+    end
+  end
+
+  describe "stream/1/2" do
+    test "streams entire MemTable", ctx do
+    end
+
+    test "streams MemTable up to provided sequence (exclusive)", ctx do
+    end
+  end
 
   @tag :property_tests
   property "always shows latest written value", ctx do
@@ -54,8 +94,39 @@ defmodule Goblin.MemTableTest do
 
   @tag :property_tests
   property "stream sort order by key is preserved", ctx do
-    check all() do
+    seq_gen = repeatedly(fn -> System.unique_integer([:positive, :monotonic]) end)
+
+    check all(
+            keys <- list_of(term(), length: 5),
+            vals <- list_of(term(), length: 5)
+          ) do
+      {:ok, _, mem_table} = MemTable.new(uniq_rand_path(ctx.tmp_dir))
+
+      commits =
+        Enum.zip_with(keys, vals, fn key, val ->
+          [seq] = Enum.take(seq_gen, 1)
+          {key, seq, val}
+        end)
+
+      assert :ok == MemTable.append(mem_table, commits)
+      assert Enum.sort(keys) == MemTable.stream(mem_table) |> Enum.map(&elem(&1, 0))
     end
+  end
+
+  defp uniq_rand_path(dir) do
+    letters = for x <- ?a..?z, do: <<x>>
+
+    name =
+      0..8
+      |> Enum.map(fn _ -> Enum.random(letters) end)
+      |> Enum.join("")
+
+    filename = "#{name}.wal"
+    path = Path.join(dir, filename)
+
+    if File.exists?(path),
+      do: uniq_rand_path(dir),
+      else: path
   end
 
   ####
