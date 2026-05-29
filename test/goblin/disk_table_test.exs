@@ -1,6 +1,6 @@
 defmodule Goblin.DiskTableTest do
   use ExUnit.Case, async: true
-
+  use ExUnitProperties
   alias Goblin.DiskTable
 
   @moduletag :tmp_dir
@@ -26,178 +26,240 @@ defmodule Goblin.DiskTableTest do
     %{opts: opts}
   end
 
-  defp triples(range), do: for(n <- range, do: {n, n, "v-#{n}"})
-
-  defp build_one(data, opts) do
-    {:ok, [dt]} = DiskTable.build(data, opts)
-    dt
-  end
-
-  describe "build/2" do
-    test "writes a disk table with the expected metadata and a file on disk", ctx do
-      assert {:ok, [dt]} = DiskTable.build(triples(1..10), ctx.opts)
-
-      assert dt.level_key == 0
-      assert dt.key_range == {1, 10}
-      assert dt.seq_range == {1, 10}
-      assert dt.size > 0
-      assert dt.no_blocks > 0
+  describe "build/1" do
+    test "writes stream to file", ctx do
+      data = for n <- 0..10, do: {n, n, "val-#{n}"}
+      assert {:ok, [dt]} = DiskTable.build(data, ctx.opts)
       assert File.exists?(dt.id)
+      assert {0, 10} == dt.key_range
+      assert {0, 10} == dt.seq_range
+      assert dt.no_blocks == 11
     end
 
-    test "returns {:ok, []} for an empty stream and writes no files", ctx do
-      assert {:ok, []} = DiskTable.build([], ctx.opts)
-      assert File.ls!(ctx.tmp_dir) == []
-    end
+    test "wraps stream into multiple files if exceeding :max_size", ctx do
+      opts = Keyword.put(ctx.opts, :max_size, 1024)
+      data = for n <- 0..10, do: {n, n, "val-#{n}"}
+      assert {:ok, dts} = DiskTable.build(data, opts)
+      assert length(dts) > 1
 
-    test "splits into multiple tables when exceeding max_size", ctx do
-      opts = Keyword.put(ctx.opts, :max_size, 4 * 1024)
-
-      assert {:ok, dts} = DiskTable.build(triples(1..200), opts)
-      assert length(dts) >= 2
-
-      # Tables are written in reverse insertion order; sort by key_range ascending.
-      sorted = Enum.sort_by(dts, & &1.key_range)
-
-      sorted
-      |> Enum.chunk_every(2, 1, :discard)
-      |> Enum.each(fn [a, b] ->
-        {_, a_max} = a.key_range
-        {b_min, _} = b.key_range
-        assert a_max < b_min
+      Enum.each(dts, fn dt ->
+        assert File.exists?(dt.id)
       end)
+    end
+
+    test "empty stream writes no files", ctx do
+      files = File.ls!(ctx.tmp_dir)
+      assert {:ok, []} == DiskTable.build([], ctx.opts)
+      assert files == File.ls!(ctx.tmp_dir)
     end
   end
 
   describe "from_file/1" do
-    test "round-trips a written table", ctx do
-      written = build_one(triples(1..50), ctx.opts)
+    test "correctly generates DiskTable struct from disk", ctx do
+      {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
+      assert {:ok, dt} == DiskTable.from_file(dt.id)
+    end
 
-      assert {:ok, parsed} = DiskTable.from_file(written.id)
+    test "returns error if file is corrupt", ctx do
+      {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
 
-      assert parsed.id == written.id
-      assert parsed.level_key == written.level_key
-      assert parsed.key_range == written.key_range
-      assert parsed.seq_range == written.seq_range
-      assert parsed.size == written.size
-      assert parsed.no_blocks == written.no_blocks
-      assert parsed.bloom_filter == written.bloom_filter
+      {:ok, f} = :file.open(dt.id, [:read, :raw, :binary, :write])
+      {:ok, _} = :file.position(f, 1024)
+      :ok = :file.truncate(f)
+      :ok = :file.close(f)
+
+      assert {:error, :invalid_disk_table} == DiskTable.from_file(dt.id)
+    end
+
+    test "raises if file is missing", ctx do
+      {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
+      File.rm!(dt.id)
+
+      assert_raise RuntimeError, fn ->
+        DiskTable.from_file(dt.id)
+      end
     end
   end
 
-  describe "has_key?/2" do
-    test "returns true for every key that was written", ctx do
-      dt = build_one(triples(1..10), ctx.opts)
+  describe "has_key?/2, search/3" do
+    test "round-trips", ctx do
+      {:ok, [dt]} = DiskTable.build([{:foo, 0, :bar}], ctx.opts)
+      assert [{:foo, 0, :bar}] == DiskTable.search(dt, [:foo], 1) |> Enum.to_list()
+    end
 
-      for n <- 1..10 do
-        assert DiskTable.has_key?(dt, n)
+    test "correctly shows key membership", ctx do
+      {:ok, [dt]} = DiskTable.build([{:foo, 0, :bar}], ctx.opts)
+      assert DiskTable.has_key?(dt, :foo)
+      refute DiskTable.has_key?(dt, :not_foo)
+    end
+
+    test "provides latest version of key within provided sequence (exclusive)", ctx do
+      data =
+        [
+          {:foo, 0, :bar},
+          {:a, 1, :a},
+          {:b, 2, :b},
+          {:foo, 3, :bar2}
+        ]
+        |> Enum.sort_by(fn {key, seq, _} -> {key, -seq} end)
+
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+
+      assert [{:foo, 0, :bar}] == DiskTable.search(dt, [:foo], 3) |> Enum.to_list()
+    end
+
+    test "can search for keys spanning multiple blocks", ctx do
+      val = :binary.copy("X", 2048)
+
+      data =
+        for(n <- 0..10, do: {n, n, val})
+        |> Enum.sort_by(fn {k, s, _} -> {k, -s} end)
+
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+
+      for n <- 0..10 do
+        assert [{n, n, val}] == DiskTable.search(dt, [n], 11) |> Enum.to_list()
       end
     end
 
-    test "returns false for keys outside the key_range", ctx do
-      dt = build_one(triples(10..20), ctx.opts)
+    test "is lazy", ctx do
+      data =
+        for(n <- 0..10, do: {n, n, "val-#{n}"})
+        |> Enum.sort_by(fn {key, seq, _} -> {key, -seq} end)
 
-      refute DiskTable.has_key?(dt, 9)
-      refute DiskTable.has_key?(dt, 21)
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+      assert [{0, 0, "val-0"}] == DiskTable.search(dt, [0, 5, 10], 11) |> Enum.take(1)
     end
 
-    test "returns false for a never-inserted key inside the key_range", ctx do
-      dt = build_one(triples([1, 10, 20]), ctx.opts)
+    test "error causes raise", ctx do
+      {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
 
-      refute DiskTable.has_key?(dt, 5)
-    end
-  end
+      # Corrupt the first data block's payload (past the 20-byte header) so its
+      # stored CRC no longer matches -> FileIO.pread returns {:error, :invalid_crc}.
+      {:ok, f} = :file.open(dt.id, [:read, :write, :raw, :binary])
+      :ok = :file.pwrite(f, 30, <<255, 255, 255, 255>>)
+      :ok = :file.close(f)
 
-  describe "search/3" do
-    test "yields requested keys in the input order", ctx do
-      dt = build_one(triples(1..50), ctx.opts)
-
-      result = DiskTable.search(dt, [5, 10, 25], 1000) |> Enum.to_list()
-
-      assert result == [{5, 5, "v-5"}, {10, 10, "v-10"}, {25, 25, "v-25"}]
-    end
-
-    test "skips keys that are not in the table", ctx do
-      dt = build_one(triples(1..10), ctx.opts)
-
-      result = DiskTable.search(dt, [5, 99], 1000) |> Enum.to_list()
-
-      assert result == [{5, 5, "v-5"}]
-    end
-
-    test "filters strictly by seq (s < seq)", ctx do
-      dt = build_one(triples(1..10), ctx.opts)
-
-      result = DiskTable.search(dt, [1, 4, 5], 4) |> Enum.to_list()
-
-      assert result == [{1, 1, "v-1"}]
-    end
-
-    test "is lazy: Enum.take returns early without consuming the full search", ctx do
-      dt = build_one(triples(1..100), ctx.opts)
-
-      stream = DiskTable.search(dt, [5, 10, 50], 1000)
-
-      assert [{5, _, _}] = Enum.take(stream, 1)
-    end
-
-    test "finds triples whose values span many physical blocks", ctx do
-      opts = Keyword.put(ctx.opts, :max_size, 100 * 1024)
-
-      triple1 = {1, 1, :crypto.strong_rand_bytes(3 * 1024)}
-      triple2 = {2, 2, :crypto.strong_rand_bytes(5 * 1024)}
-
-      dt = build_one([triple1, triple2], opts)
-      assert dt.no_blocks > 2
-
-      assert DiskTable.search(dt, [1], 1000) |> Enum.to_list() == [triple1]
-      assert DiskTable.search(dt, [2], 1000) |> Enum.to_list() == [triple2]
-      assert DiskTable.search(dt, [1, 2], 1000) |> Enum.to_list() == [triple1, triple2]
+      assert_raise RuntimeError, fn ->
+        DiskTable.search(dt, [0], 1) |> Enum.to_list()
+      end
     end
   end
 
   describe "stream/2" do
-    test "yields every triple in stored order when no opts are given", ctx do
-      dt = build_one(triples(1..5), ctx.opts)
+    test "streams entire disk-table", ctx do
+      data =
+        [
+          {:foo, 0, :bar},
+          {:a, 1, :a},
+          {:b, 2, :b},
+          {:foo, 3, :bar2}
+        ]
+        |> Enum.sort_by(fn {key, seq, _} -> {key, -seq} end)
 
-      assert DiskTable.stream(dt) |> Enum.to_list() == [
-               {1, 1, "v-1"},
-               {2, 2, "v-2"},
-               {3, 3, "v-3"},
-               {4, 4, "v-4"},
-               {5, 5, "v-5"}
-             ]
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+
+      assert data == DiskTable.stream(dt) |> Enum.to_list()
     end
 
-    test "filters strictly by :seq (s < seq)", ctx do
-      dt = build_one(triples(1..5), ctx.opts)
+    test "returns stream only if within bounds", ctx do
+      data =
+        for(n <- 0..10, do: {n, n, "val-#{n}"})
+        |> Enum.sort_by(fn {key, seq, _} -> {key, -seq} end)
 
-      assert DiskTable.stream(dt, seq: 3) |> Enum.to_list() == [
-               {1, 1, "v-1"},
-               {2, 2, "v-2"}
-             ]
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+
+      assert data == DiskTable.stream(dt, bounds: {0, 10}) |> Enum.to_list()
+      assert data == DiskTable.stream(dt, bounds: {-1, 11}) |> Enum.to_list()
+      assert data == DiskTable.stream(dt, bounds: {5, 7}) |> Enum.to_list()
+      assert [] == DiskTable.stream(dt, bounds: {-10, -1}) |> Enum.to_list()
+      assert [] == DiskTable.stream(dt, bounds: {11, 12}) |> Enum.to_list()
     end
 
-    test "returns [] when :bounds do not overlap the key_range", ctx do
-      dt = build_one(triples(10..20), ctx.opts)
+    test "streams up to (exclusive) provided sequence", ctx do
+      data =
+        for(n <- 0..10, do: {n, n, "val-#{n}"})
+        |> Enum.sort_by(fn {key, seq, _} -> {key, -seq} end)
 
-      assert DiskTable.stream(dt, bounds: {1, 5}) == []
-      assert DiskTable.stream(dt, bounds: {21, 30}) == []
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+
+      assert Enum.take(data, 5) == DiskTable.stream(dt, seq: 5) |> Enum.to_list()
     end
 
-    test "yields the whole table when :bounds overlap the key_range (no clipping)", ctx do
-      dt = build_one(triples(10..20), ctx.opts)
+    test "is lazy", ctx do
+      data =
+        for(n <- 0..10, do: {n, n, "val-#{n}"})
+        |> Enum.sort_by(fn {key, seq, _} -> {key, -seq} end)
 
-      result = DiskTable.stream(dt, bounds: {5, 15}) |> Enum.to_list()
-      assert length(result) == 11
-      assert hd(result) == {10, 10, "v-10"}
-      assert List.last(result) == {20, 20, "v-20"}
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+      assert [{0, 0, "val-0"}] == DiskTable.stream(dt) |> Enum.take(1)
     end
 
-    test "is lazy: Enum.take returns early", ctx do
-      dt = build_one(triples(1..100), ctx.opts)
+    test "error causes raise", ctx do
+      {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
 
-      assert [{1, 1, "v-1"}] = Enum.take(DiskTable.stream(dt), 1)
+      # Corrupt the first data block's payload (past the 20-byte header) so its
+      # stored CRC no longer matches -> FileIO.read returns {:error, :invalid_crc}.
+      {:ok, f} = :file.open(dt.id, [:read, :write, :raw, :binary])
+      :ok = :file.pwrite(f, 30, <<255, 255, 255, 255>>)
+      :ok = :file.close(f)
+
+      assert_raise RuntimeError, fn ->
+        DiskTable.stream(dt) |> Enum.to_list()
+      end
+    end
+  end
+
+  @tag :property_tests
+  property "anything written can be read again (round-trip)", ctx do
+    check all(
+            triples <-
+              list_of(triple_generator(), length: 10)
+              |> map(&Enum.sort_by(&1, fn {key, seq, _} -> {key, -seq} end))
+          ) do
+      assert {:ok, [dt]} = DiskTable.build(triples, ctx.opts)
+
+      Enum.each(triples, fn {key, _, _} ->
+        assert DiskTable.has_key?(dt, key)
+      end)
+
+      keys = Enum.map(triples, &elem(&1, 0))
+      {_, max_seq, _} = Enum.max_by(triples, &elem(&1, 1))
+      search_stream = DiskTable.search(dt, keys, max_seq + 1)
+      assert Enum.count(search_stream) > 0
+
+      Enum.each(search_stream, fn {key, _, _} = triple ->
+        assert triple in triples
+
+        assert triple ==
+                 triples
+                 |> Enum.filter(fn {k, _, _} -> k == key end)
+                 |> Enum.max_by(fn {_, s, _} -> s end)
+      end)
+    end
+  end
+
+  @tag :property_tests
+  property "input order is preserved when searching", ctx do
+    check all(
+            triples <-
+              list_of(triple_generator(), length: 10)
+              |> map(&Enum.sort_by(&1, fn {key, seq, _} -> {key, -seq} end))
+          ) do
+      assert {:ok, [dt]} = DiskTable.build(triples, ctx.opts)
+      {_, max_seq, _} = Enum.max_by(triples, &elem(&1, 1))
+      keys = Enum.map(triples, &elem(&1, 0))
+      assert keys == DiskTable.search(dt, keys, max_seq + 1) |> Enum.map(&elem(&1, 0))
+    end
+  end
+
+  defp triple_generator do
+    gen all(
+          key <- term(),
+          seq <- repeatedly(fn -> System.unique_integer([:positive, :monotonic]) end),
+          val <- term()
+        ) do
+      {key, seq, val}
     end
   end
 end
