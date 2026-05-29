@@ -55,6 +55,7 @@ defmodule Goblin.DiskTable do
 
               if size >= max_size do
                 with {:ok, _} <- FileIO.append(file, acc, compress?: compress?),
+                     :ok <- FileIO.sync(file),
                      :ok <- FileIO.close(file) do
                   {[{:ok, acc}], {nil, 0, nil}}
                 else
@@ -71,6 +72,7 @@ defmodule Goblin.DiskTable do
       fn
         {%FileIO{} = file, _, acc} ->
           with {:ok, _} <- FileIO.append(file, acc, compress?: compress?),
+               :ok <- FileIO.sync(file),
                :ok <- FileIO.close(file) do
             {[{:ok, acc}], nil}
           else
