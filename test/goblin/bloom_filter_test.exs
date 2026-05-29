@@ -1,24 +1,7 @@
 defmodule Goblin.BloomFilterTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
   alias Goblin.BloomFilter
-
-  test "Bloom filter can handle any term" do
-    keys =
-      StreamData.term()
-      |> Enum.take(200)
-
-    bloom_filter =
-      for key <- keys, reduce: BloomFilter.new(fpp: 0.01, bit_array_size: 100) do
-        acc ->
-          BloomFilter.put(acc, key)
-      end
-
-    assert %BloomFilter{} = bloom_filter
-
-    for key <- keys do
-      assert BloomFilter.member?(bloom_filter, key)
-    end
-  end
 
   test "member?/2 returns false (maybe) if not a member" do
     bloom_filter =
@@ -82,5 +65,31 @@ defmodule Goblin.BloomFilterTest do
     # Total should be well under 10 KB for 5 segments.
     assert total_size < segment_count * 2_500
     assert total_size > segment_count * 1_000
+  end
+
+  @tag :property_tests
+  property "adding to the Bloom filter is idempotent" do
+    fpp = 0.01
+    bit_array_size = 1000
+    bf = BloomFilter.new(fpp: fpp, bit_array_size: bit_array_size)
+
+    check all(term <- term()) do
+      assert %BloomFilter{} = bf = BloomFilter.put(bf, term)
+      assert BloomFilter.member?(bf, term)
+      assert %BloomFilter{} = BloomFilter.put(bf, term)
+      assert BloomFilter.member?(bf, term)
+    end
+  end
+
+  @tag :property_tests
+  property "each term put in the Bloom filter is a member" do
+    fpp = 0.01
+    bit_array_size = 1000
+    bf = BloomFilter.new(fpp: fpp, bit_array_size: bit_array_size)
+
+    check all(term <- term()) do
+      bf = BloomFilter.put(bf, term)
+      assert BloomFilter.member?(bf, term)
+    end
   end
 end
