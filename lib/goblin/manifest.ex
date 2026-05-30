@@ -4,12 +4,13 @@ defmodule Goblin.Manifest do
   alias Goblin.FileIO
 
   @log_file "manifest.goblin"
-  @max_size 10 * 1024 * 1024
+  @default_max_log_size 10 * 1024 * 1024
 
   defstruct [
     :io,
     :data_dir,
     :path,
+    :max_log_size,
     size: 0,
     snapshot: {0, 0, [], []}
   ]
@@ -24,8 +25,8 @@ defmodule Goblin.Manifest do
              list({atom(), Path.t()})}
         }
 
-  @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
-  def open(data_dir) do
+  @spec open(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
+  def open(data_dir, opts \\ []) do
     path = Path.join(data_dir, @log_file)
 
     if File.exists?(tmp(path)),
@@ -33,7 +34,15 @@ defmodule Goblin.Manifest do
 
     with {:ok, io} <- FileIO.open(path, write?: true) do
       size = FileIO.size_of(path)
-      manifest = %__MODULE__{path: path, data_dir: data_dir, io: io, size: size}
+
+      manifest = %__MODULE__{
+        path: path,
+        data_dir: data_dir,
+        io: io,
+        size: size,
+        max_log_size: opts[:max_log_size] || @default_max_log_size
+      }
+
       recover_manifest(manifest)
     end
   end
@@ -116,13 +125,11 @@ defmodule Goblin.Manifest do
         {:cont, {:ok, snapshot}}
 
       {:corrupt, pos}, {:ok, acc} ->
-        case valid_snapshot?(acc, manifest.data_dir) do
-          true ->
-            FileIO.truncate(manifest.io, pos)
-            {:halt, {:ok, acc}}
-
-          false ->
-            {:halt, {:error, :corrupt_manifest}}
+        if valid_snapshot?(acc, manifest.data_dir) do
+          FileIO.truncate(manifest.io, pos)
+          {:halt, {:ok, acc}}
+        else
+          {:halt, {:error, :corrupt_manifest}}
         end
 
       error, _acc ->
@@ -130,7 +137,8 @@ defmodule Goblin.Manifest do
     end)
   end
 
-  defp maybe_rotate(%{size: size} = manifest) when size >= @max_size do
+  defp maybe_rotate(%{size: size, max_log_size: max_log_size} = manifest)
+       when size >= max_log_size do
     tmp_path = tmp(manifest.path)
 
     with :ok <- FileIO.close(manifest.io),
@@ -147,6 +155,7 @@ defmodule Goblin.Manifest do
 
   defp valid_snapshot?({_, _, files, _}, dir) do
     files
+    |> Enum.map(&elem(&1, 1))
     |> Enum.map(&Path.join(dir, &1))
     |> Enum.all?(&File.exists?/1)
   end
