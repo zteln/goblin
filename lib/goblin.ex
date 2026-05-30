@@ -296,11 +296,11 @@ defmodule Goblin do
   ## Parameters
 
   - `db` - The database server (PID or registered name)
-  - `f` - A function that takes a `Goblin.Tx.t()` struct
+  - `callback` - A function that takes a `Goblin.Tx.t()` struct
 
   ## Returns
 
-  - The return value of `f`
+  - The return value of `callback`
 
   ## Examples
 
