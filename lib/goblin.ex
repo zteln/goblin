@@ -49,7 +49,7 @@ defmodule Goblin do
     DiskTable,
     Export,
     FileIO,
-    KMerger,
+    Merge,
     Levels,
     Manifest,
     MemTable,
@@ -960,7 +960,7 @@ defmodule Goblin do
     %{ref: ref} =
       Task.async(fn ->
         stream =
-          KMerger.k_merge(
+          Merge.stream(
             fn -> Enum.map(dts, &DiskTable.stream/1) end,
             filter_tombstones?: opts[:filter_tombstones?]
           )

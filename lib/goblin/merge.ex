@@ -1,8 +1,8 @@
-defmodule Goblin.KMerger do
+defmodule Goblin.Merge do
   @moduledoc false
 
-  @spec k_merge((-> list(Enumerable.t())), keyword()) :: Enumerable.t()
-  def k_merge(init, opts \\ []) do
+  @spec stream((-> list(Enumerable.t())), keyword()) :: Enumerable.t()
+  def stream(init, opts \\ []) do
     Stream.resource(
       fn -> init.() |> build_heap() end,
       fn heap -> step(heap, opts) end,

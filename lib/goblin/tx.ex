@@ -17,7 +17,7 @@ defmodule Goblin.Tx do
       end)
   """
 
-  alias Goblin.{View, MemTable, DiskTable, KMerger}
+  alias Goblin.{View, MemTable, DiskTable, Merge}
 
   defstruct [
     :mode,
@@ -335,7 +335,7 @@ defmodule Goblin.Tx do
       end)
 
     {acc, keys} =
-      KMerger.k_merge(
+      Merge.stream(
         fn ->
           tables.(lk)
           |> Enum.map(&table_search(&1, reduced_keys, seq))
@@ -360,7 +360,7 @@ defmodule Goblin.Tx do
     min = opts[:min]
     max = opts[:max]
 
-    KMerger.k_merge(
+    Merge.stream(
       fn ->
         {seq, tables} = seq_and_tables.()
         Enum.map(tables, &table_stream(&1, min, max, seq))
