@@ -8,7 +8,7 @@ defmodule Goblin.TxTest do
       mode: opts[:mode] || :write,
       sequence: opts[:sequence] || 0,
       tx_id: opts[:tx_id] || 0,
-      view: opts[:view],
+      mvcc: opts[:mvcc],
       max_level_key: opts[:max_level_key] || -1
     }
   end
@@ -130,7 +130,7 @@ defmodule Goblin.TxTest do
     end
 
     test "abort/1 returns :abort" do
-      assert :abort == Tx.abort(new_tx())
+      assert {:abort, :error} == Tx.abort(new_tx())
     end
   end
 end

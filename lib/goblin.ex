@@ -54,7 +54,7 @@ defmodule Goblin do
     Manifest,
     MemTable,
     Tx,
-    View
+    MVCC
   }
 
   @goblin_suffix "goblin"
@@ -72,7 +72,7 @@ defmodule Goblin do
   defstruct [
     :data_dir,
     :mem_table,
-    :view,
+    :mvcc,
     :manifest,
     :file_counter,
     :opts,
@@ -121,14 +121,14 @@ defmodule Goblin do
       # => :error
   """
   def transaction(db, callback, opts \\ []) do
-    view = get_view(db)
+    mvcc = get_mvcc(db)
     tx_key = make_ref()
     start_transaction(db, tx_key, opts)
-    {seq, max_lk, tx_id} = View.add_reader(view, tx_key)
+    {seq, max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
 
     tx = %Tx{
       mode: :write,
-      view: view,
+      mvcc: mvcc,
       tx_id: tx_id,
       sequence: seq,
       max_level_key: max_lk
@@ -150,7 +150,7 @@ defmodule Goblin do
           cancel_transaction(db, tx_key, opts)
           exit(val)
       after
-        View.release_reader(view, tx_key)
+        MVCC.release_reader(mvcc, tx_key)
       end
 
     case result do
@@ -289,7 +289,7 @@ defmodule Goblin do
   @doc """
   Performs a read-only transaction.
 
-  A snapshot is taken to provide a consistent view of the database.
+  A snapshot is taken to provide a consistent mvcc of the database.
   Multiple readers run concurrently without blocking each other.
   Attempting to write within a read transaction raises.
 
@@ -312,14 +312,14 @@ defmodule Goblin do
       # => {"Alice", "Bob"}
   """
   def read(db, callback) do
-    view = get_view(db)
+    mvcc = get_mvcc(db)
     tx_key = make_ref()
     :gen_statem.cast(db, {:track_reader, self(), tx_key})
-    {seq, max_lk, tx_id} = View.add_reader(view, tx_key)
+    {seq, max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
 
     tx = %Tx{
       mode: :read,
-      view: view,
+      mvcc: mvcc,
       tx_id: tx_id,
       sequence: seq,
       max_level_key: max_lk
@@ -328,7 +328,7 @@ defmodule Goblin do
     try do
       callback.(tx)
     after
-      View.release_reader(view, tx_key)
+      MVCC.release_reader(mvcc, tx_key)
       :gen_statem.cast(db, {:untrack_reader, tx_key})
     end
   end
@@ -434,17 +434,17 @@ defmodule Goblin do
       # => [{:alice, "Alice"}]
   """
   def scan(db, opts \\ []) do
-    view = get_view(db)
+    mvcc = get_mvcc(db)
     tx_key = make_ref()
 
     Tx.scan(
       fn ->
         :gen_statem.cast(db, {:track_reader, self(), tx_key})
-        {seq, _max_lk, tx_id} = View.add_reader(view, tx_key)
-        {seq, View.get_tables(view, tx_id)}
+        {seq, _max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
+        {seq, MVCC.get_tables(mvcc, tx_id)}
       end,
       Keyword.put(opts, :after, fn ->
-        View.release_reader(view, tx_key)
+        MVCC.release_reader(mvcc, tx_key)
         :gen_statem.cast(db, {:untrack_reader, tx_key})
       end)
     )
@@ -536,8 +536,18 @@ defmodule Goblin do
   @doc """
   Stops the database.
   """
+  @spec stop(:gen_statem.server_ref(), term(), timeout()) :: :ok
   def stop(db, reason \\ :normal, timeout \\ :infinity) do
     :gen_statem.stop(db, reason, timeout)
+  end
+
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts) do
+    %{
+      id: opts[:name] || __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      type: :worker
+    }
   end
 
   @impl :gen_statem
@@ -577,7 +587,7 @@ defmodule Goblin do
            data_dir: data_dir,
            file_counter: file_counter,
            manifest: manifest,
-           view: View.new(),
+           mvcc: MVCC.new(),
            opts: opts
          }, {:next_event, :internal, :restore_db}}
 
@@ -596,7 +606,7 @@ defmodule Goblin do
          {:ok, db} <- restore(db, files) do
       db = %{db | manifest: manifest}
       publish_snapshot(db)
-      mark_ready(self(), db.view)
+      mark_ready(self(), db.mvcc)
       {:keep_state, db}
     else
       {:error, reason} -> {:stop, reason}
@@ -734,7 +744,7 @@ defmodule Goblin do
   end
 
   def sweeping(:internal, :sweep, db) do
-    case View.sweep(db.view) do
+    case MVCC.sweep(db.mvcc) do
       [] ->
         {:next_state, :idle, db}
 
@@ -789,7 +799,7 @@ defmodule Goblin do
     cond do
       match?({_, ^ref, _}, db.writer) ->
         {tx_key, _, _} = db.writer
-        View.release_reader(db.view, tx_key)
+        MVCC.release_reader(db.mvcc, tx_key)
         {:ok, %{db | writer: nil}}
 
       Map.has_key?(db.flushing, ref) ->
@@ -800,7 +810,7 @@ defmodule Goblin do
 
       Map.has_key?(db.readers, ref) ->
         {tx_key, readers} = Map.pop(db.readers, ref)
-        View.release_reader(db.view, tx_key)
+        MVCC.release_reader(db.mvcc, tx_key)
         {:ok, %{db | readers: readers}}
 
       true ->
@@ -819,7 +829,7 @@ defmodule Goblin do
             {:ok, db}
 
           {tx_key, _, _} ->
-            View.release_reader(db.view, tx_key)
+            MVCC.release_reader(db.mvcc, tx_key)
             {:ok, %{db | writer_queue: writer_queue}}
         end
     end
@@ -858,7 +868,7 @@ defmodule Goblin do
       |> List.flatten()
       |> Enum.reduce(db.levels, &Levels.put(&2, &1))
 
-    View.put_snapshot(db.view, mem_tables, levels, db.sequence)
+    MVCC.put_snapshot(db.mvcc, mem_tables, levels, db.sequence)
   end
 
   defp restore(db, []) do
@@ -1030,17 +1040,17 @@ defmodule Goblin do
   defp tag(%DiskTable{} = dt), do: {:disk, dt.id}
 
   defp mark_ready(db, ref), do: :persistent_term.put({__MODULE__, db}, ref)
-  defp get_view(db, timeout \\ 20_000)
-  defp get_view(_, timeout) when timeout <= 0, do: raise("db not ready")
+  defp get_mvcc(db, timeout \\ 20_000)
+  defp get_mvcc(_, timeout) when timeout <= 0, do: raise("db not ready")
 
-  defp get_view(db, timeout) do
+  defp get_mvcc(db, timeout) do
     case :persistent_term.get({__MODULE__, db}, nil) do
       nil ->
         Process.sleep(50)
-        get_view(db, timeout - 50)
+        get_mvcc(db, timeout - 50)
 
-      view ->
-        view
+      mvcc ->
+        mvcc
     end
   end
 end

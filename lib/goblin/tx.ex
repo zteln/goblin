@@ -17,13 +17,13 @@ defmodule Goblin.Tx do
       end)
   """
 
-  alias Goblin.{View, MemTable, DiskTable, Merge}
+  alias Goblin.{MVCC, MemTable, DiskTable, Merge}
 
   defstruct [
     :mode,
     :sequence,
     :tx_id,
-    :view,
+    :mvcc,
     :max_level_key,
     commits: []
   ]
@@ -32,7 +32,7 @@ defmodule Goblin.Tx do
           mode: :write | :read,
           sequence: non_neg_integer(),
           tx_id: non_neg_integer(),
-          view: :ets.table(),
+          mvcc: :ets.table(),
           max_level_key: -1 | non_neg_integer(),
           commits: list({term(), non_neg_integer(), term()})
         }
@@ -188,7 +188,7 @@ defmodule Goblin.Tx do
 
     tables = fn lk ->
       tables =
-        View.get_tables(tx.view, tx.tx_id, lk)
+        MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
         |> Enum.filter(&table_has_key?(&1, key))
 
       [tx_table | tables]
@@ -234,7 +234,7 @@ defmodule Goblin.Tx do
 
     tables = fn lk ->
       tables =
-        View.get_tables(tx.view, tx.tx_id, lk)
+        MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
         |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
 
       [tx_table | tables]
@@ -278,7 +278,7 @@ defmodule Goblin.Tx do
   ## Parameters
 
   - `tx` - The transaction to abort
-  - `reply` - Teh reply after aborting (default: `:error`)
+  - `reply` - The reply after aborting (default: `:error`)
 
   ## Returns
 

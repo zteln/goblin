@@ -1,4 +1,4 @@
-defmodule Goblin.View do
+defmodule Goblin.MVCC do
   @moduledoc false
 
   @type t :: :ets.table()
@@ -7,7 +7,7 @@ defmodule Goblin.View do
 
   @spec new() :: t()
   def new() do
-    :ets.new(:goblin_view, [
+    :ets.new(:goblin_mvcc, [
       :public,
       :ordered_set,
       write_concurrency: true,
@@ -15,21 +15,11 @@ defmodule Goblin.View do
     ])
   end
 
-  @spec put_sequence(t(), non_neg_integer()) :: :ok
-  def put_sequence(ref, seq) do
-    case current_meta(ref) do
-      {_, _, version} -> :ets.update_element(ref, {:snapshot, version}, {2, seq})
-      :empty -> raise "no existing snapshots"
-    end
-
-    :ok
-  end
-
   @spec put_snapshot(t(), list(Goblin.MemTable.t()), map(), non_neg_integer()) :: :ok
   def put_snapshot(ref, mem_tables, levels, seq) do
     version =
       case current_meta(ref) do
-        :empty -> 0
+        :empty -> -1
         {_, _, version} -> version
       end
 
@@ -74,7 +64,7 @@ defmodule Goblin.View do
 
       :empty ->
         :ets.delete(ref, {:reader, :pending, reader_key})
-        raise "cannot have a reader before any snapshots"
+        raise "MVCC.add_reader called before any snapshots were published"
     end
   end
 
