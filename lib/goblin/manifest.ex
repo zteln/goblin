@@ -12,17 +12,16 @@ defmodule Goblin.Manifest do
     :path,
     :max_log_size,
     size: 0,
-    snapshot: {0, 0, [], []}
+    snapshot: {0, [], []}
   ]
 
+  @type snapshot :: {non_neg_integer(), list({atom(), Path.t()}), list({atom(), Path.t()})}
   @type t :: %__MODULE__{
           io: FileIO.t(),
           data_dir: Path.t(),
           path: Path.t(),
           size: non_neg_integer(),
-          snapshot:
-            {non_neg_integer(), non_neg_integer(), list({atom(), Path.t()}),
-             list({atom(), Path.t()})}
+          snapshot: snapshot()
         }
 
   @spec open(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
@@ -56,7 +55,7 @@ defmodule Goblin.Manifest do
   @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()}), non_neg_integer()) ::
           {:ok, t()} | {:error, term()}
   def update(manifest, add, del, seq) do
-    {_, no_files, files, dirt} = manifest.snapshot
+    {_, files, dirt} = manifest.snapshot
     add = Enum.map(add, &trim_dir/1)
     del = Enum.map(del, &trim_dir/1)
 
@@ -65,15 +64,14 @@ defmodule Goblin.Manifest do
       |> Enum.reject(&(&1 in del))
 
     dirt = del ++ dirt
-    snapshot = {seq, length(add) + no_files, files, dirt}
+    snapshot = {seq, files, dirt}
     manifest = %{manifest | snapshot: snapshot}
     write_snapshot(manifest)
   end
 
-  @spec snapshot(t()) ::
-          {non_neg_integer(), non_neg_integer(), list({atom(), Path.t()}), list(Path.t())}
+  @spec snapshot(t()) :: snapshot()
   def snapshot(manifest) do
-    {seq, no_files, files, dirt} = manifest.snapshot
+    {seq, files, dirt} = manifest.snapshot
 
     files =
       Enum.map(files, fn {type, name} ->
@@ -85,12 +83,12 @@ defmodule Goblin.Manifest do
         Path.join(manifest.data_dir, name)
       end)
 
-    {seq, no_files, files, dirt}
+    {seq, files, dirt}
   end
 
   @spec sweep_dirt(t(), list(Path.t())) :: {:ok, t()} | {:error, term()}
   def sweep_dirt(manifest, paths) do
-    {seq, no_files, files, dirt} = manifest.snapshot
+    {seq, files, dirt} = manifest.snapshot
 
     dirt =
       Enum.reject(dirt, fn {_, name} ->
@@ -98,7 +96,7 @@ defmodule Goblin.Manifest do
         path in paths
       end)
 
-    snapshot = {seq, no_files, files, dirt}
+    snapshot = {seq, files, dirt}
     manifest = %{manifest | snapshot: snapshot}
     write_snapshot(manifest)
   end
@@ -153,7 +151,7 @@ defmodule Goblin.Manifest do
 
   defp maybe_rotate(manifest), do: {:ok, manifest}
 
-  defp valid_snapshot?({_, _, files, _}, dir) do
+  defp valid_snapshot?({_, files, _}, dir) do
     files
     |> Enum.map(&elem(&1, 1))
     |> Enum.map(&Path.join(dir, &1))

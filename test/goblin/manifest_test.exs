@@ -9,7 +9,7 @@ defmodule Goblin.ManifestTest do
   describe "open/1, close/1, current_file/1" do
     test "creates new file with empty snapshot for a fresh directory", ctx do
       assert {:ok, manifest} = Manifest.open(ctx.tmp_dir)
-      assert {0, 0, [], []} == Manifest.snapshot(manifest)
+      assert {0, [], []} == Manifest.snapshot(manifest)
       assert File.exists?(Manifest.current_file(manifest))
     end
 
@@ -112,14 +112,14 @@ defmodule Goblin.ManifestTest do
       assert {:ok, manifest} =
                Manifest.update(manifest, [fake_file1, fake_file2], [], 0)
 
-      assert {0, 2, [fake_file1, fake_file2], []} == Manifest.snapshot(manifest)
+      assert {0, [fake_file1, fake_file2], []} == Manifest.snapshot(manifest)
 
       assert {:ok, manifest} =
                Manifest.update(manifest, [], [fake_file2], 4)
 
       {_, fake_file2} = fake_file2
 
-      assert {4, 2, [fake_file1], [fake_file2]} == Manifest.snapshot(manifest)
+      assert {4, [fake_file1], [fake_file2]} == Manifest.snapshot(manifest)
     end
 
     test "rotates log file when exceeding max size", ctx do
@@ -136,7 +136,6 @@ defmodule Goblin.ManifestTest do
 
       assert {
                3,
-               1,
                [{:mem, Path.join(ctx.tmp_dir, "foo")}],
                [Path.join(ctx.tmp_dir, "bar")]
              } == Manifest.snapshot(manifest)
@@ -154,9 +153,9 @@ defmodule Goblin.ManifestTest do
 
       {_, fake_file1} = fake_file1
       {_, fake_file2} = fake_file2
-      assert {0, 0, [], [fake_file1, fake_file2]} == Manifest.snapshot(manifest)
+      assert {0, [], [fake_file1, fake_file2]} == Manifest.snapshot(manifest)
       assert {:ok, manifest} = Manifest.sweep_dirt(manifest, [fake_file1])
-      assert {0, 0, [], [fake_file2]} == Manifest.snapshot(manifest)
+      assert {0, [], [fake_file2]} == Manifest.snapshot(manifest)
     end
 
     test "cleans dirt with provided paths", ctx do
@@ -169,9 +168,9 @@ defmodule Goblin.ManifestTest do
 
       {_, fake_file1} = fake_file1
       {_, fake_file2} = fake_file2
-      assert {0, 0, [], [fake_file1, fake_file2]} == Manifest.snapshot(manifest)
+      assert {0, [], [fake_file1, fake_file2]} == Manifest.snapshot(manifest)
       assert {:ok, manifest} = Manifest.sweep_dirt(manifest, [fake_file1, fake_file2])
-      assert {0, 0, [], []} == Manifest.snapshot(manifest)
+      assert {0, [], []} == Manifest.snapshot(manifest)
     end
   end
 end
