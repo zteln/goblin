@@ -1054,6 +1054,8 @@ defmodule Goblin do
   defp get_mvcc(_, timeout) when timeout <= 0, do: raise("db not ready")
 
   defp get_mvcc(db, timeout) do
+    db = if is_pid(db), do: db, else: Process.whereis(db)
+
     case :persistent_term.get({__MODULE__, db}, nil) do
       nil ->
         Process.sleep(50)
