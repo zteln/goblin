@@ -98,7 +98,7 @@ Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
 There are two types of transactions: **write** and **read**.
 
 Write transactions (`Goblin.transaction/2`) are executed serially.
-The function must return `{:commit, tx, reply}` to commit or `:abort` to abort.
+The function must return `{:commit, tx, reply}` to commit or `{:abort, reply}` to abort.
 
 ```elixir
 Goblin.transaction(db, fn tx ->
@@ -121,7 +121,7 @@ Goblin.transaction(db, fn tx ->
     Goblin.Tx.abort(tx)
   end
 end)
-# => :ok (if committed) or {:error, :aborted} (if aborted)
+# => :ok (if committed) or :error (if aborted)
 ```
 
 Read transactions (`Goblin.read/2`) take a snapshot and do not block each other.
