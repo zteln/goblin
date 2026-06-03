@@ -1,4 +1,4 @@
-Mix.install([{:goblin, path: File.cwd!()}, :cubdb], force: true)
+Mix.install([{:goblin, path: File.cwd!()}, :cubdb])
 
 defmodule CreateRepo do
   @fixtures_dir "#{File.cwd!()}/tmp/goblin_benchmark/fixtures"
