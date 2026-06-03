@@ -597,14 +597,14 @@ defmodule Goblin do
   end
 
   def idle(:internal, :restore_db, db) do
-    {manifest_seq, no_files, files, dirt} = Manifest.snapshot(db.manifest)
-    :atomics.put(db.file_counter, 1, no_files)
+    {manifest_seq, files, dirt} = Manifest.snapshot(db.manifest)
+    max_count = files |> Enum.map(&get_count_from_file/1) |> Enum.max(fn -> 0 end)
+    :atomics.put(db.file_counter, 1, max_count + 1)
     db = %{db | sequence: manifest_seq}
 
     with {:ok, dirt} <- cleanup(dirt),
          {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, dirt),
-         {:ok, db} <- restore(db, files) do
-      db = %{db | manifest: manifest}
+         {:ok, db} <- handle_restore(%{db | manifest: manifest}, files) do
       publish_snapshot(db)
       mark_ready(self(), db.mvcc)
       {:keep_state, db}
@@ -789,7 +789,7 @@ defmodule Goblin do
   end
 
   defp handle_export(db, export_dir) do
-    {_, _, files, _} = Manifest.snapshot(db.manifest)
+    {_, files, _} = Manifest.snapshot(db.manifest)
     files = Enum.map(files, &elem(&1, 1))
     manifest_file = Manifest.current_file(db.manifest)
     Export.into_tar(export_dir, [manifest_file | files])
@@ -871,7 +871,7 @@ defmodule Goblin do
     MVCC.put_snapshot(db.mvcc, mem_tables, levels, db.sequence)
   end
 
-  defp restore(db, []) do
+  defp handle_restore(db, []) do
     if is_nil(db.mem_table) do
       with {:ok, db} <- flush(db),
            {:ok, manifest} <- Manifest.update(db.manifest, tag([db.mem_table]), [], db.sequence) do
@@ -884,17 +884,17 @@ defmodule Goblin do
     end
   end
 
-  defp restore(db, [{:mem, file} | files]) do
+  defp handle_restore(db, [{:mem, file} | files]) do
     with {:ok, db} <- flush(db, file) do
-      restore(db, files)
+      handle_restore(db, files)
     end
   end
 
-  defp restore(db, [{:disk, file} | files]) do
+  defp handle_restore(db, [{:disk, file} | files]) do
     with {:ok, dt} <- DiskTable.from_file(file) do
       levels = Levels.put(db.levels, dt)
       db = %{db | levels: levels}
-      restore(db, files)
+      handle_restore(db, files)
     end
   end
 
@@ -1016,10 +1016,8 @@ defmodule Goblin do
   end
 
   defp cleanup([path | rest], acc) do
-    case FileIO.remove(path) do
-      :ok -> cleanup(rest, [path | acc])
-      {:error, :enoent} -> cleanup(rest, acc)
-      error -> error
+    with :ok <- FileIO.remove(path) do
+      cleanup(rest, [path | acc])
     end
   end
 
@@ -1032,6 +1030,18 @@ defmodule Goblin do
     path = Path.join(dir, "#{prefix}.#{suffix}")
     if File.exists?(path), do: File.rm!(path)
     path
+  end
+
+  defp get_count_from_file({type, path}) do
+    suffix =
+      case type do
+        :mem -> @wal_suffix
+        :disk -> @goblin_suffix
+      end
+
+    path
+    |> Path.basename(".#{suffix}")
+    |> String.to_integer(16)
   end
 
   defp tag([]), do: []
