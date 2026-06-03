@@ -23,7 +23,7 @@ defmodule Goblin.BloomFilter.BitArray do
     %__MODULE__{size: size, no_bits: no_bits, no_hashes: no_hashes, bits: bits}
   end
 
-  @spec add_key(t(), Goblin.db_key()) :: {:ok, t()} | {:error, :full}
+  @spec add_key(t(), term()) :: {:ok, t()} | {:error, :full}
   def add_key(%{size: size}, _key) when size <= 0, do: {:error, :full}
 
   def add_key(bit_array, key) do
@@ -40,7 +40,7 @@ defmodule Goblin.BloomFilter.BitArray do
     {:ok, %{bit_array | bits: bits, size: bit_array.size - 1}}
   end
 
-  @spec member?(t(), Goblin.db_key()) :: boolean()
+  @spec member?(t(), term()) :: boolean()
   def member?(bit_array, key) do
     %{bits: bits} = bit_array
 

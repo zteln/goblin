@@ -20,7 +20,7 @@ defmodule Goblin.BloomFilter do
     %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
   end
 
-  @spec put(t(), Goblin.db_key()) :: t()
+  @spec put(t(), term()) :: t()
   def put(bf, key) do
     [current_bit_array | bit_arrays] = bf.bit_arrays
 

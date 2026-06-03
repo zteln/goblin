@@ -56,7 +56,7 @@ defmodule Goblin.Tx do
 
       tx = Goblin.Tx.put(tx, :alice, "Alice")
   """
-  @spec put(t(), Goblin.db_key(), Goblin.db_value(), keyword()) :: t()
+  @spec put(t(), term(), term(), keyword()) :: t()
   def put(tx, key, value, opts \\ [])
 
   def put(%{mode: :read}, _key, _value, _opts),
@@ -86,7 +86,7 @@ defmodule Goblin.Tx do
 
       tx = Goblin.Tx.put_multi(tx, [{:alice, "Alice"}, {:bob, "Bob"}])
   """
-  @spec put_multi(t(), list({Goblin.db_key(), Goblin.db_value()}), keyword()) :: t()
+  @spec put_multi(t(), list({term(), term()}), keyword()) :: t()
   def put_multi(tx, pairs, opts \\ [])
 
   def put_multi(%{mode: :read}, _pairs, _opts),
@@ -118,7 +118,7 @@ defmodule Goblin.Tx do
 
       tx = Goblin.Tx.remove(tx, :alice)
   """
-  @spec remove(t(), Goblin.db_key(), keyword()) :: t()
+  @spec remove(t(), term(), keyword()) :: t()
   def remove(tx, key, opts \\ [])
   def remove(%{mode: :read}, _key, _opts), do: raise("Operation not allowed during read")
 
@@ -146,7 +146,7 @@ defmodule Goblin.Tx do
 
       tx = Goblin.Tx.remove_multi(tx, [:alice, :bob])
   """
-  @spec remove_multi(t(), list(Goblin.db_key()), keyword()) :: t()
+  @spec remove_multi(t(), list(term()), keyword()) :: t()
   def remove_multi(tx, keys, opts \\ [])
   def remove_multi(%{mode: :read}, _keys, _opts), do: raise("Operation not allowed during read")
 
@@ -181,7 +181,7 @@ defmodule Goblin.Tx do
       Goblin.Tx.get(tx, :nonexistent, default: :not_found)
       # => :not_found
   """
-  @spec get(t(), Goblin.db_key(), keyword()) :: Goblin.db_value()
+  @spec get(t(), term(), keyword()) :: term()
   def get(tx, key, opts \\ []) do
     key = tag_key(key, opts[:tag])
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
@@ -226,8 +226,8 @@ defmodule Goblin.Tx do
 
       [{:alice, "Alice"}, {:bob, "Bob"}] = Goblin.Tx.get_multi(tx, [:alice, :bob])
   """
-  @spec get_multi(t(), list(Goblin.db_key()), keyword()) ::
-          list({Goblin.db_key(), Goblin.db_value()})
+  @spec get_multi(t(), list(term()), keyword()) ::
+          list({term(), term()})
   def get_multi(tx, keys, opts \\ []) do
     keys = Enum.map(keys, &tag_key(&1, opts[:tag]))
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
