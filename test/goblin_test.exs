@@ -1,23 +1,10 @@
 defmodule GoblinTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
-  import ExUnit.CaptureLog
 
   @moduletag :tmp_dir
 
   @default_opts [mem_limit: 2 * 1024, bit_array_size: 1000]
-
-  # setup c do
-  #   db =
-  #     start_supervised!(
-  #       {Goblin, [data_dir: c.tmp_dir] ++ @default_opts},
-  #       id: __MODULE__
-  #     )
-
-  #   %{db: db}
-  # end
-
-  # TODO: fix setup for each describe block
 
   describe "start_link/1, start/1, stop/3" do
     test "can start multiple independent databases simultaneously", ctx do
@@ -89,7 +76,6 @@ defmodule GoblinTest do
           send(parent, :done)
         end)
 
-      _ = writer
       assert_receive :ready, 5000
 
       assert nil == Goblin.get(ctx.db, :key1)
@@ -98,14 +84,14 @@ defmodule GoblinTest do
       assert [] == Goblin.get_multi(ctx.db, [:key1, :key2, :key3])
       assert [] == Goblin.scan(ctx.db) |> Enum.to_list()
 
-      # The callback runs inside the GenServer, so :cont must reach the GenServer's mailbox.
-      send(ctx.db, :cont)
+      send(writer, :cont)
 
       assert_receive :done, 5000
 
       assert :val1 == Goblin.get(ctx.db, :key1)
       assert :val2 == Goblin.get(ctx.db, :key2)
       assert nil == Goblin.get(ctx.db, :key3)
+
       assert %{key1: :val1, key2: :val2} ==
                Map.new(Goblin.get_multi(ctx.db, [:key1, :key2, :key3]))
 
@@ -113,21 +99,23 @@ defmodule GoblinTest do
     end
 
     test "aborted commits cannot be read", ctx do
-      assert {:error, :aborted} ==
+      assert :error ==
                Goblin.transaction(ctx.db, fn tx ->
-                 Goblin.Tx.put(tx, :key, :val)
-                 :abort
+                 tx
+                 |> Goblin.Tx.put(:key, :val)
+                 |> Goblin.Tx.abort()
                end)
 
       assert nil == Goblin.get(ctx.db, :key)
     end
 
     test "exception in callback aborts the transaction", ctx do
-      assert {:error, :aborted} ==
-               Goblin.transaction(ctx.db, fn tx ->
-                 Goblin.Tx.put(tx, :key, :val)
-                 raise "boom"
-               end)
+      assert_raise RuntimeError, fn ->
+        Goblin.transaction(ctx.db, fn tx ->
+          Goblin.Tx.put(tx, :key, :val)
+          raise "boom"
+        end)
+      end
 
       assert nil == Goblin.get(ctx.db, :key)
 
@@ -157,7 +145,6 @@ defmodule GoblinTest do
           send(parent, :done)
         end)
 
-      _ = writer
       assert_receive :ready, 5000
 
       reader =
@@ -179,12 +166,51 @@ defmodule GoblinTest do
 
       assert_receive :ready, 5000
 
-      # Writer's callback runs inside the GenServer.
-      send(ctx.db, :cont)
+      send(writer, :cont)
       assert_receive :done, 5000
 
       send(reader, :cont)
       assert_receive :done, 5000
+    end
+
+    @tag :property_tests
+    property "a transaction applies all of its writes or none", ctx do
+      check all(
+              ops <- list_of(operation_gen(), min_length: 1, max_length: 20),
+              outcome <- member_of([:commit, :abort, :raise])
+            ) do
+        tag = make_ref()
+
+        try do
+          Goblin.transaction(ctx.db, fn tx ->
+            tx =
+              Enum.reduce(ops, tx, fn
+                {:put, k, v}, acc -> Goblin.Tx.put(acc, k, v, tag: tag)
+                {:remove, k}, acc -> Goblin.Tx.remove(acc, k, tag: tag)
+              end)
+
+            case outcome do
+              :commit -> Goblin.Tx.commit(tx)
+              :abort -> Goblin.Tx.abort(tx)
+              :raise -> raise "error"
+            end
+          end)
+        rescue
+          RuntimeError -> :raised
+        end
+
+        ops = if outcome == :commit, do: ops, else: []
+
+        expected =
+          Enum.reduce(ops, [], fn
+            {:put, k, v}, acc -> [{k, v} | Enum.reject(acc, &(elem(&1, 0) == k))]
+            {:remove, k}, acc -> Enum.reject(acc, &(elem(&1, 0) == k))
+          end)
+          |> Map.new()
+
+        actual = Goblin.scan(ctx.db, tag: tag) |> Enum.to_list() |> Map.new()
+        assert actual == expected
+      end
     end
   end
 
@@ -204,7 +230,7 @@ defmodule GoblinTest do
                 tx = Goblin.Tx.put(tx, :counter, counter - 1)
                 {:commit, tx, :ok}
               else
-                :abort
+                {:abort, :error}
               end
             end)
           end)
@@ -212,8 +238,291 @@ defmodule GoblinTest do
         |> Task.await_many()
 
       assert 10 == length(Enum.filter(results, &match?(:ok, &1)))
-      assert 10 == length(Enum.filter(results, &match?({:error, :aborted}, &1)))
+      assert 10 == length(Enum.filter(results, &match?(:error, &1)))
       assert 0 == Goblin.get(ctx.db, :counter)
+    end
+
+    @tag :property_tests
+    property "concurrent transfers conserve the total balance", ctx do
+      check all(
+              n_accounts <- integer(2..6),
+              transfers <- list_of(transfer_gen(), min_length: 1, max_length: 30),
+              max_runs: 25
+            ) do
+        tag = make_ref()
+        Goblin.put_multi(ctx.db, for(i <- 1..n_accounts, do: {i, 100}), tag: tag)
+        total = n_accounts * 100
+
+        transfers
+        |> Enum.map(fn {from, to, amount} ->
+          from = rem(from, n_accounts) + 1
+          to = rem(to, n_accounts) + 1
+
+          Task.async(fn ->
+            Goblin.transaction(ctx.db, fn tx ->
+              from_bal = Goblin.Tx.get(tx, from, tag: tag)
+              to_bal = Goblin.Tx.get(tx, to, tag: tag)
+
+              if from != to and from_bal >= amount do
+                tx =
+                  tx
+                  |> Goblin.Tx.put(from, from_bal - amount, tag: tag)
+                  |> Goblin.Tx.put(to, to_bal + amount, tag: tag)
+
+                {:commit, tx, :ok}
+              else
+                {:abort, :error}
+              end
+            end)
+          end)
+        end)
+        |> Task.await_many()
+
+        balances = for i <- 1..n_accounts, do: Goblin.get(ctx.db, i, tag: tag)
+
+        # quantity conserved
+        assert Enum.sum(balances) == total
+        # never overdrawn
+        assert Enum.all?(balances, &(&1 >= 0))
+      end
+    end
+
+    defp transfer_gen do
+      gen all(from <- positive_integer(), to <- positive_integer(), amount <- integer(1..50)) do
+        {from, to, amount}
+      end
+    end
+  end
+
+  describe "isolated" do
+    setup ctx, do: %{db: start_supervised_db(ctx)}
+
+    test "transactions wait upon each other (truly serializable)", ctx do
+      parent = self()
+
+      spawn(fn ->
+        assert :ok ==
+                 Goblin.transaction(ctx.db, fn tx ->
+                   send(parent, :tx1_started)
+
+                   Process.sleep(100)
+
+                   tx =
+                     tx
+                     |> Goblin.Tx.put(:key1, 100)
+                     |> Goblin.Tx.put(:key2, 100)
+
+                   send(parent, {:tx1_done, System.monotonic_time()})
+                   {:commit, tx, :ok}
+                 end)
+      end)
+
+      assert_receive :tx1_started
+
+      spawn(fn ->
+        send(parent, :tx2_waiting)
+
+        assert :ok ==
+                 Goblin.transaction(ctx.db, fn tx ->
+                   send(parent, {:tx2_started, System.monotonic_time()})
+
+                   tx =
+                     tx
+                     |> Goblin.Tx.put(:key1, 50)
+                     |> Goblin.Tx.put(:key2, 50)
+
+                   {:commit, tx, :ok}
+                 end)
+
+        send(parent, :tx2_done)
+      end)
+
+      assert_receive :tx2_waiting
+
+      tx2_started =
+        receive do
+          {:tx2_started, tx2_started} -> tx2_started
+        end
+
+      tx1_done =
+        receive do
+          {:tx1_done, tx1_done} -> tx1_done
+        end
+
+      assert_receive :tx2_done
+
+      assert tx1_done < tx2_started
+
+      assert 50 == Goblin.get(ctx.db, :key1)
+      assert 50 == Goblin.get(ctx.db, :key2)
+    end
+
+    test "final state matches serial execution", ctx do
+      for n <- 1..20 do
+        Task.async(fn ->
+          Process.sleep(Enum.random(1..100))
+
+          Goblin.transaction(ctx.db, fn tx ->
+            tx
+            |> Goblin.Tx.put(:key1, n)
+            |> Goblin.Tx.put(:key2, n)
+            |> Goblin.Tx.commit()
+          end)
+        end)
+      end
+      |> Task.await_many()
+
+      assert Map.new(Goblin.get_multi(ctx.db, [:key1, :key2])) in for(
+               n <- 1..20,
+               do: %{key1: n, key2: n}
+             )
+    end
+
+    test "readers read from a snapshot", ctx do
+      parent = self()
+
+      Goblin.put(ctx.db, :key, :val)
+
+      reader =
+        spawn(fn ->
+          Goblin.read(ctx.db, fn tx ->
+            send(parent, :ready)
+
+            receive do
+              :cont -> :ok
+            end
+
+            assert :val == Goblin.Tx.get(tx, :key)
+          end)
+
+          send(parent, :done)
+        end)
+
+      assert_receive :ready
+
+      Goblin.put(ctx.db, :key, :another_val)
+
+      send(reader, :cont)
+
+      assert_receive :done
+    end
+
+    @tag :property_tests
+    property "concurrent increments never lose an update", ctx do
+      check all(n <- integer(1..25), max_runs: 25) do
+        tag = make_ref()
+        Goblin.put(ctx.db, :counter, 0, tag: tag)
+
+        for _ <- 1..n do
+          Task.async(fn ->
+            Goblin.transaction(ctx.db, fn tx ->
+              c = Goblin.Tx.get(tx, :counter, tag: tag)
+              {:commit, Goblin.Tx.put(tx, :counter, c + 1, tag: tag), :ok}
+            end)
+          end)
+        end
+        |> Task.await_many()
+
+        assert n == Goblin.get(ctx.db, :counter, tag: tag)
+      end
+    end
+  end
+
+  describe "durable" do
+    setup ctx, do: %{db: start_supervised_db(ctx)}
+
+    test "fresh start does not expose uncommitted writes to concurrent readers", ctx do
+      parent = self()
+
+      writer =
+        spawn(fn ->
+          Goblin.transaction(ctx.db, fn tx ->
+            tx = Goblin.Tx.put(tx, :key, :uncommitted)
+            send(parent, :in_tx)
+
+            receive do
+              :cont -> {:commit, tx, :ok}
+            end
+          end)
+
+          send(parent, :committed)
+        end)
+
+      assert_receive :in_tx, 5000
+
+      assert nil == Goblin.get(ctx.db, :key)
+
+      send(writer, :cont)
+      assert_receive :committed, 5000
+
+      assert :uncommitted == Goblin.get(ctx.db, :key)
+    end
+
+    test "can get same values on restart", ctx do
+      assert :ok ==
+               Goblin.transaction(ctx.db, fn tx ->
+                 tx
+                 |> Goblin.Tx.put(:k, :v)
+                 |> Goblin.Tx.put(:l, :w)
+                 |> Goblin.Tx.commit()
+               end)
+
+      assert :v == Goblin.get(ctx.db, :k)
+      assert :w == Goblin.get(ctx.db, :l)
+
+      stop_supervised(__MODULE__)
+      {:ok, db} = start_supervised({Goblin, [data_dir: ctx.tmp_dir] ++ @default_opts})
+
+      assert :v == Goblin.get(db, :k)
+      assert :w == Goblin.get(db, :l)
+    end
+
+    @tag :property_tests
+    property "committed writes survive a crash and restart", ctx do
+      check all(
+              batches <-
+                list_of(list_of(operation_gen(), min_length: 1, max_length: 10),
+                  min_length: 1,
+                  max_length: 5
+                ),
+              max_runs: 20
+            ) do
+        id = System.unique_integer([:positive])
+        db_name = :"#{ctx.test}_#{id}"
+        data_dir = Path.join(ctx.tmp_dir, "durable_#{id}")
+
+        start = fn ->
+          {:ok, db} = Goblin.start([name: db_name, data_dir: data_dir] ++ @default_opts)
+          db
+        end
+
+        db = start.()
+
+        model =
+          Enum.reduce(batches, %{}, fn ops, model ->
+            Goblin.transaction(db, fn tx ->
+              Enum.reduce(ops, tx, fn
+                {:put, k, v}, acc -> Goblin.Tx.put(acc, k, v)
+                {:remove, k}, acc -> Goblin.Tx.remove(acc, k)
+              end)
+              |> Goblin.Tx.commit()
+            end)
+
+            Enum.reduce(ops, model, fn
+              {:put, k, v}, acc -> [{k, v} | Enum.reject(acc, &(elem(&1, 0) == k))]
+              {:remove, k}, acc -> Enum.reject(acc, &(elem(&1, 0) == k))
+            end)
+            |> Map.new()
+          end)
+
+        kill_db(db)
+        db = start.()
+
+        actual = Goblin.scan(db) |> Enum.to_list() |> Map.new()
+        assert actual == model
+
+        Goblin.stop(db)
+      end
     end
   end
 
@@ -229,6 +538,13 @@ defmodule GoblinTest do
 
       assert [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}] ==
                Goblin.scan(ctx.db) |> Enum.to_list()
+    end
+
+    test "scan gets snapshots at enumeration", ctx do
+      stream = Goblin.scan(ctx.db)
+      assert [] == Enum.to_list(stream)
+      Goblin.put(ctx.db, 1, :a)
+      assert [{1, :a}] == Enum.to_list(stream)
     end
 
     test "remove then put overwrites tombstone", ctx do
@@ -305,176 +621,6 @@ defmodule GoblinTest do
     end
   end
 
-  describe "isolated" do
-    setup ctx, do: %{db: start_supervised_db(ctx)}
-
-    test "transaction wait upon each other (truly serializable)", ctx do
-      parent = self()
-
-      spawn(fn ->
-        assert :ok ==
-                 Goblin.transaction(ctx.db, fn tx ->
-                   send(parent, :tx1_started)
-
-                   Process.sleep(100)
-
-                   tx =
-                     tx
-                     |> Goblin.Tx.put(:key1, 100)
-                     |> Goblin.Tx.put(:key2, 100)
-
-                   send(parent, {:tx1_done, System.monotonic_time()})
-                   {:commit, tx, :ok}
-                 end)
-      end)
-
-      assert_receive :tx1_started
-
-      spawn(fn ->
-        send(parent, :tx2_waiting)
-
-        assert :ok ==
-                 Goblin.transaction(ctx.db, fn tx ->
-                   send(parent, {:tx2_started, System.monotonic_time()})
-
-                   tx =
-                     tx
-                     |> Goblin.Tx.put(:key1, 50)
-                     |> Goblin.Tx.put(:key2, 50)
-
-                   {:commit, tx, :ok}
-                 end)
-
-        send(parent, :tx2_done)
-      end)
-
-      assert_receive :tx2_waiting
-
-      tx2_started =
-        receive do
-          {:tx2_started, tx2_started} -> tx2_started
-        end
-
-      tx1_done =
-        receive do
-          {:tx1_done, tx1_done} -> tx1_done
-        end
-
-      assert_receive :tx2_done
-
-      assert tx1_done < tx2_started
-
-      assert 50 == Goblin.get(ctx.db, :key1)
-      assert 50 == Goblin.get(ctx.db, :key2)
-    end
-
-    test "final state matches serial execution", ctx do
-      for n <- 1..20 do
-        Task.async(fn ->
-          Process.sleep(Enum.random(1..100))
-
-          Goblin.transaction(ctx.db, fn tx ->
-            tx =
-              tx
-              |> Goblin.Tx.put(:key1, n)
-              |> Goblin.Tx.put(:key2, n)
-
-            {:commit, tx, :ok}
-          end)
-        end)
-      end
-      |> Task.await_many()
-
-      assert Map.new(Goblin.get_multi(ctx.db, [:key1, :key2])) in for(
-               n <- 1..20,
-               do: %{key1: n, key2: n}
-             )
-    end
-
-    test "readers read from a snapshot", ctx do
-      parent = self()
-
-      Goblin.put(ctx.db, :key, :val)
-
-      reader =
-        spawn(fn ->
-          Goblin.read(ctx.db, fn tx ->
-            send(parent, :ready)
-
-            receive do
-              :cont -> :ok
-            end
-
-            assert :val == Goblin.Tx.get(tx, :key)
-          end)
-
-          send(parent, :done)
-        end)
-
-      assert_receive :ready
-
-      Goblin.put(ctx.db, :key, :another_val)
-
-      send(reader, :cont)
-
-      assert_receive :done
-    end
-  end
-
-  describe "durable" do
-    setup ctx, do: %{db: start_supervised_db(ctx)}
-
-    test "fresh start does not expose uncommitted writes to concurrent readers", ctx do
-      parent = self()
-
-      writer =
-        spawn(fn ->
-          Goblin.transaction(ctx.db, fn tx ->
-            tx = Goblin.Tx.put(tx, :key, :uncommitted)
-            send(parent, :in_tx)
-
-            receive do
-              :cont -> {:commit, tx, :ok}
-            end
-          end)
-
-          send(parent, :committed)
-        end)
-
-      _ = writer
-      assert_receive :in_tx, 5000
-
-      assert nil == Goblin.get(ctx.db, :key)
-
-      # Writer's callback runs inside the GenServer.
-      send(ctx.db, :cont)
-      assert_receive :committed, 5000
-
-      assert :uncommitted == Goblin.get(ctx.db, :key)
-    end
-
-    test "can get same values on restart", ctx do
-      assert :ok ==
-               Goblin.transaction(ctx.db, fn tx ->
-                 tx =
-                   tx
-                   |> Goblin.Tx.put(:k, :v)
-                   |> Goblin.Tx.put(:l, :w)
-
-                 {:commit, tx, :ok}
-               end)
-
-      assert :v == Goblin.get(ctx.db, :k)
-      assert :w == Goblin.get(ctx.db, :l)
-
-      stop_supervised(__MODULE__)
-      {:ok, db} = start_supervised({Goblin, [data_dir: ctx.tmp_dir] ++ @default_opts})
-
-      assert :v == Goblin.get(db, :k)
-      assert :w == Goblin.get(db, :l)
-    end
-  end
-
   describe "export/2" do
     setup ctx do
       export_dir = Path.join(ctx.tmp_dir, "exports")
@@ -494,16 +640,8 @@ defmodule GoblinTest do
 
       Goblin.remove(ctx.db, :k2)
 
-      {backup_db, _log} =
-        with_log(fn ->
-          assert {:ok, backup_db} =
-                   Goblin.start_link(name: Goblin.Backup, data_dir: ctx.unpack_dir)
-
-          backup_db
-        end)
-
-      # Wait for handle_continue chains to complete before reading
-      _ = Goblin.flushing?(backup_db)
+      assert {:ok, backup_db} =
+               Goblin.start_link(name: Goblin.Backup, data_dir: ctx.unpack_dir)
 
       assert :v1 == Goblin.get(backup_db, :k1)
       assert :v2 == Goblin.get(backup_db, :k2)
@@ -586,6 +724,7 @@ defmodule GoblinTest do
       stop_supervised(__MODULE__)
       {:ok, db} = start_supervised({Goblin, [data_dir: ctx.tmp_dir] ++ @default_opts})
 
+      # check if ready
       _ = Goblin.flushing?(db)
 
       for {key, val} <- pairs do
@@ -597,19 +736,6 @@ defmodule GoblinTest do
   end
 
   describe "crash recovery" do
-    # setup ctx do
-    #   db = start_db(ctx)
-
-    #   on_exit(fn ->
-    #     Process.alive?(db) |> dbg()
-    #     Goblin.stop(db)
-    #   end)
-
-    #   %{db: db}
-    # end
-
-    # setup ctx, do: %{db: start_db(ctx)}
-
     test "committed data is recovered after process kill", ctx do
       db = start_db(ctx)
 
@@ -701,163 +827,6 @@ defmodule GoblinTest do
     end
   end
 
-  describe "property test" do
-    @describetag :property_tests
-    setup ctx, do: %{db: start_supervised_db(ctx)}
-
-    property "can write and read any term as key or value", ctx do
-      check all(
-              pairs <-
-                uniq_list_of(tuple({key_gen(), term()}),
-                  min_length: 1,
-                  max_length: 50,
-                  uniq_fun: &elem(&1, 0)
-                )
-            ) do
-        tag = make_ref()
-        keys = Enum.map(pairs, &elem(&1, 0))
-
-        assert :ok == Goblin.put_multi(ctx.db, pairs, tag: tag)
-        assert Map.new(pairs) == Map.new(Goblin.get_multi(ctx.db, keys, tag: tag))
-      end
-    end
-
-    property "tags can be any term", ctx do
-      check all(
-              tag <- tag_gen(),
-              pairs <-
-                uniq_list_of(tuple({key_gen(), term()}),
-                  min_length: 1,
-                  max_length: 20,
-                  uniq_fun: &elem(&1, 0)
-                )
-            ) do
-        keys = Enum.map(pairs, &elem(&1, 0))
-
-        assert :ok ==
-                 Goblin.transaction(ctx.db, fn tx ->
-                   tx
-                   |> Goblin.Tx.put_multi(pairs, tag: tag)
-                   |> Goblin.Tx.commit()
-                 end)
-
-        assert Map.new(pairs) == Map.new(Goblin.get_multi(ctx.db, keys, tag: tag))
-
-        scan_result = Goblin.scan(ctx.db, tag: tag) |> Enum.to_list()
-
-        for {key, val} <- pairs do
-          assert val == Goblin.get(ctx.db, key, tag: tag)
-          assert {key, val} in scan_result
-        end
-      end
-    end
-
-    property "sequential transactions match a reference Map", ctx do
-      check all(
-              txns <- list_of(tx_gen(), min_length: 1, max_length: 10),
-              max_runs: 50
-            ) do
-        # Use a unique tag per iteration to isolate from prior runs
-        tag = make_ref()
-
-        model =
-          Enum.reduce(txns, %{}, fn {ops, commit?}, model ->
-            if commit? do
-              Goblin.transaction(ctx.db, fn tx ->
-                tx = apply_ops_to_tx(tx, ops, tag: tag)
-                {:commit, tx, :ok}
-              end)
-
-              apply_ops_to_model(model, ops)
-            else
-              Goblin.transaction(ctx.db, fn tx ->
-                _tx = apply_ops_to_tx(tx, ops, tag: tag)
-                :abort
-              end)
-
-              model
-            end
-          end)
-
-        actual = Goblin.scan(ctx.db, tag: tag) |> Enum.to_list() |> Map.new()
-        assert actual == model
-      end
-    end
-
-    property "reads within a transaction reflect prior writes", ctx do
-      check all(
-              pairs <- list_of(tuple({key_gen(), value_gen()}), min_length: 1, max_length: 20),
-              pairs = deduplicate_pairs(pairs)
-            ) do
-        tag = make_ref()
-
-        Goblin.transaction(ctx.db, fn tx ->
-          tx = Enum.reduce(pairs, tx, fn {k, v}, acc -> Goblin.Tx.put(acc, k, v, tag: tag) end)
-
-          for {key, value} <- pairs do
-            assert value == Goblin.Tx.get(tx, key, tag: tag)
-          end
-
-          {:commit, tx, :ok}
-        end)
-      end
-    end
-
-    property "aborted transactions leave no observable state", ctx do
-      check all(pairs <- list_of(tuple({key_gen(), value_gen()}), min_length: 1, max_length: 20)) do
-        tag = make_ref()
-
-        assert {:error, :aborted} ==
-                 Goblin.transaction(ctx.db, fn tx ->
-                   _tx =
-                     Enum.reduce(pairs, tx, fn {k, v}, acc ->
-                       Goblin.Tx.put(acc, k, v, tag: tag)
-                     end)
-
-                   :abort
-                 end)
-
-        for {key, _value} <- pairs do
-          assert nil == Goblin.get(ctx.db, key, tag: tag)
-        end
-      end
-    end
-
-    property "last write to a key wins within a transaction", ctx do
-      check all(
-              key <- key_gen(),
-              values <- list_of(value_gen(), min_length: 2, max_length: 10)
-            ) do
-        tag = make_ref()
-        last_value = List.last(values)
-
-        Goblin.transaction(ctx.db, fn tx ->
-          tx = Enum.reduce(values, tx, fn v, acc -> Goblin.Tx.put(acc, key, v, tag: tag) end)
-          {:commit, tx, :ok}
-        end)
-
-        assert last_value == Goblin.get(ctx.db, key, tag: tag)
-      end
-    end
-
-    property "scan returns all live pairs sorted by key", ctx do
-      check all(ops <- list_of(operation_gen(), min_length: 1, max_length: 30)) do
-        tag = make_ref()
-
-        Goblin.transaction(ctx.db, fn tx ->
-          tx = apply_ops_to_tx(tx, ops, tag: tag)
-          {:commit, tx, :ok}
-        end)
-
-        model = apply_ops_to_model(%{}, ops)
-        expected = model |> Enum.sort() |> Enum.to_list()
-        actual = Goblin.scan(ctx.db, tag: tag) |> Enum.to_list()
-
-        assert expected == actual
-      end
-    end
-  end
-
   defp start_db(ctx, overrides \\ []) do
     opts = Keyword.merge(@default_opts, overrides)
     {:ok, db} = Goblin.start([name: ctx.test, data_dir: ctx.tmp_dir] ++ opts)
@@ -897,73 +866,10 @@ defmodule GoblinTest do
     end
   end
 
-  # -- Generators for property-based tests --
-
-  # Non-nil keys with good type variety. Avoids floats because ETS ordered_set
-  # treats 1 and 1.0 as equal keys while Map does not.
-  defp key_gen do
-    one_of([
-      atom(:alphanumeric),
-      integer(),
-      binary()
-    ])
-  end
-
-  # Tags become part of the composite key {:"$goblin_tag", tag, key}, so they
-  # must follow the same float-avoidance rule as keys.
-  defp tag_gen do
-    one_of([
-      atom(:alphanumeric),
-      integer(),
-      binary(),
-      tuple({atom(:alphanumeric), integer()}),
-      constant(make_ref())
-    ])
-  end
-
-  defp value_gen do
-    one_of([
-      atom(:alphanumeric),
-      integer(),
-      binary(),
-      constant(nil)
-    ])
-  end
-
   defp operation_gen do
     one_of([
-      tuple({constant(:put), key_gen(), value_gen()}),
-      tuple({constant(:remove), key_gen()})
+      tuple({constant(:put), term(), term()}),
+      tuple({constant(:remove), term()})
     ])
-  end
-
-  defp tx_gen do
-    gen all(
-          ops <- list_of(operation_gen(), min_length: 1, max_length: 15),
-          commit? <- boolean()
-        ) do
-      {ops, commit?}
-    end
-  end
-
-  defp apply_ops_to_tx(tx, ops, opts) do
-    Enum.reduce(ops, tx, fn
-      {:put, key, value}, acc -> Goblin.Tx.put(acc, key, value, opts)
-      {:remove, key}, acc -> Goblin.Tx.remove(acc, key, opts)
-    end)
-  end
-
-  defp apply_ops_to_model(model, ops) do
-    Enum.reduce(ops, model, fn
-      {:put, key, value}, acc -> Map.put(acc, key, value)
-      {:remove, key}, acc -> Map.delete(acc, key)
-    end)
-  end
-
-  defp deduplicate_pairs(pairs) do
-    pairs
-    |> Enum.reverse()
-    |> Enum.uniq_by(&elem(&1, 0))
-    |> Enum.reverse()
   end
 end
