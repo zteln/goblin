@@ -1,10 +1,13 @@
 # Changelog
 
-## v0.10.0 ()
+## v0.10.0 (2026-06-03)
 * Breaking changes
-    * Format for writes in the WAL have changed.
+    * Format for writes in the WAL and manifest have changed.
 * Changes
+    * Rewrote Goblin process via `:gen_statem`
     * Large refactoring of the code base, simplifying a lot of algorithms and unifying common code
+    * Added `:timeout` as an option to commands
+    * Added property tests
 
 ## v0.9.0 (2026-04-14)
 * Enhancements
