@@ -1,4 +1,4 @@
-.PHONY: benchmarks release
+.PHONY: test benchmarks release
 
 test:
 	mix test --include property_tests
