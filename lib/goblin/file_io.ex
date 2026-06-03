@@ -150,7 +150,13 @@ defmodule Goblin.FileIO do
   def rename(from, to), do: File.rename(from, to)
 
   @spec remove(Path.t()) :: :ok | {:error, term()}
-  def remove(path), do: File.rm(path)
+  def remove(path) do
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      error -> error
+    end
+  end
 
   @spec size_of(Path.t()) :: non_neg_integer()
   def size_of(path), do: :filelib.file_size(path)
