@@ -596,6 +596,7 @@ defmodule Goblin do
     end
   end
 
+  @doc false
   def idle(:internal, :restore_db, db) do
     {manifest_seq, files, dirt} = Manifest.snapshot(db.manifest)
     max_count = files |> Enum.map(&get_count_from_file/1) |> Enum.max(fn -> 0 end)
@@ -655,6 +656,7 @@ defmodule Goblin do
     end
   end
 
+  @doc false
   def occupied(:internal, :next_writer, db) do
     case :queue.out(db.writer_queue) do
       {:empty, _} ->
@@ -743,6 +745,7 @@ defmodule Goblin do
     end
   end
 
+  @doc false
   def sweeping(:internal, :sweep, db) do
     case MVCC.sweep(db.mvcc) do
       [] ->
