@@ -555,6 +555,7 @@ defmodule Goblin do
 
   @impl :gen_statem
   def terminate(_reason, _state, db) do
+    :persistent_term.erase({__MODULE__, self()})
     db.manifest && Manifest.close(db.manifest)
     db.mem_table && MemTable.close(db.mem_table)
     :ok
@@ -577,7 +578,10 @@ defmodule Goblin do
       |> Keyword.put_new(:level_size_multiplier, @default_level_size_multiplier)
       |> Keyword.put_new(
         :max_sst_size,
-        div(@default_level_base_size, @default_level_size_multiplier)
+        div(
+          args[:level_base_size] || @default_level_base_size,
+          args[:level_size_multiplier] || @default_level_size_multiplier
+        )
       )
 
     case Manifest.open(data_dir) do
@@ -685,7 +689,7 @@ defmodule Goblin do
   def occupied({:call, from}, {:commit_tx, tx}, db) do
     new_seq = tx.sequence
     {_, monitor_ref, _} = db.writer
-    Process.demonitor(monitor_ref)
+    Process.demonitor(monitor_ref, [:flush])
     commits = Enum.reverse(tx.commits)
 
     with :ok <- MemTable.append(db.mem_table, commits) do
@@ -699,7 +703,7 @@ defmodule Goblin do
 
   def occupied({:call, from}, {:cancel_tx, tx_key}, %{writer: {tx_key, _, _} = writer} = db) do
     {_, monitor_ref, _} = writer
-    Process.demonitor(monitor_ref)
+    Process.demonitor(monitor_ref, [:flush])
 
     {:keep_state, %{db | writer: nil},
      [{:reply, from, :ok}, {:next_event, :internal, :next_writer}]}
@@ -728,6 +732,23 @@ defmodule Goblin do
 
   def occupied(:cast, {:untrack_reader, tx_key}, db) do
     {:keep_state, handle_untrack_reader(db, tx_key)}
+  end
+
+  def occupied(:cast, {:abandon_tx, tx_key}, %{writer: {tx_key, ref, _}} = db) do
+    Process.demonitor(ref, [:flush])
+    {:keep_state, %{db | writer: nil}, [{:next_event, :internal, :next_writer}]}
+  end
+
+  def occupied(:cast, {:abandon_tx, tx_key}, db) do
+    writer_queue =
+      :queue.filter(
+        fn {queued_tx_key, _, _} ->
+          queued_tx_key != tx_key
+        end,
+        db.writer_queue
+      )
+
+    {:keep_state, %{db | writer_queue: writer_queue}}
   end
 
   def occupied(:info, {ref, merge_result}, db) do
@@ -817,24 +838,15 @@ defmodule Goblin do
         {:ok, %{db | readers: readers}}
 
       true ->
-        {out, writer_queue} =
-          :queue.fold(
+        writer_queue =
+          :queue.filter(
             fn
-              {_, ^ref, _} = queued_writer, {_, acc} -> {queued_writer, acc}
-              queued_writer, {out, acc} -> {out, :queue.in(queued_writer, acc)}
+              {_, monitor_ref, _} -> monitor_ref != ref
             end,
-            {nil, :queue.new()},
             db.writer_queue
           )
 
-        case out do
-          nil ->
-            {:ok, db}
-
-          {tx_key, _, _} ->
-            MVCC.release_reader(db.mvcc, tx_key)
-            {:ok, %{db | writer_queue: writer_queue}}
-        end
+        {:ok, %{db | writer_queue: writer_queue}}
     end
   end
 
@@ -856,7 +868,7 @@ defmodule Goblin do
         db
 
       monitor_ref ->
-        Process.demonitor(monitor_ref)
+        Process.demonitor(monitor_ref, [:flush])
         readers = Map.delete(db.readers, monitor_ref)
         %{db | readers: readers}
     end
@@ -987,8 +999,13 @@ defmodule Goblin do
     %{db | compacting: compacting}
   end
 
-  defp start_transaction(db, tx_key, opts),
-    do: :gen_statem.call(db, {:start_tx, tx_key}, opts[:timeout] || @default_timeout)
+  defp start_transaction(db, tx_key, opts) do
+    :gen_statem.call(db, {:start_tx, tx_key}, opts[:timeout] || @default_timeout)
+  catch
+    :exit, reason ->
+      :gen_statem.cast(db, {:abandon_tx, tx_key})
+      exit(reason)
+  end
 
   defp commit_transaction(db, tx, opts),
     do: :gen_statem.call(db, {:commit_tx, tx}, opts[:timeout] || @default_timeout)
