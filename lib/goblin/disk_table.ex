@@ -47,11 +47,12 @@ defmodule Goblin.DiskTable do
         triple, {file, boundary, acc, offset_index} ->
           file = file || FileIO.open!(filer.(), write?: true)
           acc = acc || %{dt | id: file.path}
+          {key, _, _} = triple
 
-          with {:ok, acc, offset_index} <-
+          with {:ok, acc, offset_index, boundary} <-
+                 maybe_append_index(file, acc, offset_index, key, boundary, compress?),
+               {:ok, acc, offset_index} <-
                  append_data(file, acc, offset_index, triple, compress?),
-               {:ok, acc, offset_index, boundary} <-
-                 maybe_append_index(file, acc, offset_index, boundary, compress?),
                {:ok, acc, wrapped?} <-
                  maybe_append_footer(file, acc, offset_index, max_size, compress?) do
             if wrapped?,
@@ -65,7 +66,7 @@ defmodule Goblin.DiskTable do
         {%FileIO{} = file, _, acc, offset_index} ->
           case maybe_append_footer(file, acc, offset_index, 0, compress?) do
             {:ok, acc, _} -> {[{:ok, acc}], nil}
-            error -> {[error], nil}
+            error -> {[error], {:halt, file}}
           end
 
         _ ->
@@ -73,6 +74,7 @@ defmodule Goblin.DiskTable do
       end,
       fn
         {%FileIO{} = file, _, _, _} -> FileIO.close(file)
+        {:halt, %FileIO{} = file} -> FileIO.close(file)
         _ -> :ok
       end
     )
@@ -110,8 +112,8 @@ defmodule Goblin.DiskTable do
       fn -> FileIO.open!(dt.id) end,
       fn key, io ->
         case lookup(io, dt.index, key, seq) do
-          {:ok, nil} -> {[], io}
           {:ok, triple} -> {[triple], io}
+          :not_found -> {[], io}
           :eof -> {:halt, io}
           error -> raise "search failed with error: #{inspect(error)}"
         end
@@ -154,19 +156,27 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp maybe_append_index(file, %{size: size} = dt, offset_index, boundary, compress?)
-       when size - boundary >= @index_interval do
+  defp maybe_append_index(
+         file,
+         %{size: size} = dt,
+         [{last, _, _} | _] = offset_index,
+         key,
+         boundary,
+         compress?
+       )
+       when size - boundary >= @index_interval and last != key do
     with {:ok, dt, offset_index} <- append_index(file, dt, offset_index, compress?) do
       {:ok, dt, offset_index, dt.size}
     end
   end
 
-  defp maybe_append_index(_, dt, offset_index, boundary, _), do: {:ok, dt, offset_index, boundary}
+  defp maybe_append_index(_, dt, offset_index, _, boundary, _),
+    do: {:ok, dt, offset_index, boundary}
 
   defp maybe_append_footer(_, %{size: size} = dt, _, max_size, _) when size < max_size,
     do: {:ok, dt, false}
 
-  defp maybe_append_footer(file, dt, offset_index, _max_size, compress?) do
+  defp maybe_append_footer(file, dt, offset_index, _, compress?) do
     with {:ok, dt, _} <- append_index(file, dt, offset_index, compress?),
          dt = finalize_table(dt),
          :ok <- append_footer(file, dt, compress?) do
@@ -236,14 +246,10 @@ defmodule Goblin.DiskTable do
     {_, start} = elem(index, 0)
     offset = find_offset(index, key, 0, tuple_size(index) - 1, start)
 
-    # with {:ok, _} <- FileIO.set_position(io, offset),
     with {:ok, offset_index} <- FileIO.read(io, verify_crc?: false, offset: offset),
          offset when is_integer(offset) <- find_lower_bound(offset_index, key, seq),
          {:ok, _} <- FileIO.set_position(io, offset) do
-      scan(io, key, seq)
-    else
-      :not_found -> {:ok, nil}
-      error -> error
+      scan(io, key)
     end
   end
 
@@ -253,37 +259,26 @@ defmodule Goblin.DiskTable do
     mid = div(lo + hi, 2)
     {key, new_offset} = elem(index, mid)
 
-    if key < target,
+    if key <= target,
       do: find_offset(index, target, mid + 1, hi, new_offset),
       else: find_offset(index, target, lo, mid - 1, offset)
   end
 
-  defp find_lower_bound(index, target_key, target_seq, best \\ 0)
-  defp find_lower_bound([], _, _, best), do: best
+  defp find_lower_bound([], _, _), do: :not_found
 
-  defp find_lower_bound([{key, seq, offset} | rest], target_key, target_seq, _best) do
+  defp find_lower_bound([{key, seq, offset} | rest], target_key, target_seq) do
     cond do
-      key < target_key ->
-        find_lower_bound(rest, target_key, target_seq, offset)
-
-      key == target_key and seq >= target_seq ->
-        find_lower_bound(rest, target_key, target_seq, offset)
-
-      key == target_key ->
-        offset
-
-      true ->
-        :not_found
+      key == target_key and seq >= target_seq -> find_lower_bound(rest, target_key, target_seq)
+      key == target_key -> offset
+      key > target_key -> :not_found
+      true -> find_lower_bound(rest, target_key, target_seq)
     end
   end
 
-  defp scan(io, key, seq) do
+  defp scan(io, key) do
     case FileIO.read(io, verify_crc?: false) do
-      {:ok, {k, s, _}} when k == key and s >= seq -> scan(io, key, seq)
-      {:ok, {k, _, _}} when k > key -> {:ok, nil}
       {:ok, {k, _, _} = triple} when k == key -> {:ok, triple}
-      {:ok, %__MODULE__{}} -> {:ok, nil}
-      {:ok, _} -> scan(io, key, seq)
+      {:ok, _} -> :not_found
       error -> error
     end
   end
