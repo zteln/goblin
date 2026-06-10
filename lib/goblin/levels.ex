@@ -49,7 +49,9 @@ defmodule Goblin.Levels do
   end
 
   defp find_overflowing_level(levels, opts) do
-    Enum.find_value(levels, &check_level(&1, opts))
+    levels
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.find_value(&check_level(&1, opts))
   end
 
   defp check_level({0, level}, opts) do
