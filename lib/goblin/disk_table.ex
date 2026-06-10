@@ -28,7 +28,8 @@ defmodule Goblin.DiskTable do
           size: non_neg_integer()
         }
 
-  @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) :: list(t())
+  @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
+          {:ok, list(t())} | {:error, term()}
   def build(stream, opts) do
     max_size = opts[:max_size]
     filer = opts[:filer]

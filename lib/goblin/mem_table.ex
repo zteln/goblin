@@ -10,7 +10,7 @@ defmodule Goblin.MemTable do
           ref: :ets.table()
         }
 
-  @spec new(Path.t()) :: {:ok, t()} | {:error, term()}
+  @spec new(Path.t()) :: {:ok, non_neg_integer(), t()} | {:error, term()}
   def new(path) do
     with {:ok, io} <- FileIO.open(path, write?: true) do
       ref = new_table()

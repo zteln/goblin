@@ -290,7 +290,7 @@ defmodule Goblin.Tx do
       |> Goblin.Tx.put(:alice, "Alice")
       |> Goblin.Tx.abort()
   """
-  @spec abort(t(), any()) :: :abort
+  @spec abort(t(), any()) :: {:abort, any()}
   def abort(_tx, reply \\ :error), do: {:abort, reply}
 
   @doc false
