@@ -315,6 +315,14 @@ defmodule Goblin.Tx do
   end
 
   defp search(tables, keys, opts) do
+    keys =
+      keys
+      |> Enum.sort(:desc)
+      |> Enum.reduce([], fn
+        key1, [key2 | _] = acc when key1 == key2 -> acc
+        key, acc -> [key | acc]
+      end)
+
     search_levels(tables, MapSet.new(keys), opts[:sequence], -1, opts[:max_level_key])
     |> Enum.map(&untag_pair/1)
   end
@@ -326,19 +334,13 @@ defmodule Goblin.Tx do
        do: acc
 
   defp search_levels(tables, keys, seq, lk, max_lk, acc) do
-    reduced_keys =
-      keys
-      |> Enum.sort(:desc)
-      |> Enum.reduce([], fn
-        key1, [key2 | _] = acc when key1 == key2 -> acc
-        key, acc -> [key | acc]
-      end)
+    sorted_keys = Enum.sort(keys)
 
     {acc, keys} =
       Merge.stream(
         fn ->
           tables.(lk)
-          |> Enum.map(&table_search(&1, reduced_keys, seq))
+          |> Enum.map(&table_search(&1, sorted_keys, seq))
         end,
         filter_tombstones?: false
       )
