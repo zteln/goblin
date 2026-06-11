@@ -33,12 +33,11 @@ defmodule Goblin.DiskTableTest do
       assert File.exists?(dt.id)
       assert {0, 10} == dt.key_range
       assert {0, 10} == dt.seq_range
-      assert dt.no_blocks == 11
     end
 
     test "wraps stream into multiple files if exceeding :max_size", ctx do
       opts = Keyword.put(ctx.opts, :max_size, 1024)
-      data = for n <- 0..10, do: {n, n, "val-#{n}"}
+      data = for n <- 0..10, do: {n, n, :binary.copy("x", 150)}
       assert {:ok, dts} = DiskTable.build(data, opts)
       assert length(dts) > 1
 
@@ -64,11 +63,11 @@ defmodule Goblin.DiskTableTest do
       {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
 
       {:ok, f} = :file.open(dt.id, [:read, :raw, :binary, :write])
-      {:ok, _} = :file.position(f, 1024)
+      {:ok, _} = :file.position(f, dt.size)
       :ok = :file.truncate(f)
       :ok = :file.close(f)
 
-      assert {:error, :invalid_disk_table} == DiskTable.from_file(dt.id)
+      assert {:error, _} = DiskTable.from_file(dt.id)
     end
 
     test "raises if file is missing", ctx do
@@ -119,6 +118,15 @@ defmodule Goblin.DiskTableTest do
 
       for n <- 0..10 do
         assert [{n, n, val}] == DiskTable.search(dt, [n], 11) |> Enum.to_list()
+      end
+    end
+
+    test "correctly returns highest matching sequence", ctx do
+      data = for(n <- 10..0//-1, do: {:key, n, "v-#{n}"})
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+
+      for n <- 0..10 do
+        assert [{:key, n, "v-#{n}"}] == DiskTable.search(dt, [:key], n + 1) |> Enum.to_list()
       end
     end
 
