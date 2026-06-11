@@ -584,40 +584,20 @@ defmodule Goblin do
         )
       )
 
-    case Manifest.open(data_dir) do
-      {:ok, manifest} ->
-        {:ok, :idle,
-         %__MODULE__{
-           data_dir: data_dir,
-           file_counter: file_counter,
-           manifest: manifest,
-           mvcc: MVCC.new(),
-           opts: opts
-         }, {:next_event, :internal, :restore_db}}
+    db = %__MODULE__{
+      data_dir: data_dir,
+      file_counter: file_counter,
+      mvcc: MVCC.new(),
+      opts: opts
+    }
 
-      {:error, reason} ->
-        {:stop, reason}
+    with {:ok, manifest} <- Manifest.open(data_dir),
+         {:ok, db} <- handle_start(%{db | manifest: manifest}) do
+      {:ok, :idle, db}
     end
   end
 
   @doc false
-  def idle(:internal, :restore_db, db) do
-    {manifest_seq, files, dirt} = Manifest.snapshot(db.manifest)
-    max_count = files |> Enum.map(&get_count_from_file/1) |> Enum.max(fn -> 0 end)
-    :atomics.put(db.file_counter, 1, max_count + 1)
-    db = %{db | sequence: manifest_seq}
-
-    with {:ok, dirt} <- cleanup(dirt),
-         {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, dirt),
-         {:ok, db} <- handle_restore(%{db | manifest: manifest}, files) do
-      publish_snapshot(db)
-      mark_ready(self(), db.mvcc)
-      {:keep_state, db}
-    else
-      {:error, reason} -> {:stop, reason}
-    end
-  end
-
   def idle({:call, {pid, _} = from}, {:start_tx, tx_key}, db) do
     monitor_ref = Process.monitor(pid)
     writer = {tx_key, monitor_ref, from}
@@ -779,6 +759,21 @@ defmodule Goblin do
         else
           {:error, reason} -> {:stop, reason, db}
         end
+    end
+  end
+
+  defp handle_start(db) do
+    {manifest_seq, files, dirt} = Manifest.snapshot(db.manifest)
+    max_count = files |> Enum.map(&get_count_from_file/1) |> Enum.max(fn -> 0 end)
+    :atomics.put(db.file_counter, 1, max_count + 1)
+    db = %{db | sequence: manifest_seq}
+
+    with {:ok, dirt} <- cleanup(dirt),
+         {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, dirt),
+         {:ok, db} <- handle_restore(%{db | manifest: manifest}, files) do
+      publish_snapshot(db)
+      mark_ready(self(), db.mvcc)
+      {:ok, db}
     end
   end
 
@@ -1070,19 +1065,11 @@ defmodule Goblin do
   defp tag(%DiskTable{} = dt), do: {:disk, dt.id}
 
   defp mark_ready(db, ref), do: :persistent_term.put({__MODULE__, db}, ref)
-  defp get_mvcc(db, timeout \\ 20_000)
-  defp get_mvcc(_, timeout) when timeout <= 0, do: raise("db not ready")
 
-  defp get_mvcc(db, timeout) do
-    db = if is_pid(db), do: db, else: Process.whereis(db)
+  defp get_mvcc(db) do
+    pid = if is_pid(db), do: db, else: Process.whereis(db)
 
-    case :persistent_term.get({__MODULE__, db}, nil) do
-      nil ->
-        Process.sleep(50)
-        get_mvcc(db, timeout - 50)
-
-      mvcc ->
-        mvcc
-    end
+    (pid && :persistent_term.get({__MODULE__, pid}, nil)) ||
+      raise ArgumentError, "Goblin database #{inspect(db)} is not running or still starting"
   end
 end
