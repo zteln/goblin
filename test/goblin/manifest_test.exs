@@ -123,21 +123,27 @@ defmodule Goblin.ManifestTest do
     end
 
     test "rotates log file when exceeding max size", ctx do
-      {:ok, manifest} = Manifest.open(ctx.tmp_dir, max_log_size: 3 * 512)
+      {:ok, manifest} = Manifest.open(ctx.tmp_dir, max_log_size: 512)
       logfile = Manifest.current_file(manifest)
-      assert {:ok, manifest} = Manifest.update(manifest, [{:mem, "foo"}], [], 1)
-      assert {:ok, manifest} = Manifest.update(manifest, [], [], 2)
+      # choose size to trigger rotate
+      assert {:ok, manifest} = Manifest.update(manifest, [{:mem, :binary.copy("x", 120)}], [], 1)
+      assert {:ok, manifest} = Manifest.update(manifest, [{:mem, :binary.copy("y", 120)}], [], 2)
       pre_rotation_size = :filelib.file_size(logfile)
 
-      assert {:ok, manifest} = Manifest.update(manifest, [], [{:disk, "bar"}], 3)
+      # write something larger than 512 bytes to trigger rotation
+      assert {:ok, manifest} = Manifest.update(manifest, [{:mem, :binary.copy("z", 120)}], [], 3)
       post_rotation_size = :filelib.file_size(logfile)
 
       assert pre_rotation_size > post_rotation_size
 
       assert {
                3,
-               [{:mem, Path.join(ctx.tmp_dir, "foo")}],
-               [Path.join(ctx.tmp_dir, "bar")]
+               [
+                 {:mem, Path.join(ctx.tmp_dir, :binary.copy("x", 120))},
+                 {:mem, Path.join(ctx.tmp_dir, :binary.copy("y", 120))},
+                 {:mem, Path.join(ctx.tmp_dir, :binary.copy("z", 120))}
+               ],
+               []
              } == Manifest.snapshot(manifest)
     end
   end
