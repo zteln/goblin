@@ -825,6 +825,16 @@ defmodule GoblinTest do
 
       Goblin.stop(db)
     end
+
+    test "cannot have nested transactions", ctx do
+      db = start_supervised_db(ctx)
+
+      assert_raise RuntimeError, fn ->
+        Goblin.transaction(db, fn _tx ->
+          Goblin.put(db, :key, :val)
+        end)
+      end
+    end
   end
 
   defp start_db(ctx, overrides \\ []) do

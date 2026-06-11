@@ -92,6 +92,8 @@ defmodule Goblin do
   The provided function receives a transaction struct and must return
   `{:commit, tx, reply}` to commit, or `{:abort, reply}` to abort.
 
+  Calling `transaction` or any of its derivatives (`put`, `put_multi`, `remove`, `remove_multi`) on the same database from within a transaction raises.
+
   ## Parameters
 
   - `db` - The database server (PID or registered name)
@@ -123,47 +125,53 @@ defmodule Goblin do
   def transaction(db, callback, opts \\ []) do
     mvcc = get_mvcc(db)
     tx_key = make_ref()
-    start_transaction(db, tx_key, opts)
-    {seq, max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
 
-    tx = %Tx{
-      mode: :write,
-      mvcc: mvcc,
-      tx_id: tx_id,
-      sequence: seq,
-      max_level_key: max_lk
-    }
+    case start_transaction(db, tx_key, opts) do
+      :ok ->
+        {seq, max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
 
-    result =
-      try do
-        callback.(tx)
-      rescue
-        exception ->
-          cancel_transaction(db, tx_key, opts)
-          reraise(exception, __STACKTRACE__)
-      catch
-        :throw, val ->
-          cancel_transaction(db, tx_key, opts)
-          throw(val)
+        tx = %Tx{
+          mode: :write,
+          mvcc: mvcc,
+          tx_id: tx_id,
+          sequence: seq,
+          max_level_key: max_lk
+        }
 
-        :exit, val ->
-          cancel_transaction(db, tx_key, opts)
-          exit(val)
-      after
-        MVCC.release_reader(mvcc, tx_key)
-      end
+        result =
+          try do
+            callback.(tx)
+          rescue
+            exception ->
+              cancel_transaction(db, tx_key, opts)
+              reraise(exception, __STACKTRACE__)
+          catch
+            :throw, val ->
+              cancel_transaction(db, tx_key, opts)
+              throw(val)
 
-    case result do
-      {:commit, tx, reply} ->
-        with :ok <- commit_transaction(db, tx, opts), do: reply
+            :exit, val ->
+              cancel_transaction(db, tx_key, opts)
+              exit(val)
+          after
+            MVCC.release_reader(mvcc, tx_key)
+          end
 
-      {:abort, reply} ->
-        cancel_transaction(db, tx_key, opts)
-        reply
+        case result do
+          {:commit, tx, reply} ->
+            with :ok <- commit_transaction(db, tx, opts), do: reply
 
-      _ ->
-        cancel_transaction(db, tx_key, opts)
-        raise "Invalid return from `Goblin.transaction/2`"
+          {:abort, reply} ->
+            cancel_transaction(db, tx_key, opts)
+            reply
+
+          _ ->
+            cancel_transaction(db, tx_key, opts)
+            raise "Invalid return from `Goblin.transaction/2`"
+        end
+
+      {:error, :nested_transaction} ->
+        raise "cannot start a transaction from within a transaction"
     end
   end
 
@@ -659,6 +667,10 @@ defmodule Goblin do
       {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :next_writer}]}
       {:error, reason} -> {:stop, reason, db}
     end
+  end
+
+  def occupied({:call, {pid, _} = from}, {:start_tx, _}, %{writer: {_, _, {pid, _}}} = db) do
+    {:keep_state, db, [{:reply, from, {:error, :nested_transaction}}]}
   end
 
   def occupied({:call, {pid, _} = from}, {:start_tx, tx_key}, db) do
