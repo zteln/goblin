@@ -81,7 +81,7 @@ defmodule Goblin.TxTest do
     test "put/4 raises on a read tx" do
       tx = new_tx(mode: :read)
 
-      assert_raise RuntimeError, "Operation not allowed during read", fn ->
+      assert_raise ArgumentError, "Operation not allowed during read", fn ->
         Tx.put(tx, :key, :val, [])
       end
     end
@@ -89,7 +89,7 @@ defmodule Goblin.TxTest do
     test "put_multi/3 raises on a read tx" do
       tx = new_tx(mode: :read)
 
-      assert_raise RuntimeError, "Operation not allowed during read", fn ->
+      assert_raise ArgumentError, "Operation not allowed during read", fn ->
         Tx.put_multi(tx, [{:a, 1}], [])
       end
     end
@@ -97,7 +97,7 @@ defmodule Goblin.TxTest do
     test "remove/3 raises on a read tx" do
       tx = new_tx(mode: :read)
 
-      assert_raise RuntimeError, "Operation not allowed during read", fn ->
+      assert_raise ArgumentError, "Operation not allowed during read", fn ->
         Tx.remove(tx, :key, [])
       end
     end
@@ -105,7 +105,7 @@ defmodule Goblin.TxTest do
     test "remove_multi/3 raises on a read tx" do
       tx = new_tx(mode: :read)
 
-      assert_raise RuntimeError, "Operation not allowed during read", fn ->
+      assert_raise ArgumentError, "Operation not allowed during read", fn ->
         Tx.remove_multi(tx, [:a], [])
       end
     end

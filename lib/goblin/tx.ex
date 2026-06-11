@@ -60,7 +60,7 @@ defmodule Goblin.Tx do
   def put(tx, key, value, opts \\ [])
 
   def put(%{mode: :read}, _key, _value, _opts),
-    do: raise("Operation not allowed during read")
+    do: raise(ArgumentError, "Operation not allowed during read")
 
   def put(tx, key, value, opts) do
     key = tag_key(key, opts[:tag])
@@ -90,7 +90,7 @@ defmodule Goblin.Tx do
   def put_multi(tx, pairs, opts \\ [])
 
   def put_multi(%{mode: :read}, _pairs, _opts),
-    do: raise("Operation not allowed during read")
+    do: raise(ArgumentError, "Operation not allowed during read")
 
   def put_multi(tx, pairs, opts) do
     Enum.reduce(pairs, tx, fn {key, value}, acc ->
@@ -120,7 +120,9 @@ defmodule Goblin.Tx do
   """
   @spec remove(t(), term(), keyword()) :: t()
   def remove(tx, key, opts \\ [])
-  def remove(%{mode: :read}, _key, _opts), do: raise("Operation not allowed during read")
+
+  def remove(%{mode: :read}, _key, _opts),
+    do: raise(ArgumentError, "Operation not allowed during read")
 
   def remove(tx, key, opts) do
     key = tag_key(key, opts[:tag])
@@ -148,7 +150,9 @@ defmodule Goblin.Tx do
   """
   @spec remove_multi(t(), list(term()), keyword()) :: t()
   def remove_multi(tx, keys, opts \\ [])
-  def remove_multi(%{mode: :read}, _keys, _opts), do: raise("Operation not allowed during read")
+
+  def remove_multi(%{mode: :read}, _keys, _opts),
+    do: raise(ArgumentError, "Operation not allowed during read")
 
   def remove_multi(tx, keys, opts) do
     Enum.reduce(keys, tx, fn key, acc ->
