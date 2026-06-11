@@ -247,10 +247,11 @@ defmodule Goblin.DiskTable do
     {_, start} = elem(index, 0)
     offset = find_offset(index, key, 0, tuple_size(index) - 1, start)
 
-    with {:ok, offset_index} <- FileIO.read(io, verify_crc?: false, offset: offset),
-         offset when is_integer(offset) <- find_lower_bound(offset_index, key, seq),
-         {:ok, _} <- FileIO.set_position(io, offset) do
-      scan(io, key)
+    with {:ok, offset_index} <- FileIO.read(io, verify_crc?: false, offset: offset) do
+      case find_lower_bound(offset_index, key, seq) do
+        :not_found -> :not_found
+        offset -> scan(io, key, offset)
+      end
     end
   end
 
@@ -276,8 +277,8 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp scan(io, key) do
-    case FileIO.read(io, verify_crc?: false) do
+  defp scan(io, key, offset) do
+    case FileIO.read(io, offset: offset, verify_crc?: false) do
       {:ok, {k, _, _} = triple} when k == key -> {:ok, triple}
       {:ok, _} -> :not_found
       error -> error
