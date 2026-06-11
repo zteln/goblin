@@ -555,6 +555,8 @@ defmodule Goblin do
 
   @impl :gen_statem
   def terminate(_reason, _state, db) do
+    for({_ref, {task, _}} <- db.flushing, do: Task.shutdown(task, :brutal_kill))
+    for({_ref, {task, _}} <- db.compacting, do: Task.shutdown(task, :brutal_kill))
     :persistent_term.erase({__MODULE__, self()})
     db.manifest && Manifest.close(db.manifest)
     db.mem_table && MemTable.close(db.mem_table)
@@ -821,10 +823,7 @@ defmodule Goblin do
         MVCC.release_reader(db.mvcc, tx_key)
         {:ok, %{db | writer: nil}}
 
-      Map.has_key?(db.flushing, ref) ->
-        {:error, reason}
-
-      Map.has_key?(db.compacting, ref) ->
+      Map.has_key?(db.flushing, ref) or Map.has_key?(db.compacting, ref) ->
         {:error, reason}
 
       Map.has_key?(db.readers, ref) ->
@@ -870,12 +869,13 @@ defmodule Goblin do
   end
 
   defp publish_snapshot(db) do
-    mem_tables = [db.mem_table | Map.values(db.flushing)]
+    flushing_mts = Map.values(db.flushing) |> Enum.map(fn {_task, mt} -> mt end)
+    mem_tables = [db.mem_table | flushing_mts]
 
     levels =
       db.compacting
       |> Map.values()
-      |> List.flatten()
+      |> Enum.flat_map(fn {_task, dts} -> dts end)
       |> Enum.reduce(db.levels, &Levels.put(&2, &1))
 
     MVCC.put_snapshot(db.mvcc, mem_tables, levels, db.sequence)
@@ -963,7 +963,7 @@ defmodule Goblin do
   end
 
   defp run_merge(db, [%MemTable{} = mt], opts) do
-    %{ref: ref} =
+    task =
       Task.async(fn ->
         stream = MemTable.stream(mt)
 
@@ -972,12 +972,12 @@ defmodule Goblin do
         end
       end)
 
-    flushing = Map.put(db.flushing, ref, mt)
+    flushing = Map.put(db.flushing, task.ref, {task, mt})
     %{db | flushing: flushing}
   end
 
   defp run_merge(db, dts, opts) do
-    %{ref: ref} =
+    task =
       Task.async(fn ->
         stream =
           Merge.stream(
@@ -990,7 +990,7 @@ defmodule Goblin do
         end
       end)
 
-    compacting = Map.put(db.compacting, ref, dts)
+    compacting = Map.put(db.compacting, task.ref, {task, dts})
     %{db | compacting: compacting}
   end
 
