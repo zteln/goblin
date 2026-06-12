@@ -530,7 +530,10 @@ defmodule Goblin do
   """
   def start_link(opts) do
     opts = Keyword.put_new(opts, :name, __MODULE__)
-    :gen_statem.start_link({:local, opts[:name]}, __MODULE__, opts, [])
+
+    with {:ok, db_opts, gen_statem_opts} <- split_opts(opts) do
+      :gen_statem.start_link({:local, opts[:name]}, __MODULE__, db_opts, gen_statem_opts)
+    end
   end
 
   @doc """
@@ -538,7 +541,10 @@ defmodule Goblin do
   """
   def start(opts) do
     opts = Keyword.put_new(opts, :name, __MODULE__)
-    :gen_statem.start({:local, opts[:name]}, __MODULE__, opts, [])
+
+    with {:ok, db_opts, gen_statem_opts} <- split_opts(opts) do
+      :gen_statem.start({:local, opts[:name]}, __MODULE__, db_opts, gen_statem_opts)
+    end
   end
 
   @doc """
@@ -573,7 +579,7 @@ defmodule Goblin do
 
   @impl :gen_statem
   def init(args) do
-    data_dir = args[:data_dir] || raise ":data_dir required"
+    data_dir = args[:data_dir]
     file_counter = :atomics.new(1, signed: false)
 
     File.exists?(data_dir) || File.mkdir_p!(data_dir)
@@ -1075,6 +1081,24 @@ defmodule Goblin do
   defp tag([table | tables]), do: [tag(table) | tag(tables)]
   defp tag(%MemTable{} = mt), do: {:mem, mt.id}
   defp tag(%DiskTable{} = dt), do: {:disk, dt.id}
+
+  defp split_opts(opts) do
+    {gen_statem_opts, db_opts} =
+      Keyword.split(opts, [:timeout, :spawn_opt, :hibernate_after, :debug])
+
+    case Keyword.get(db_opts, :data_dir) do
+      nil ->
+        {:error, :data_dir_not_provided}
+
+      data_dir ->
+        try do
+          {:ok, Keyword.put(db_opts, :data_dir, to_string(data_dir)), gen_statem_opts}
+        rescue
+          Protocol.UndefinedError ->
+            {:error, :data_dir_not_a_string}
+        end
+    end
+  end
 
   defp mark_ready(db, ref), do: :persistent_term.put({__MODULE__, db}, ref)
 
