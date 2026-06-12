@@ -60,7 +60,7 @@ defmodule Goblin do
   @goblin_suffix "goblin"
   @wal_suffix "wal"
 
-  @default_timeout 5000
+  @default_timeout :infinity
 
   @default_flush_level_file_limit 4
   @default_mem_limit 64 * 1024 * 1024
