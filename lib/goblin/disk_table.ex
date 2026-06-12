@@ -3,7 +3,8 @@ defmodule Goblin.DiskTable do
 
   alias Goblin.{
     BloomFilter,
-    FileIO
+    FileIO,
+    IOError
   }
 
   @index_interval 4096
@@ -116,7 +117,7 @@ defmodule Goblin.DiskTable do
           {:ok, triple} -> {[triple], io}
           :not_found -> {[], io}
           :eof -> {:halt, io}
-          error -> raise "search failed with error: #{inspect(error)}"
+          {:error, reason} -> raise IOError, operation: :search, path: dt.id, reason: reason
         end
       end,
       fn io -> FileIO.close(io) end
@@ -145,9 +146,9 @@ defmodule Goblin.DiskTable do
             :eof ->
               {:halt, io}
 
-            error ->
+            {:error, reason} ->
               FileIO.close(io)
-              raise "iteration failed with error: #{inspect(error)}"
+              raise IOError, operation: :stream, path: dt.id, reason: reason
           end
         end,
         fn io -> FileIO.close(io) end

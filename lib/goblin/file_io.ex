@@ -1,6 +1,8 @@
 defmodule Goblin.FileIO do
   @moduledoc false
 
+  alias Goblin.IOError
+
   @magic "GOBLIN00"
   @header_size byte_size(<<@magic::binary, 0::integer-64, 0::integer-32>>)
 
@@ -25,7 +27,7 @@ defmodule Goblin.FileIO do
   def open!(path, opts \\ []) do
     case open(path, opts) do
       {:ok, file} -> file
-      _ -> raise "failed to open file #{inspect(path)}"
+      {:error, reason} -> raise IOError, operation: :open, path: path, reason: reason
     end
   end
 
