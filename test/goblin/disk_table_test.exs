@@ -74,7 +74,7 @@ defmodule Goblin.DiskTableTest do
       {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
       File.rm!(dt.id)
 
-      assert_raise RuntimeError, fn ->
+      assert_raise Goblin.IOError, fn ->
         DiskTable.from_file(dt.id)
       end
     end
@@ -148,7 +148,7 @@ defmodule Goblin.DiskTableTest do
       :ok = :file.pwrite(f, 30, <<255, 255, 255, 255>>)
       :ok = :file.close(f)
 
-      assert_raise RuntimeError, fn ->
+      assert_raise Goblin.IOError, fn ->
         DiskTable.search(dt, [0], 1) |> Enum.to_list()
       end
     end
@@ -212,7 +212,7 @@ defmodule Goblin.DiskTableTest do
       :ok = :file.pwrite(f, 30, <<255, 255, 255, 255>>)
       :ok = :file.close(f)
 
-      assert_raise RuntimeError, fn ->
+      assert_raise Goblin.IOError, fn ->
         DiskTable.stream(dt) |> Enum.to_list()
       end
     end

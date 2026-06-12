@@ -619,6 +619,20 @@ defmodule GoblinTest do
         assert [{:key, :plain_val}] == Goblin.Tx.get_multi(tx, [:key])
       end)
     end
+
+    test "reads raise during failure to operate on underlying storage", ctx do
+      trigger_flush(ctx.db)
+      assert :ok == wait_until_idle(ctx.db)
+
+      File.ls!(ctx.tmp_dir)
+      |> Enum.filter(&String.ends_with?(&1, ".goblin"))
+      |> Enum.map(&Path.join(ctx.tmp_dir, &1))
+      |> Enum.each(&File.rm!/1)
+
+      assert_raise Goblin.IOError, fn ->
+        Goblin.get(ctx.db, 1)
+      end
+    end
   end
 
   describe "export/2" do

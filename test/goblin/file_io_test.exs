@@ -28,7 +28,7 @@ defmodule Goblin.FileIOTest do
     end
 
     test "raises on failure", ctx do
-      assert_raise RuntimeError, ~r/failed to open file/, fn ->
+      assert_raise Goblin.IOError, fn ->
         FileIO.open!(ctx.test_path)
       end
     end
