@@ -197,6 +197,22 @@ Goblin.put(MyApp.DB, :alice, "Alice")
 Goblin.get(MyApp.DB, :alice)
 # => "Alice"
 ```
+## MVCC
+
+Goblin uses multi-version concurrency control (MVCC).
+
+A new snapshot of the database is published after every commit, flush, and compaction. 
+Reads (`Goblin.get/3`, `Goblin.read/2`, `Goblin.scan/2`, and reads within transactions) attach to the latest snapshot when they start and use it for their entire duration. 
+Readers do not block each other or writers. 
+`Goblin.scan/2` takes its snapshot at enumeration, not at creation.
+
+Write transactions are executed serially. 
+On commit, writes are appended to the write-ahead log and the in-memory table, and a new snapshot is published. 
+Writes are serializable, reads have snapshot isolation.
+
+Files belonging to old snapshots are deleted once no reader uses them.
+A crashed reader releases its snapshot automatically. 
+A long-running read or scan delays deletion of compacted files, temporarily increasing disk usage.
 
 ## Migrations
 
