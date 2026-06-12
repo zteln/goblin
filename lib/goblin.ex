@@ -301,6 +301,8 @@ defmodule Goblin do
   Multiple readers run concurrently without blocking each other.
   Attempting to write within a read transaction raises.
 
+  Raises `Goblin.IOError` if the underlying storage cannot be read.
+
   ## Parameters
 
   - `db` - The database server (PID or registered name)
@@ -346,6 +348,8 @@ defmodule Goblin do
 
   Returns the default value if the key is not found.
 
+  Raises `Goblin.IOError` if the underlying storage cannot be read.
+
   ## Parameters
 
   - `db` - The database server (PID or registered name)
@@ -381,6 +385,8 @@ defmodule Goblin do
 
   Keys not found in the database are excluded from the result.
 
+  Raises `Goblin.IOError` if the underlying storage cannot be read.
+
   ## Parameters
 
   - `db` - The database server (PID or registered name)
@@ -410,6 +416,8 @@ defmodule Goblin do
 
   Entries are sorted by key in ascending order.
   Both `min` and `max` are inclusive.
+
+  Raises `Goblin.IOError` if the underlying storage cannot be read.
 
   ## Parameters
 
@@ -983,10 +991,14 @@ defmodule Goblin do
   defp run_merge(db, [%MemTable{} = mt], opts) do
     task =
       Task.async(fn ->
-        stream = MemTable.stream(mt)
+        try do
+          stream = MemTable.stream(mt)
 
-        with {:ok, dts} <- DiskTable.build(stream, opts) do
-          {:ok, dts, [mt]}
+          with {:ok, dts} <- DiskTable.build(stream, opts) do
+            {:ok, dts, [mt]}
+          end
+        rescue
+          e in Goblin.IOError -> {:error, e}
         end
       end)
 
@@ -997,14 +1009,18 @@ defmodule Goblin do
   defp run_merge(db, dts, opts) do
     task =
       Task.async(fn ->
-        stream =
-          Merge.stream(
-            fn -> Enum.map(dts, &DiskTable.stream/1) end,
-            filter_tombstones?: opts[:filter_tombstones?]
-          )
+        try do
+          stream =
+            Merge.stream(
+              fn -> Enum.map(dts, &DiskTable.stream/1) end,
+              filter_tombstones?: opts[:filter_tombstones?]
+            )
 
-        with {:ok, new_dts} <- DiskTable.build(stream, opts) do
-          {:ok, new_dts, dts}
+          with {:ok, new_dts} <- DiskTable.build(stream, opts) do
+            {:ok, new_dts, dts}
+          end
+        rescue
+          e in Goblin.IOError -> {:error, e}
         end
       end)
 
