@@ -140,13 +140,17 @@ defmodule Goblin.FileIO do
 
   @spec truncate(t(), non_neg_integer()) :: :ok | {:error, term()}
   def truncate(file, pos) do
-    with {:ok, _} <- set_position(file, pos) do
+    with :ok <- set_position(file, pos) do
       :file.truncate(file.iodev)
     end
   end
 
   @spec set_position(t(), non_neg_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def set_position(file, pos), do: :file.position(file.iodev, pos)
+  def set_position(file, pos) do
+    with {:ok, _} <- :file.position(file.iodev, pos) do
+      :ok
+    end
+  end
 
   @spec rename(Path.t(), Path.t()) :: :ok | {:error, term()}
   def rename(from, to), do: File.rename(from, to)
