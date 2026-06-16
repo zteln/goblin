@@ -130,6 +130,19 @@ defmodule Goblin.DiskTableTest do
       end
     end
 
+    test "point lookups across a multi-block table", ctx do
+      data = for n <- 0..120, do: {2 * n, 2 * n, :binary.copy("x", 200)}
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+      assert tuple_size(dt.index) > 1
+
+      result = DiskTable.search(dt, [0, 120, 240], 241) |> Enum.to_list()
+      assert Enum.any?(result, &match?({0, _, _}, &1))
+      assert Enum.any?(result, &match?({240, _, _}, &1))
+      assert [] == DiskTable.search(dt, [121], 241) |> Enum.to_list()
+
+      assert [] == DiskTable.search(dt, [240], 0) |> Enum.to_list()
+    end
+
     test "is lazy", ctx do
       data =
         for(n <- 0..10, do: {n, n, "val-#{n}"})
@@ -179,7 +192,10 @@ defmodule Goblin.DiskTableTest do
 
       assert data == DiskTable.stream(dt, bounds: {0, 10}) |> Enum.to_list()
       assert data == DiskTable.stream(dt, bounds: {-1, 11}) |> Enum.to_list()
-      assert data == DiskTable.stream(dt, bounds: {5, 7}) |> Enum.to_list()
+
+      assert Enum.filter(data, fn {k, _, _} -> k in 5..7 end) ==
+               DiskTable.stream(dt, bounds: {5, 7}) |> Enum.to_list()
+
       assert [] == DiskTable.stream(dt, bounds: {-10, -1}) |> Enum.to_list()
       assert [] == DiskTable.stream(dt, bounds: {11, 12}) |> Enum.to_list()
     end
@@ -192,6 +208,18 @@ defmodule Goblin.DiskTableTest do
       {:ok, [dt]} = DiskTable.build(data, ctx.opts)
 
       assert Enum.take(data, 5) == DiskTable.stream(dt, seq: 5) |> Enum.to_list()
+    end
+
+    test "scans a table containing multiple index blocks", ctx do
+      data = for n <- 0..120, do: {2 * n, 2 * n, :binary.copy("x", 200)}
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+      assert tuple_size(dt.index) > 1
+      assert data == DiskTable.stream(dt) |> Enum.to_list()
+
+      for min <- [-5 | Enum.to_list(1..239//2)] do
+        expected = Enum.filter(data, fn {k, _, _} -> k >= min end)
+        assert expected == DiskTable.stream(dt, bounds: {min, 240}) |> Enum.to_list()
+      end
     end
 
     test "is lazy", ctx do

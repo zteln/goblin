@@ -126,14 +126,31 @@ defmodule Goblin.DiskTable do
 
   @spec stream(t(), keyword()) :: Enumerable.t({term(), non_neg_integer(), term()})
   def stream(dt, opts \\ []) do
-    {min, max} = opts[:bounds] || {nil, nil}
+    {min, max} = opts[:bounds] || dt.key_range
+    min = min || elem(dt.key_range, 0)
+    max = max || elem(dt.key_range, 1)
     seq = opts[:seq] || :infinity
 
     if within_bounds?(dt, min, max) do
       Stream.resource(
-        fn -> FileIO.open!(dt.id) end,
+        fn ->
+          with {:ok, io} <- FileIO.open(dt.id),
+               block_offset = block_offset_lookup(dt.index, min),
+               {:ok, {:index, offset_index}} <-
+                 FileIO.read(io, verify_crc?: false, offset: block_offset),
+               min_offset = min_key_offset_lookup(offset_index, min),
+               pos = if(min_offset == :spill, do: block_offset, else: min_offset),
+               :ok <- FileIO.set_position(io, pos) do
+            io
+          else
+            {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
+          end
+        end,
         fn io ->
           case FileIO.read(io, verify_crc?: false) do
+            {:ok, {k, _, _}} when k > max ->
+              {:halt, io}
+
             {:ok, {_, s, _} = triple} when s < seq ->
               {[triple], io}
 
@@ -198,9 +215,10 @@ defmodule Goblin.DiskTable do
   defp append_index(_, dt, [], _), do: {:ok, dt, []}
 
   defp append_index(file, dt, offset_index, compress?) do
-    [{first_key, _, _} | _] = offset_index = offset_index |> Enum.reverse()
+    offset_index = offset_index |> Enum.reverse() |> List.to_tuple()
+    {first_key, _, _} = elem(offset_index, 0)
 
-    with {:ok, inc_size} <- FileIO.append(file, offset_index, compress?: compress?) do
+    with {:ok, inc_size} <- FileIO.append(file, {:index, offset_index}, compress?: compress?) do
       index = [{first_key, dt.size} | dt.index]
       size = dt.size + inc_size
       dt = %{dt | size: size, index: index}
@@ -245,45 +263,69 @@ defmodule Goblin.DiskTable do
     do: %{dt | index: Enum.reverse(dt.index) |> List.to_tuple()}
 
   defp lookup(io, index, key, seq) do
-    {_, start} = elem(index, 0)
-    offset = find_offset(index, key, 0, tuple_size(index) - 1, start)
+    block_offset = block_offset_lookup(index, key)
 
-    with {:ok, offset_index} <- FileIO.read(io, verify_crc?: false, offset: offset) do
-      case find_lower_bound(offset_index, key, seq) do
+    with {:ok, {:index, offset_index}} <-
+           FileIO.read(io, verify_crc?: false, offset: block_offset) do
+      case key_offset_lookup(offset_index, key, seq) do
         :not_found -> :not_found
-        offset -> scan(io, key, offset)
+        key_offset -> key_lookup(io, key, key_offset)
       end
     end
   end
 
-  defp find_offset(_index, _target, lo, hi, offset) when lo > hi, do: offset
-
-  defp find_offset(index, target, lo, hi, offset) do
-    mid = div(lo + hi, 2)
-    {key, new_offset} = elem(index, mid)
-
-    if key <= target,
-      do: find_offset(index, target, mid + 1, hi, new_offset),
-      else: find_offset(index, target, lo, mid - 1, offset)
-  end
-
-  defp find_lower_bound([], _, _), do: :not_found
-
-  defp find_lower_bound([{key, seq, offset} | rest], target_key, target_seq) do
-    cond do
-      key == target_key and seq >= target_seq -> find_lower_bound(rest, target_key, target_seq)
-      key == target_key -> offset
-      key > target_key -> :not_found
-      true -> find_lower_bound(rest, target_key, target_seq)
-    end
-  end
-
-  defp scan(io, key, offset) do
+  defp key_lookup(io, key, offset) do
     case FileIO.read(io, offset: offset, verify_crc?: false) do
       {:ok, {k, _, _} = triple} when k == key -> {:ok, triple}
       {:ok, _} -> :not_found
       error -> error
     end
+  end
+
+  defp block_offset_lookup(index, target_key) do
+    point = partition_point(index, fn {key, _} -> key <= target_key end)
+    {_, offset} = elem(index, max(point - 1, 0))
+    offset
+  end
+
+  defp key_offset_lookup(index, target_key, target_seq) do
+    point =
+      partition_point(index, fn {key, seq, _} ->
+        {key, -seq} <= {target_key, -target_seq}
+      end)
+
+    if point < tuple_size(index) do
+      case elem(index, point) do
+        {k, s, offset} when k == target_key and s < target_seq -> offset
+        _ -> :not_found
+      end
+    else
+      :not_found
+    end
+  end
+
+  defp min_key_offset_lookup(index, min) do
+    point = partition_point(index, fn {key, _, _} -> key < min end)
+
+    if point < tuple_size(index) do
+      {_, _, offset} = elem(index, point)
+      offset
+    else
+      :spill
+    end
+  end
+
+  defp partition_point(index, pred),
+    do: partition_point(index, pred, 0, tuple_size(index))
+
+  defp partition_point(_, _, lo, lo), do: lo
+
+  defp partition_point(index, pred, lo, hi) do
+    mid = div(lo + hi, 2)
+
+    if pred.(elem(index, mid)),
+      do: partition_point(index, pred, mid + 1, hi),
+      else: partition_point(index, pred, lo, mid)
   end
 
   defp within_min_max?(%{key_range: {min, max}}, key),
