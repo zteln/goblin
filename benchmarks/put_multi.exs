@@ -1,18 +1,17 @@
-Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}])
-
-profile? = "--profile" in System.argv()
-
-results_dir = "#{File.cwd!()}/tmp/goblin_benchmark/results"
-File.mkdir_p!(results_dir)
+Code.require_file("support.exs", __DIR__)
+alias Bench.Support
 
 goblin_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put_multi/goblin"
 cubdb_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put_multi/cubdb"
 
-Benchee.run(
+Support.run(
+  "put_multi",
   %{
     "Goblin.put_multi/2" => fn {goblin, _cubdb, pairs} ->
       Goblin.put_multi(goblin, pairs)
-    end,
+    end
+  },
+  %{
     "CubDB.put_multi/2" => fn {_goblin, cubdb, pairs} ->
       CubDB.put_multi(cubdb, pairs)
     end
@@ -27,36 +26,22 @@ Benchee.run(
   before_scenario: fn size ->
     File.rm_rf!(goblin_dir)
     File.rm_rf!(cubdb_dir)
-
-    {:ok, goblin} = Goblin.start_link(data_dir: goblin_dir)
-
-    {:ok, cubdb} =
-      CubDB.start_link(
-        data_dir: cubdb_dir,
-        auto_compact: false,
-        auto_file_sync: true
-      )
-
-    Process.unlink(cubdb)
+    goblin = Support.start_goblin(goblin_dir)
+    cubdb = Support.start_cubdb(cubdb_dir, auto_compact: false, auto_file_sync: true)
     {goblin, cubdb, size}
   end,
   before_each: fn {goblin, cubdb, size} ->
     pairs =
       for _ <- 1..size do
-        {:rand.uniform(100_000), :crypto.strong_rand_bytes(1024)}
+        {:rand.uniform(100_000), :crypto.strong_rand_bytes(Support.value_size())}
       end
 
     {goblin, cubdb, pairs}
   end,
   after_scenario: fn {goblin, cubdb, _size} ->
-    Goblin.stop(goblin)
-    CubDB.stop(cubdb)
+    Support.stop_goblin(goblin)
+    Support.stop_cubdb(cubdb)
     File.rm_rf!(goblin_dir)
     File.rm_rf!(cubdb_dir)
-  end,
-  profile_after: if(profile?, do: :tprof, else: false),
-  formatters: [
-    Benchee.Formatters.Console,
-    {Benchee.Formatters.Markdown, file: Path.join(results_dir, "put_multi.md")}
-  ]
+  end
 )

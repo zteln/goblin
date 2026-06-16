@@ -1,57 +1,43 @@
-Mix.install([:benchee, :benchee_markdown, :cubdb, {:goblin, path: File.cwd!()}])
+Code.require_file("support.exs", __DIR__)
+alias Bench.Support
 
-profile? = "--profile" in System.argv()
+Support.require_fixtures!()
 
-results_dir = "#{File.cwd!()}/tmp/goblin_benchmark/results"
-File.mkdir_p!(results_dir)
+batch = 1000
 
-fixtures_dir = "#{File.cwd!()}/tmp/goblin_benchmark/fixtures"
-
-File.exists?(fixtures_dir) ||
-  raise "Fixtures must exist. Run `elixir bench/create_fix_repos.exs` first."
-
-num_keys = %{
-  "1_kb_repo" => max(div(1024, 1024), 1),
-  "1_mb_repo" => div(1024 * 1024, 1024),
-  "10_mb_repo" => div(10 * 1024 * 1024, 1024),
-  "100_mb_repo" => div(100 * 1024 * 1024, 1024),
-  "1_gb_repo" => div(1024 * 1024 * 1024, 1024)
-}
-
-Benchee.run(
+# Fixtures populate keys 1..num_keys; miss keys sit in num_keys+1..2*num_keys.
+Support.run(
+  "get_multi",
   %{
-    "Goblin.get_multi/2" => fn {goblin, _cubdb, keys} ->
-      Goblin.get_multi(goblin, keys)
+    "Goblin.get_multi/2 (hit)" => fn {goblin, _cubdb, hits, _misses} ->
+      Goblin.get_multi(goblin, hits)
     end,
-    "CubDB.get_multi/2" => fn {_goblin, cubdb, keys} ->
-      CubDB.get_multi(cubdb, keys)
+    "Goblin.get_multi/2 (miss)" => fn {goblin, _cubdb, _hits, misses} ->
+      Goblin.get_multi(goblin, misses)
     end
   },
-  inputs: %{
-    "1kB" => "1_kb_repo",
-    "1MB" => "1_mb_repo",
-    "10MB" => "10_mb_repo",
-    "100MB" => "100_mb_repo",
-    "1GB" => "1_gb_repo"
+  %{
+    "CubDB.get_multi/2 (hit)" => fn {_goblin, cubdb, hits, _misses} ->
+      CubDB.get_multi(cubdb, hits)
+    end,
+    "CubDB.get_multi/2 (miss)" => fn {_goblin, cubdb, _hits, misses} ->
+      CubDB.get_multi(cubdb, misses)
+    end
   },
-  before_scenario: fn label ->
-    {:ok, goblin} = Goblin.start_link(data_dir: Path.join([fixtures_dir, "goblin", label]))
-    {:ok, cubdb} = CubDB.start_link(data_dir: Path.join([fixtures_dir, "cubdb", label]))
+  inputs: Support.dataset_inputs(),
+  before_scenario: fn repo ->
+    goblin = Support.start_goblin(Support.goblin_fixture(repo))
+    cubdb = Support.start_cubdb(Support.cubdb_fixture(repo))
     _ = Goblin.get(goblin, 1)
-    _ = CubDB.get(cubdb, 1)
-    {goblin, cubdb, num_keys[label]}
+    {goblin, cubdb, Support.num_keys(repo)}
   end,
-  before_each: fn {goblin, cubdb, max_key} ->
-    keys = for _ <- 1..1000, do: :rand.uniform(max_key)
-    {goblin, cubdb, keys}
+  before_each: fn {goblin, cubdb, num_keys} ->
+    hits = for _ <- 1..batch, do: :rand.uniform(num_keys)
+    misses = for _ <- 1..batch, do: num_keys + :rand.uniform(num_keys)
+    {goblin, cubdb, hits, misses}
   end,
-  after_scenario: fn {goblin, cubdb, _max_key} ->
-    Goblin.stop(goblin)
-    CubDB.stop(cubdb)
-  end,
-  profile_after: if(profile?, do: :tprof, else: false),
-  formatters: [
-    Benchee.Formatters.Console,
-    {Benchee.Formatters.Markdown, file: Path.join(results_dir, "get_multi.md")}
-  ]
+  after_scenario: fn {goblin, cubdb, _num_keys} ->
+    Support.stop_goblin(goblin)
+    Support.stop_cubdb(cubdb)
+  end
 )
