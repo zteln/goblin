@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.11.0 (unreleased)
+* Breaking changes
+    * Disk table (SST) format changed to variable-sized blocks with a sparse + dense index. Files written by previous versions are incompatible.
+    * I/O failures now raise `Goblin.IOError` instead of returning `{:error, reason}` tuples.
+    * Default command timeout changed from `5000` ms to `:infinity`.
+    * Operations attempted during a read transaction now raise `ArgumentError` (previously a plain `RuntimeError`).
+* Added
+    * `Goblin.IOError` exception, carrying `:operation`, `:path`, and `:reason` fields with descriptive messages for storage read/write failures.
+    * Nested transactions are now detected and raise. Calling `transaction` or its derivatives (`put`, `put_multi`, `remove`, `remove_multi`) on the same database from within a transaction is not allowed.
+* Enhancements
+    * Disk table search now uses `:pread`, and the search range is bounded when streaming through a disk table.
+    * Documented the MVCC model in the README.
+* Changes
+    * `:gen_statem` start options are now handled; restart logic moved into `init`, and task shutdown is handled properly.
+    * Disk table index no longer splits on keys.
+* Bug fixes
+    * Fixed key sorting during search.
+
 ## v0.10.0 (2026-06-03)
 * Breaking changes
     * Format for writes in the WAL and manifest have changed.
