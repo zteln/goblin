@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.11.0 (unreleased)
+## v0.11.1 (unreleased)
+* Enhancements
+    * Orphan files are removed when starting the database.
+
+## v0.11.0 (2026-06-16)
 * Breaking changes
     * Disk table (SST) format changed to variable-sized blocks with a sparse + dense index. Files written by previous versions are incompatible.
     * I/O failures now raise `Goblin.IOError` instead of returning `{:error, reason}` tuples.

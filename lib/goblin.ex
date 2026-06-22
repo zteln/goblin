@@ -791,12 +791,15 @@ defmodule Goblin do
   end
 
   defp handle_start(db) do
+    manifest_file = Manifest.current_file(db.manifest)
     {manifest_seq, files, dirt} = Manifest.snapshot(db.manifest)
+    orphans = find_orphans(db.data_dir, [manifest_file | Enum.map(files, &elem(&1, 1))])
     max_count = files |> Enum.map(&get_count_from_file/1) |> Enum.max(fn -> 0 end)
     :atomics.put(db.file_counter, 1, max_count + 1)
     db = %{db | sequence: manifest_seq}
 
     with {:ok, dirt} <- cleanup(dirt),
+         {:ok, _} <- cleanup(orphans),
          {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, dirt),
          {:ok, db} <- handle_restore(%{db | manifest: manifest}, files) do
       publish_snapshot(db)
@@ -1068,6 +1071,14 @@ defmodule Goblin do
     with :ok <- FileIO.remove(path) do
       cleanup(rest, [path | acc])
     end
+  end
+
+  defp find_orphans(dir, files) do
+    File.ls!(dir)
+    |> Enum.map(&Path.join(dir, &1))
+    |> Enum.reject(&File.dir?/1)
+    |> Enum.reject(&(&1 in files))
+    |> Enum.filter(&String.ends_with?(&1, @goblin_suffix))
   end
 
   defp gen_file(ref, dir, suffix \\ @goblin_suffix) do
