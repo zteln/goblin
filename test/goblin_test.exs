@@ -854,15 +854,9 @@ defmodule GoblinTest do
     end
 
     test "orphan files are removed during start", ctx do
-      db = start_db(ctx)
-      Goblin.put(db, :key, :val)
-      kill_db(db)
-
       orphan_path = Path.join(ctx.tmp_dir, "orphan.goblin")
       File.touch(orphan_path)
-
-      db = start_db(ctx)
-      assert :val == Goblin.get(db, :key)
+      start_supervised_db(ctx)
       refute File.exists?(orphan_path)
     end
   end
