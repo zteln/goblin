@@ -316,6 +316,7 @@ defmodule Goblin.Tx do
         pair -> [pair]
       end
     end)
+    |> maybe_limit(opts[:limit])
   end
 
   defp search(tables, keys, opts) do
@@ -419,4 +420,7 @@ defmodule Goblin.Tx do
   defp filter_triple_by_tag({{:"$goblin_tag", tag, key}, _seq, val}, tag), do: {key, val}
   defp filter_triple_by_tag({key, _seq, val}, nil), do: {key, val}
   defp filter_triple_by_tag(_triple, _tag), do: nil
+
+  defp maybe_limit(stream, nil), do: stream
+  defp maybe_limit(stream, limit), do: Stream.take(stream, limit)
 end

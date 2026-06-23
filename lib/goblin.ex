@@ -426,6 +426,7 @@ defmodule Goblin do
     - `:min` - Minimum key, inclusive (optional)
     - `:max` - Maximum key, inclusive (optional)
     - `:tag` - Tag to filter by (optional)
+    - `:limit` - Amount to take from the stream (optional)
 
   ## Returns
 
@@ -440,6 +441,9 @@ defmodule Goblin do
       # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
 
       Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
+      # => [{:alice, "Alice"}, {:bob, "Bob"}]
+
+      Goblin.scan(db, limit: 2) |> Enum.to_list()
       # => [{:alice, "Alice"}, {:bob, "Bob"}]
 
       scan = Goblin.scan(db)
