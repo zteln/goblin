@@ -3,6 +3,7 @@
 ## v0.11.1 (unreleased)
 * Enhancements
     * Orphan files are removed when starting the database.
+    * Add `:limit` option to `Goblin.scan`
 
 ## v0.11.0 (2026-06-16)
 * Breaking changes
