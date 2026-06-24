@@ -151,7 +151,7 @@ defmodule Goblin.FileIOTest do
       {:ok, valid_size} = FileIO.append(io, :foo)
       {:ok, _} = FileIO.append(io, :bar)
       # truncate from (valid_size + header_size + 1) in file
-      assert :ok == FileIO.truncate(io, valid_size + 21)
+      assert :ok == FileIO.truncate(io, valid_size + 9)
       FileIO.close(io)
 
       {:ok, io} = FileIO.open(ctx.test_path)

@@ -1,6 +1,8 @@
 # Changelog
 
-## v0.11.1 (unreleased)
+## v0.12.0 (unreleased)
+* Breaking changes
+    * The header for each block is reduced. Files written by previous versions are incompatible.
 * Enhancements
     * Orphan files are removed when starting the database.
     * Add `:limit` option to `Goblin.scan`

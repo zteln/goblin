@@ -3,8 +3,7 @@ defmodule Goblin.FileIO do
 
   alias Goblin.IOError
 
-  @magic "GOBLIN00"
-  @header_size byte_size(<<@magic::binary, 0::integer-64, 0::integer-32>>)
+  @header_size byte_size(<<0::integer-32, 0::integer-32>>)
 
   @default_modes [
     :raw,
@@ -173,8 +172,7 @@ defmodule Goblin.FileIO do
     payload_size = :erlang.iolist_size(payload)
 
     header = [
-      <<@magic::binary>>,
-      <<payload_size::integer-64>>,
+      <<payload_size::integer-32>>,
       <<:erlang.crc32(payload)::integer-32>>
     ]
 
@@ -191,8 +189,7 @@ defmodule Goblin.FileIO do
   end
 
   defp decode_header(<<
-         @magic::binary,
-         payload_size::integer-64,
+         payload_size::integer-32,
          crc::integer-32
        >>),
        do: {:ok, payload_size, crc}

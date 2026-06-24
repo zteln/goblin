@@ -53,7 +53,8 @@ defmodule Goblin.MemTableTest do
       assert :ok == MemTable.close(ctx.mem_table)
 
       {:ok, f} = :file.open(ctx.wal_path, [:read, :write, :raw, :binary])
-      {:ok, _} = :file.position(f, survived_size + 8)
+      # survived_size + something less than block header (< 8 bytes)
+      {:ok, _} = :file.position(f, survived_size + 2)
       :ok = :file.truncate(f)
       :file.close(f)
 
