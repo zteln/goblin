@@ -5,7 +5,6 @@
     * The header for each block is reduced. Files written by previous versions are incompatible.
 * Enhancements
     * Orphan files are removed when starting the database.
-    * Add `:limit` option to `Goblin.scan`
     * add `Goblin.has_key?` and `Goblin.Tx.has_key?` functions
 
 ## v0.11.0 (2026-06-16)

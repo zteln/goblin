@@ -547,14 +547,6 @@ defmodule GoblinTest do
       assert [{1, :a}] == Enum.to_list(stream)
     end
 
-    test "scan can be limited", ctx do
-      Goblin.put_multi(ctx.db, [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}])
-      assert [{1, :a}, {2, :b}, {3, :c}] == Goblin.scan(ctx.db, limit: 3) |> Enum.to_list()
-
-      assert [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}] ==
-               Goblin.scan(ctx.db) |> Enum.to_list()
-    end
-
     test "remove then put overwrites tombstone", ctx do
       Goblin.put(ctx.db, :key, :first)
       assert :first == Goblin.get(ctx.db, :key)
