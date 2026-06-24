@@ -118,6 +118,14 @@ defmodule Goblin.TxTest do
       %{mvcc: mvcc}
     end
 
+    test "can read value from uncommitted entries in transaction", ctx do
+      tx =
+        new_tx(mvcc: ctx.mvcc)
+        |> Tx.put(:key, :val)
+
+      assert :val == Tx.get(tx, :key)
+      assert [{:key, :val}] == Tx.get_multi(tx, [:key])
+    end
 
     test "can check membership status from uncommitted entries in transaction", ctx do
       tx = new_tx(mvcc: ctx.mvcc)

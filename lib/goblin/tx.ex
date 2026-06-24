@@ -187,24 +187,7 @@ defmodule Goblin.Tx do
   """
   @spec get(t(), term(), keyword()) :: term()
   def get(tx, key, opts \\ []) do
-    key = tag_key(key, opts[:tag])
-    tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
-
-    tables = fn lk ->
-      tables =
-        MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
-        |> Enum.filter(&table_has_key?(&1, key))
-
-      [tx_table | tables]
-    end
-
-    search_opts = [
-      sequence: tx.sequence,
-      max_level_key: tx.max_level_key,
-      tag: opts[:tag]
-    ]
-
-    case search(tables, [key], search_opts) do
+    case get_multi(tx, [key], opts) do
       [] -> opts[:default]
       [{_key, value}] -> value
     end
@@ -230,27 +213,57 @@ defmodule Goblin.Tx do
 
       [{:alice, "Alice"}, {:bob, "Bob"}] = Goblin.Tx.get_multi(tx, [:alice, :bob])
   """
-  @spec get_multi(t(), list(term()), keyword()) ::
-          list({term(), term()})
+  @spec get_multi(t(), list(term()), keyword()) :: list({term(), term()})
   def get_multi(tx, keys, opts \\ []) do
-    keys = Enum.map(keys, &tag_key(&1, opts[:tag]))
+    keys =
+      keys
+      |> Enum.sort(:desc)
+      |> Enum.reduce([], fn
+        key1, [key2 | _] = acc when key1 == key2 -> acc
+        key, acc -> [key | acc]
+      end)
+      |> Enum.map(&tag_key(&1, opts[:tag]))
+      |> MapSet.new()
+
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
     tables = fn lk ->
-      tables =
-        MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
-        |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
-
-      [tx_table | tables]
+      case lk do
+        -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk)]
+        _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
+      end
+      |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
     end
 
-    opts = [
-      sequence: tx.sequence,
-      max_level_key: tx.max_level_key,
-      tag: opts[:tag]
-    ]
+    {acc, _} =
+      recurse_levels(tables, tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
+        sorted_keys = Enum.sort(keys)
 
-    search(tables, keys, opts)
+        {acc, keys} =
+          Merge.stream(
+            fn ->
+              tables.(lk)
+              |> Enum.map(&table_search(&1, sorted_keys, tx.sequence))
+            end,
+            filter_tombstones?: false
+          )
+          |> Enum.reduce({acc, keys}, fn
+            {key, _seq, :"$goblin_tombstone"}, {acc, keys} ->
+              {acc, MapSet.delete(keys, key)}
+
+            {key, _seq, val}, {acc, keys} ->
+              {[{key, val} | acc], MapSet.delete(keys, key)}
+          end)
+
+        case MapSet.size(keys) do
+          0 -> {:halt, {acc, keys}}
+          _ -> {:cont, {acc, keys}}
+        end
+      end)
+
+    Enum.map(acc, &untag_pair/1)
+  end
+
   @doc """
   Checks whether a key exists or not within a transaction.
 
@@ -367,47 +380,13 @@ defmodule Goblin.Tx do
     |> maybe_limit(opts[:limit])
   end
 
-  defp search(tables, keys, opts) do
-    keys =
-      keys
-      |> Enum.sort(:desc)
-      |> Enum.reduce([], fn
-        key1, [key2 | _] = acc when key1 == key2 -> acc
-        key, acc -> [key | acc]
-      end)
+  defp recurse_levels(tables, lk \\ -1, max_lk, acc, f)
+  defp recurse_levels(_tables, lk, max_lk, acc, _f) when lk > max_lk, do: acc
 
-    search_levels(tables, MapSet.new(keys), opts[:sequence], -1, opts[:max_level_key])
-    |> Enum.map(&untag_pair/1)
-  end
-
-  defp search_levels(tables, keys, seq, lk, max_lk, acc \\ [])
-
-  defp search_levels(_tables, _keys, _seq, lk, max_lk, acc)
-       when lk > max_lk,
-       do: acc
-
-  defp search_levels(tables, keys, seq, lk, max_lk, acc) do
-    sorted_keys = Enum.sort(keys)
-
-    {acc, keys} =
-      Merge.stream(
-        fn ->
-          tables.(lk)
-          |> Enum.map(&table_search(&1, sorted_keys, seq))
-        end,
-        filter_tombstones?: false
-      )
-      |> Enum.reduce({acc, keys}, fn
-        {key, _seq, :"$goblin_tombstone"}, {acc, keys} ->
-          {acc, MapSet.delete(keys, key)}
-
-        {key, _seq, val}, {acc, keys} ->
-          {[{key, val} | acc], MapSet.delete(keys, key)}
-      end)
-
-    case MapSet.size(keys) do
-      0 -> acc
-      _ -> search_levels(tables, keys, seq, lk + 1, max_lk, acc)
+  defp recurse_levels(tables, lk, max_lk, acc, f) do
+    case f.(lk, acc) do
+      {:cont, acc} -> recurse_levels(tables, lk + 1, max_lk, acc, f)
+      {:halt, acc} -> acc
     end
   end
 
