@@ -411,6 +411,36 @@ defmodule Goblin do
   end
 
   @doc """
+  Checks whether a key is a member of the database or not.
+
+  > #### False positives {: .note}
+  >
+  > If the key has been flushed to disk, then membership is checked via the disk table's Bloom filters, i.e. it can yield a false positive in some cases.
+
+  ## Parameters
+    
+  - `db` - The database server (PID or registered name)
+  - `key` - The key to check membership off
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag the keys are namespaced under
+
+  ## Returns
+
+  - A boolean indicating if the key exists or not
+
+  ## Examples
+
+    Goblin.has_key?(db, :alice)
+    # => false
+    Goblin.put(db, :alice, "Alice")
+    Goblin.has_key?(db, :alice)
+    # => true
+  """
+  def has_key?(db, key, opts \\ []) do
+    read(db, fn tx -> Tx.has_key?(tx, key, opts) end)
+  end
+
+  @doc """
   Returns a stream of key-value pairs, optionally bounded by a range.
   Captures snapshots at enumeration.
 

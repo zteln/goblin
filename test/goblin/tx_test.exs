@@ -111,6 +111,22 @@ defmodule Goblin.TxTest do
     end
   end
 
+  describe "get/3, get_multi/3, has_key?/3" do
+    setup do
+      mvcc = Goblin.MVCC.new()
+      Goblin.MVCC.put_snapshot(mvcc, [], %{}, 0)
+      %{mvcc: mvcc}
+    end
+
+
+    test "can check membership status from uncommitted entries in transaction", ctx do
+      tx = new_tx(mvcc: ctx.mvcc)
+      refute Tx.has_key?(tx, :key)
+      tx = Tx.put(tx, :key, :val)
+      assert Tx.has_key?(tx, :key)
+    end
+  end
+
   describe "commit/2 and abort/1" do
     test "commit/2 returns {:commit, tx, :ok} with writes in prepend order" do
       tx =

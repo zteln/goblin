@@ -641,6 +641,24 @@ defmodule GoblinTest do
         Goblin.get(ctx.db, 1)
       end
     end
+
+    test "returns correct membership status", ctx do
+      refute Goblin.has_key?(ctx.db, :key)
+      Goblin.put(ctx.db, :key, :val)
+      assert Goblin.has_key?(ctx.db, :key)
+
+      refute Goblin.has_key?(ctx.db, :key, tag: :ns)
+      Goblin.put(ctx.db, :key, :val, tag: :ns)
+      assert Goblin.has_key?(ctx.db, :key, tag: :ns)
+    end
+
+    test "returns correct membership from disk", ctx do
+      Goblin.put(ctx.db, :key, :val)
+      trigger_flush(ctx.db)
+      assert :ok == wait_until_idle(ctx.db)
+
+      assert Goblin.has_key?(ctx.db, :key)
+    end
   end
 
   describe "export/2" do

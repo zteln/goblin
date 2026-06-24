@@ -251,6 +251,54 @@ defmodule Goblin.Tx do
     ]
 
     search(tables, keys, opts)
+  @doc """
+  Checks whether a key exists or not within a transaction.
+
+  > #### False positives {: .note}
+  >
+  > If the key has been flushed to disk, then membership is checked via the disk table's Bloom filters, i.e. it can yield a false positive in some cases.
+
+  ## Parameters
+    
+  - `tx` - The transaction struct
+  - `key` - The key to check membership off
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag the keys are namespaced under
+
+  ## Returns
+
+  - A boolean indicating if the key exists or not
+
+  ## Examples
+
+    Goblin.Tx.has_key?(tx, :alice)
+    # => false
+    Goblin.Tx.put(tx, :alice, "Alice")
+    Goblin.Tx.has_key?(tx, :alice)
+    # => true
+  """
+  def has_key?(tx, key, opts \\ []) do
+    key = tag_key(key, opts[:tag])
+
+    tx_table =
+      tx.commits
+      |> Enum.filter(fn {k, _seq, _val} -> k == key end)
+      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+
+    tables = fn lk ->
+      case lk do
+        -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk)]
+        _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
+      end
+      |> Enum.filter(fn table -> table_has_key?(table, key) end)
+    end
+
+    recurse_levels(tables, tx.max_level_key, false, fn lk, _acc ->
+      case tables.(lk) do
+        [_ | _] -> {:halt, true}
+        _ -> {:cont, false}
+      end
+    end)
   end
 
   @doc """
