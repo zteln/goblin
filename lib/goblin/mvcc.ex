@@ -15,8 +15,8 @@ defmodule Goblin.MVCC do
     ])
   end
 
-  @spec put_snapshot(t(), list(Goblin.MemTable.t()), map(), non_neg_integer()) :: :ok
-  def put_snapshot(ref, mem_tables, levels, seq) do
+  @spec put_snapshot(t(), map(), non_neg_integer()) :: :ok
+  def put_snapshot(ref, levels, seq) do
     version =
       case current_meta(ref) do
         :empty -> -1
@@ -24,33 +24,13 @@ defmodule Goblin.MVCC do
       end
 
     max_lk = levels |> Map.keys() |> Enum.max(fn -> -1 end)
-    :ets.insert(ref, {{:snapshot, version + 1}, seq, max_lk, mem_tables, levels})
+    :ets.insert(ref, {{:snapshot, version + 1}, seq, max_lk, levels})
     :ok
   end
 
-  @spec get_tables(t(), non_neg_integer()) :: list(Goblin.MemTable.t() | Goblin.DiskTable.t())
-  @spec get_tables(t(), non_neg_integer(), level_key()) ::
-          list(Goblin.MemTable.t() | Goblin.DiskTable.t())
-  def get_tables(ref, version) do
-    case :ets.match(ref, {{:snapshot, version}, :_, :_, :"$1", :"$2"}) do
-      [[mem_tables, levels]] -> mem_tables ++ (Map.values(levels) |> List.flatten())
-      _ -> []
-    end
-  end
-
-  def get_tables(ref, version, -1) do
-    case :ets.match(ref, {{:snapshot, version}, :_, :_, :"$1", :_}) do
-      [[mem_tables]] -> mem_tables
-      _ -> []
-    end
-  end
-
-  def get_tables(ref, version, lk) do
-    case :ets.match(ref, {{:snapshot, version}, :_, :_, :_, %{lk => :"$1"}}) do
-      [[level]] -> level
-      _ -> []
-    end
-  end
+  @spec get_tables(t(), non_neg_integer()) :: map()
+  def get_tables(ref, version),
+    do: :ets.lookup_element(ref, {:snapshot, version}, 4, %{})
 
   @spec add_reader(t(), term()) :: {non_neg_integer(), level_key(), non_neg_integer()}
   def add_reader(ref, reader_key) do
@@ -99,6 +79,8 @@ defmodule Goblin.MVCC do
   defp sweepable_tables(ref, v, max_v, {all, in_use}) when v >= max_v do
     in_use =
       get_tables(ref, max_v)
+      |> Map.values()
+      |> List.flatten()
       |> MapSet.new()
       |> MapSet.union(in_use)
 
@@ -111,6 +93,8 @@ defmodule Goblin.MVCC do
 
     tables =
       get_tables(ref, v)
+      |> Map.values()
+      |> List.flatten()
       |> MapSet.new()
 
     {all, in_use} =

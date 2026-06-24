@@ -487,7 +487,7 @@ defmodule Goblin do
       fn ->
         :gen_statem.cast(db, {:track_reader, self(), tx_key})
         {seq, _max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
-        {seq, MVCC.get_tables(mvcc, tx_id)}
+        {seq, MVCC.get_tables(mvcc, tx_id) |> Map.values() |> List.flatten()}
       end,
       Keyword.put(opts, :after, fn ->
         MVCC.release_reader(mvcc, tx_key)
@@ -929,7 +929,7 @@ defmodule Goblin do
 
   defp publish_snapshot(db) do
     flushing_mts = Map.values(db.flushing) |> Enum.map(fn {_task, mt} -> mt end)
-    mem_tables = [db.mem_table | flushing_mts]
+    mts = [db.mem_table | flushing_mts]
 
     levels =
       db.compacting
@@ -937,7 +937,7 @@ defmodule Goblin do
       |> Enum.flat_map(fn {_task, dts} -> dts end)
       |> Enum.reduce(db.levels, &Levels.put(&2, &1))
 
-    MVCC.put_snapshot(db.mvcc, mem_tables, levels, db.sequence)
+    MVCC.put_snapshot(db.mvcc, Map.put(levels, -1, mts), db.sequence)
   end
 
   defp handle_restore(db, []) do

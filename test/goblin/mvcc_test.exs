@@ -9,102 +9,71 @@ defmodule Goblin.MVCCTest do
 
   describe "put_snapshot/4" do
     test "increments version for every snapshot", ctx do
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, [], %{}, 0)
+      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
       assert {_, _, 0} = MVCC.add_reader(ctx.mvcc, make_ref())
 
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, [], %{}, 0)
+      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
       assert {_, _, 1} = MVCC.add_reader(ctx.mvcc, make_ref())
 
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, [], %{}, 0)
+      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
       assert {_, _, 2} = MVCC.add_reader(ctx.mvcc, make_ref())
     end
 
     test "maximum level key defaults to -1", ctx do
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, [], %{}, 0)
+      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
       assert {_, -1, _} = MVCC.add_reader(ctx.mvcc, make_ref())
     end
 
     test "maximum level key is derived from provided levels", ctx do
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, [], %{5 => %{}}, 0)
+      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{5 => %{}}, 0)
       assert {_, 5, _} = MVCC.add_reader(ctx.mvcc, make_ref())
     end
   end
 
   describe "get_tables/2/3" do
     test "can get all tables in snapshot", ctx do
-      MVCC.put_snapshot(
-        ctx.mvcc,
-        [%{id: :mem1}, %{id: :mem2}],
-        %{0 => [%{id: :disk0}], 1 => [%{id: :disk1}]},
-        0
-      )
+      snapshot = %{
+        -1 => [%{id: :mem1}, %{id: :mem2}],
+        0 => [%{id: :disk0}],
+        1 => [%{id: :disk1}]
+      }
 
-      assert MapSet.new([
-               %{id: :mem1},
-               %{id: :mem2},
-               %{id: :disk0},
-               %{id: :disk1}
-             ]) == MVCC.get_tables(ctx.mvcc, 0) |> MapSet.new()
+      MVCC.put_snapshot(ctx.mvcc, snapshot, 0)
+      assert snapshot == MVCC.get_tables(ctx.mvcc, 0)
     end
 
     test "only gets tables for provided version", ctx do
-      MVCC.put_snapshot(
-        ctx.mvcc,
-        [%{id: :mem1}, %{id: :mem2}],
-        %{0 => [%{id: :disk0}], 1 => [%{id: :disk1}]},
-        0
-      )
+      snapshot1 = %{
+        -1 => [%{id: :mem1}, %{id: :mem2}],
+        0 => [%{id: :disk0}],
+        1 => [%{id: :disk1}]
+      }
 
-      MVCC.put_snapshot(
-        ctx.mvcc,
-        [%{id: :mem2}, %{id: :mem3}],
-        %{1 => [%{id: :disk1}]},
-        0
-      )
+      snapshot2 = %{
+        -1 => [%{id: :mem2}, %{id: :mem3}],
+        1 => [%{id: :disk1}]
+      }
 
-      assert MapSet.new([
-               %{id: :mem1},
-               %{id: :mem2},
-               %{id: :disk0},
-               %{id: :disk1}
-             ]) == MVCC.get_tables(ctx.mvcc, 0) |> MapSet.new()
+      MVCC.put_snapshot(ctx.mvcc, snapshot1, 0)
+      MVCC.put_snapshot(ctx.mvcc, snapshot2, 0)
 
-      assert MapSet.new([
-               %{id: :mem2},
-               %{id: :mem3},
-               %{id: :disk1}
-             ]) == MVCC.get_tables(ctx.mvcc, 1) |> MapSet.new()
+      assert snapshot1 == MVCC.get_tables(ctx.mvcc, 0)
+      assert snapshot2 == MVCC.get_tables(ctx.mvcc, 1)
     end
 
     test "returns empty for unknown version", ctx do
-      assert [] == MVCC.get_tables(ctx.mvcc, 99)
-    end
-
-    test "can get tables corresponding to provided level key", ctx do
-      MVCC.put_snapshot(
-        ctx.mvcc,
-        [%{id: :mem1}, %{id: :mem2}],
-        %{0 => [%{id: :disk0}], 1 => [%{id: :disk1}]},
-        0
-      )
-
-      assert MapSet.new([%{id: :mem1}, %{id: :mem2}]) ==
-               MVCC.get_tables(ctx.mvcc, 0, -1) |> MapSet.new()
-
-      assert [%{id: :disk0}] == MVCC.get_tables(ctx.mvcc, 0, 0)
-      assert [%{id: :disk1}] == MVCC.get_tables(ctx.mvcc, 0, 1)
-      assert [] == MVCC.get_tables(ctx.mvcc, 0, 2)
+      assert %{} == MVCC.get_tables(ctx.mvcc, 99)
     end
   end
 
   describe "add_reader/2, release_reader/2" do
     test "pins to current snapshot", ctx do
       reader_key = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
       assert {0, -1, v1} = MVCC.add_reader(ctx.mvcc, reader_key)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem2}], %{}, 1)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 1)
       assert v1 == 0
-      assert [%{id: :mem1}] == MVCC.get_tables(ctx.mvcc, v1)
+      assert %{-1 => [%{id: :mem1}]} == MVCC.get_tables(ctx.mvcc, v1)
     end
 
     test "can release non-existing reader", ctx do
@@ -114,7 +83,7 @@ defmodule Goblin.MVCCTest do
     test "release of one reader does not affect another reader", ctx do
       key1 = make_ref()
       key2 = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
 
       MVCC.add_reader(ctx.mvcc, key1)
       MVCC.add_reader(ctx.mvcc, key2)
@@ -144,36 +113,36 @@ defmodule Goblin.MVCCTest do
     end
 
     test "returns [] for single snapshot", ctx do
-      MVCC.put_snapshot(ctx.mvcc, [], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{}, 0)
       assert [] == MVCC.sweep(ctx.mvcc)
     end
 
     test "returns older table in disjoint snapshots", ctx do
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem2}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 0)
       assert [%{id: :mem1}] == MVCC.sweep(ctx.mvcc)
     end
 
     test "returns union of retired tables", ctx do
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem2}, %{id: :mem3}], %{}, 0)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem3}, %{id: :mem4}], %{}, 0)
-      assert MapSet.new([%{id: :mem1}, %{id: :mem2}]) == MVCC.sweep(ctx.mvcc) |> MapSet.new()
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}, %{id: :mem3}]}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem3}, %{id: :mem4}]}, 0)
+      assert [%{id: :mem1}, %{id: :mem2}] == MVCC.sweep(ctx.mvcc)
     end
 
     test "does not return table pinned by reader", ctx do
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem2}, %{id: :mem3}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}, %{id: :mem3}]}, 0)
       MVCC.add_reader(ctx.mvcc, make_ref())
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem3}, %{id: :mem4}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem3}, %{id: :mem4}]}, 0)
       assert [%{id: :mem1}] == MVCC.sweep(ctx.mvcc)
     end
 
     test "returns previously pinned tables", ctx do
       key = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
       MVCC.add_reader(ctx.mvcc, key)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem2}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 0)
       assert [] == MVCC.sweep(ctx.mvcc)
       MVCC.release_reader(ctx.mvcc, key)
       assert [%{id: :mem1}] == MVCC.sweep(ctx.mvcc)
@@ -181,8 +150,8 @@ defmodule Goblin.MVCCTest do
 
     test "does not sweep if a pending reader exists", ctx do
       :ets.insert(ctx.mvcc, {{:reader, :pending, make_ref()}})
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem1}], %{}, 0)
-      MVCC.put_snapshot(ctx.mvcc, [%{id: :mem2}], %{}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
+      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 0)
       assert [] == MVCC.sweep(ctx.mvcc)
     end
   end
@@ -201,13 +170,13 @@ defmodule Goblin.MVCCTest do
         |> Enum.map(fn {idxs, v} ->
           tables = Enum.map(idxs, &Enum.at(pool, &1))
           {mts, dts} = Enum.split_with(tables, &match?(%Goblin.MemTable{}, &1))
-          levels = Enum.group_by(dts, & &1.level_key)
-          :ok = MVCC.put_snapshot(mvcc, mts, levels, v)
-          {v, MapSet.new(tables)}
+          levels = Enum.group_by(dts, & &1.level_key) |> Map.put(-1, mts)
+          :ok = MVCC.put_snapshot(mvcc, levels, v)
+          {v, levels}
         end)
 
       for {v, want} <- expected do
-        assert MapSet.new(MVCC.get_tables(mvcc, v)) == want
+        assert want == MVCC.get_tables(mvcc, v)
       end
     end
   end
@@ -228,10 +197,10 @@ defmodule Goblin.MVCCTest do
   defp step(mvcc, pool, {:snapshot, idxs}, state) do
     tables = Enum.map(idxs, &Enum.at(pool, &1))
     {mts, dts} = Enum.split_with(tables, &match?(%Goblin.MemTable{}, &1))
-    levels = Enum.group_by(dts, & &1.level_key)
+    levels = Enum.group_by(dts, & &1.level_key) |> Map.put(-1, mts)
     v = state.current + 1
-    :ok = MVCC.put_snapshot(mvcc, mts, levels, state.seq + 1)
-    assert MapSet.new(MVCC.get_tables(mvcc, v)) == MapSet.new(tables)
+    :ok = MVCC.put_snapshot(mvcc, levels, state.seq + 1)
+    assert levels == MVCC.get_tables(mvcc, v)
 
     %{
       state
@@ -270,7 +239,7 @@ defmodule Goblin.MVCCTest do
     protected_versions = MapSet.new([state.current | Map.values(state.readers)])
 
     for v <- protected_versions do
-      live = MapSet.new(MVCC.get_tables(mvcc, v))
+      live = MVCC.get_tables(mvcc, v) |> Map.values() |> List.flatten() |> MapSet.new()
       assert MapSet.disjoint?(swept, live)
       assert live == state.versions[v]
     end

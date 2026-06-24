@@ -114,7 +114,7 @@ defmodule Goblin.TxTest do
   describe "get/3, get_multi/3, has_key?/3" do
     setup do
       mvcc = Goblin.MVCC.new()
-      Goblin.MVCC.put_snapshot(mvcc, [], %{}, 0)
+      Goblin.MVCC.put_snapshot(mvcc, %{}, 0)
       %{mvcc: mvcc}
     end
 

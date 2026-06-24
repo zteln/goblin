@@ -227,22 +227,21 @@ defmodule Goblin.Tx do
 
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    tables = fn lk ->
-      case lk do
-        -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk)]
-        _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
-      end
-      |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
-    end
+    tables =
+      tx.mvcc
+      |> MVCC.get_tables(tx.tx_id)
+      |> Map.update(-1, [tx_table], &[tx_table | &1])
 
     {acc, _} =
-      recurse_levels(tables, tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
+      recurse_levels(tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
         sorted_keys = Enum.sort(keys)
 
         {acc, keys} =
           Merge.stream(
             fn ->
-              tables.(lk)
+              tables
+              |> Map.get(lk, [])
+              |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
               |> Enum.map(&table_search(&1, sorted_keys, tx.sequence))
             end,
             filter_tombstones?: false
@@ -292,22 +291,18 @@ defmodule Goblin.Tx do
   """
   def has_key?(tx, key, opts \\ []) do
     key = tag_key(key, opts[:tag])
+    tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    tx_table =
-      tx.commits
-      |> Enum.filter(fn {k, _seq, _val} -> k == key end)
-      |> Enum.sort_by(fn {key, seq, _val} -> {key, -seq} end)
+    tables =
+      tx.mvcc
+      |> MVCC.get_tables(tx.tx_id)
+      |> Map.update(-1, [tx_table], &[tx_table | &1])
 
-    tables = fn lk ->
-      case lk do
-        -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk)]
-        _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk)
-      end
+    recurse_levels(tx.max_level_key, false, fn lk, _acc ->
+      tables
+      |> Map.get(lk, [])
       |> Enum.filter(fn table -> table_has_key?(table, key) end)
-    end
-
-    recurse_levels(tables, tx.max_level_key, false, fn lk, _acc ->
-      case tables.(lk) do
+      |> case do
         [_ | _] -> {:halt, true}
         _ -> {:cont, false}
       end
@@ -379,12 +374,12 @@ defmodule Goblin.Tx do
     end)
   end
 
-  defp recurse_levels(tables, lk \\ -1, max_lk, acc, f)
-  defp recurse_levels(_tables, lk, max_lk, acc, _f) when lk > max_lk, do: acc
+  defp recurse_levels(lk \\ -1, max_lk, acc, f)
+  defp recurse_levels(lk, max_lk, acc, _f) when lk > max_lk, do: acc
 
-  defp recurse_levels(tables, lk, max_lk, acc, f) do
+  defp recurse_levels(lk, max_lk, acc, f) do
     case f.(lk, acc) do
-      {:cont, acc} -> recurse_levels(tables, lk + 1, max_lk, acc, f)
+      {:cont, acc} -> recurse_levels(lk + 1, max_lk, acc, f)
       {:halt, acc} -> acc
     end
   end
