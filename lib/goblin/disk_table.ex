@@ -92,9 +92,14 @@ defmodule Goblin.DiskTable do
 
     try do
       case FileIO.read_footer(io) do
-        {:ok, %__MODULE__{} = dt} -> {:ok, dt}
-        {:ok, _} -> {:error, :invalid_disk_table}
-        error -> error
+        {:ok, %__MODULE__{} = dt} ->
+          {:ok, %{dt | bloom_filter: BloomFilter.load(dt.bloom_filter)}}
+
+        {:ok, _} ->
+          {:error, :invalid_disk_table}
+
+        error ->
+          error
       end
     after
       FileIO.close(io)
@@ -197,8 +202,9 @@ defmodule Goblin.DiskTable do
 
   defp maybe_append_footer(file, dt, offset_index, _, compress?) do
     with {:ok, dt, _} <- append_index(file, dt, offset_index, compress?),
-         dt = finalize_table(dt),
+         dt = %{dt | index: Enum.reverse(dt.index) |> List.to_tuple()},
          :ok <- append_footer(file, dt, compress?) do
+      dt = %{dt | bloom_filter: BloomFilter.load(dt.bloom_filter)}
       {:ok, dt, true}
     end
   end
@@ -258,9 +264,6 @@ defmodule Goblin.DiskTable do
         size: dt.size + size
     }
   end
-
-  defp finalize_table(dt),
-    do: %{dt | index: Enum.reverse(dt.index) |> List.to_tuple()}
 
   defp lookup(io, index, key, seq) do
     block_offset = block_offset_lookup(index, key)
