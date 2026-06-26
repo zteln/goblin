@@ -19,12 +19,12 @@ defmodule Goblin.MVCC do
   def put_snapshot(ref, levels, seq) do
     version =
       case current_meta(ref) do
-        :empty -> -1
-        {_, _, version} -> version
+        :empty -> 0
+        {_, _, version} -> version + 1
       end
 
     max_lk = levels |> Map.keys() |> Enum.max(fn -> -1 end)
-    :ets.insert(ref, {{:snapshot, version + 1}, seq, max_lk, levels})
+    :ets.insert(ref, {{:snapshot, version}, seq, max_lk, levels})
     :ok
   end
 
