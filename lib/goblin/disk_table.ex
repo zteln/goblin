@@ -204,6 +204,9 @@ defmodule Goblin.DiskTable do
     with {:ok, dt, _} <- append_index(file, dt, offset_index, compress?),
          dt = %{dt | index: Enum.reverse(dt.index) |> List.to_tuple()},
          :ok <- append_footer(file, dt, compress?) do
+      # turn in-mem index to :atomics here
+      # load into :atomics on start (same as bloom filter bits)
+      # FIX: won't work; random keys, not just integer as key
       dt = %{dt | bloom_filter: BloomFilter.load(dt.bloom_filter)}
       {:ok, dt, true}
     end

@@ -229,6 +229,9 @@ defmodule Goblin.Tx do
 
     tables =
       tx.mvcc
+      # Bottleneck, improve here
+      # Takes a lot of time
+      # Large tuples being copied, this is what takes time
       |> MVCC.get_tables(tx.tx_id)
       |> Map.update(-1, [tx_table], &[tx_table | &1])
 
