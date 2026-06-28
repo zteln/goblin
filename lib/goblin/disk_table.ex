@@ -94,14 +94,9 @@ defmodule Goblin.DiskTable do
 
     try do
       case FileIO.read_footer(io) do
-        {:ok, %__MODULE__{} = dt} ->
-          {:ok, %{dt | bloom_filter: BloomFilter.load(dt.bloom_filter)}}
-
-        {:ok, _} ->
-          {:error, :invalid_disk_table}
-
-        error ->
-          error
+        {:ok, %__MODULE__{} = dt} -> {:ok, dt}
+        {:ok, _} -> {:error, :invalid_disk_table}
+        error -> error
       end
     after
       FileIO.close(io)
@@ -205,7 +200,6 @@ defmodule Goblin.DiskTable do
     with {:ok, dt, _} <- append_index(file, dt, disk_index, compress?),
          dt = %{dt | index: MemIndex.finalize(dt.index)},
          :ok <- append_footer(file, dt, compress?) do
-      dt = %{dt | bloom_filter: BloomFilter.load(dt.bloom_filter)}
       {:ok, dt, true}
     end
   end

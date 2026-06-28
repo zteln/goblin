@@ -13,7 +13,7 @@ defmodule Goblin.BloomFilter.BitArray do
           size: non_neg_integer(),
           no_bits: non_neg_integer(),
           no_hashes: non_neg_integer(),
-          bits: <<>> | reference()
+          bits: <<>>
         }
 
   @spec new(non_neg_integer(), number()) :: t()
@@ -56,24 +56,9 @@ defmodule Goblin.BloomFilter.BitArray do
     |> Enum.all?(fn hash ->
       byte_pos = div(hash, 8)
       bit_offset = rem(hash, 8)
-      byte = :atomics.get(bit_array.bits, byte_pos + 1)
+      byte = :binary.at(bit_array.bits, byte_pos)
       Bitwise.band(byte, Bitwise.bsl(1, bit_offset)) != 0
     end)
-  end
-
-  @spec convert(t()) :: t()
-  def convert(bit_array) do
-    ref = :atomics.new(bit_array.no_bytes, signed: false)
-    convert_bits(ref, bit_array.bits)
-    %{bit_array | bits: ref}
-  end
-
-  defp convert_bits(ref, bits, idx \\ 1)
-  defp convert_bits(_ref, <<>>, _), do: :ok
-
-  defp convert_bits(ref, <<byte::8, rest::binary>>, idx) do
-    :atomics.put(ref, idx, byte)
-    convert_bits(ref, rest, idx + 1)
   end
 
   defp no_bits(size, fpp) do

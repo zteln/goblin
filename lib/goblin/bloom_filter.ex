@@ -20,12 +20,6 @@ defmodule Goblin.BloomFilter do
     %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
   end
 
-  @spec load(t()) :: t()
-  def load(bf) do
-    bit_arrays = Enum.map(bf.bit_arrays, &BitArray.convert/1)
-    %{bf | bit_arrays: bit_arrays}
-  end
-
   @spec put(t(), term()) :: t()
   def put(bf, key) do
     [current_bit_array | bit_arrays] = bf.bit_arrays
