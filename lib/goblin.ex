@@ -831,7 +831,6 @@ defmodule Goblin do
     with {:ok, dirt} <- cleanup(dirt),
          {:ok, _} <- cleanup(orphans),
          {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, dirt),
-         # TODO: wrap in Task.async + Task.await (to not clutter with refc binaries)
          {:ok, db} <- handle_restore(%{db | manifest: manifest}, files) do
       publish_snapshot(db)
       mark_ready(self(), db.mvcc)

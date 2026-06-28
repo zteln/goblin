@@ -7,6 +7,8 @@ defmodule Goblin.DiskTable do
     IOError
   }
 
+  alias Goblin.DiskTable.{MemIndex, DiskIndex}
+
   @index_interval 4096
 
   defstruct [
@@ -25,7 +27,7 @@ defmodule Goblin.DiskTable do
           bloom_filter: BloomFilter.t(),
           key_range: {term(), term()},
           seq_range: {non_neg_integer(), non_neg_integer()},
-          index: list(),
+          index: MemIndex.t(),
           size: non_neg_integer()
         }
 
@@ -36,37 +38,37 @@ defmodule Goblin.DiskTable do
     filer = opts[:filer]
     compress? = opts[:compress?]
     bf = BloomFilter.new(opts)
-    dt = %__MODULE__{bloom_filter: bf, level_key: opts[:level_key]}
+    dt = %__MODULE__{bloom_filter: bf, level_key: opts[:level_key], index: MemIndex.new()}
 
     stream
     |> Stream.transform(
-      fn -> {nil, 0, nil, []} end,
+      fn -> {nil, 0, nil, DiskIndex.new()} end,
       fn
         _, {:halt, file} ->
           FileIO.close(file)
           {:halt, nil}
 
-        triple, {file, boundary, acc, offset_index} ->
+        triple, {file, boundary, acc, disk_index} ->
           file = file || FileIO.open!(filer.(), write?: true)
           acc = acc || %{dt | id: file.path}
           {key, _, _} = triple
 
-          with {:ok, acc, offset_index, boundary} <-
-                 maybe_append_index(file, acc, offset_index, key, boundary, compress?),
-               {:ok, acc, offset_index} <-
-                 append_data(file, acc, offset_index, triple, compress?),
+          with {:ok, acc, disk_index, boundary} <-
+                 maybe_append_index(file, acc, disk_index, key, boundary, compress?),
+               {:ok, acc, disk_index} <-
+                 append_data(file, acc, disk_index, triple, compress?),
                {:ok, acc, wrapped?} <-
-                 maybe_append_footer(file, acc, offset_index, max_size, compress?) do
+                 maybe_append_footer(file, acc, disk_index, max_size, compress?) do
             if wrapped?,
-              do: {[{:ok, acc}], {nil, 0, nil, []}},
-              else: {[], {file, boundary, acc, offset_index}}
+              do: {[{:ok, acc}], {nil, 0, nil, DiskIndex.new()}},
+              else: {[], {file, boundary, acc, disk_index}}
           else
             error -> {[error], {:halt, file}}
           end
       end,
       fn
-        {%FileIO{} = file, _, acc, offset_index} ->
-          case maybe_append_footer(file, acc, offset_index, 0, compress?) do
+        {%FileIO{} = file, _, acc, disk_index} ->
+          case maybe_append_footer(file, acc, disk_index, 0, compress?) do
             {:ok, acc, _} -> {[{:ok, acc}], nil}
             error -> {[error], {:halt, file}}
           end
@@ -140,12 +142,11 @@ defmodule Goblin.DiskTable do
       Stream.resource(
         fn ->
           with {:ok, io} <- FileIO.open(dt.id),
-               block_offset = block_offset_lookup(dt.index, min),
-               {:ok, {:index, offset_index}} <-
-                 FileIO.read(io, verify_crc?: false, offset: block_offset),
-               min_offset = min_key_offset_lookup(offset_index, min),
-               pos = if(min_offset == :spill, do: block_offset, else: min_offset),
-               :ok <- FileIO.set_position(io, pos) do
+               disk_index_offset = MemIndex.lookup_offset(dt.index, min),
+               {:ok, {:index, disk_index}} <-
+                 FileIO.read(io, verify_crc?: false, offset: disk_index_offset),
+               min_offset = min_key_offset_lookup(disk_index, min),
+               :ok <- FileIO.set_position(io, min_offset || disk_index_offset) do
             io
           else
             {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
@@ -183,54 +184,48 @@ defmodule Goblin.DiskTable do
   defp maybe_append_index(
          file,
          %{size: size} = dt,
-         [{last, _, _} | _] = offset_index,
+         [{last, _, _} | _] = disk_index,
          key,
          boundary,
          compress?
        )
        when size - boundary >= @index_interval and last != key do
-    with {:ok, dt, offset_index} <- append_index(file, dt, offset_index, compress?) do
-      {:ok, dt, offset_index, dt.size}
+    with {:ok, dt, disk_index} <- append_index(file, dt, disk_index, compress?) do
+      {:ok, dt, disk_index, dt.size}
     end
   end
 
-  defp maybe_append_index(_, dt, offset_index, _, boundary, _),
-    do: {:ok, dt, offset_index, boundary}
+  defp maybe_append_index(_, dt, disk_index, _, boundary, _),
+    do: {:ok, dt, disk_index, boundary}
 
   defp maybe_append_footer(_, %{size: size} = dt, _, max_size, _) when size < max_size,
     do: {:ok, dt, false}
 
-  defp maybe_append_footer(file, dt, offset_index, _, compress?) do
-    with {:ok, dt, _} <- append_index(file, dt, offset_index, compress?),
-         dt = %{dt | index: Enum.reverse(dt.index) |> List.to_tuple()},
+  defp maybe_append_footer(file, dt, disk_index, _, compress?) do
+    with {:ok, dt, _} <- append_index(file, dt, disk_index, compress?),
+         dt = %{dt | index: MemIndex.finalize(dt.index)},
          :ok <- append_footer(file, dt, compress?) do
-      # turn in-mem index to :atomics here
-      # load into :atomics on start (same as bloom filter bits)
-      # FIX: won't work; random keys, not just integer as key
       dt = %{dt | bloom_filter: BloomFilter.load(dt.bloom_filter)}
       {:ok, dt, true}
     end
   end
 
-  defp append_data(file, dt, offset_index, triple, compress?) do
+  defp append_data(file, dt, disk_index, triple, compress?) do
     {key, seq, _} = triple
 
     with {:ok, size} <- FileIO.append(file, triple, compress?: compress?) do
-      offset_index = [{key, seq, dt.size} | offset_index]
-      {:ok, update_table(dt, triple, size), offset_index}
+      disk_index = DiskIndex.append(disk_index, key, seq, dt.size)
+      {:ok, update_table(dt, triple, size), disk_index}
     end
   end
 
   defp append_index(_, dt, [], _), do: {:ok, dt, []}
 
-  defp append_index(file, dt, offset_index, compress?) do
-    offset_index = offset_index |> Enum.reverse() |> List.to_tuple()
-    {first_key, _, _} = elem(offset_index, 0)
+  defp append_index(file, dt, disk_index, compress?) do
+    {start, disk_index} = DiskIndex.finalize(disk_index)
 
-    with {:ok, inc_size} <- FileIO.append(file, {:index, offset_index}, compress?: compress?) do
-      index = [{first_key, dt.size} | dt.index]
-      size = dt.size + inc_size
-      dt = %{dt | size: size, index: index}
+    with {:ok, inc_size} <- FileIO.append(file, {:index, disk_index}, compress?: compress?) do
+      dt = %{dt | size: dt.size + inc_size, index: MemIndex.append(dt.index, start, dt.size)}
       {:ok, dt, []}
     end
   end
@@ -269,11 +264,11 @@ defmodule Goblin.DiskTable do
   end
 
   defp lookup(io, index, key, seq) do
-    block_offset = block_offset_lookup(index, key)
+    disk_index_pos = MemIndex.lookup_offset(index, key)
 
-    with {:ok, {:index, offset_index}} <-
-           FileIO.read(io, verify_crc?: false, offset: block_offset) do
-      case key_offset_lookup(offset_index, key, seq) do
+    with {:ok, {:index, disk_index}} <-
+           FileIO.read(io, verify_crc?: false, offset: disk_index_pos) do
+      case key_offset_lookup(disk_index, key, seq) do
         :not_found -> :not_found
         key_offset -> key_lookup(io, key, key_offset)
       end
@@ -288,50 +283,19 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp block_offset_lookup(index, target_key) do
-    point = partition_point(index, fn {key, _} -> key <= target_key end)
-    {_, offset} = elem(index, max(point - 1, 0))
-    offset
-  end
-
-  defp key_offset_lookup(index, target_key, target_seq) do
-    point =
-      partition_point(index, fn {key, seq, _} ->
-        {key, -seq} <= {target_key, -target_seq}
-      end)
-
-    if point < tuple_size(index) do
-      case elem(index, point) do
-        {k, s, offset} when k == target_key and s < target_seq -> offset
-        _ -> :not_found
-      end
-    else
-      :not_found
+  defp key_offset_lookup(disk_index, target_key, target_seq) do
+    case DiskIndex.lookup(disk_index, fn {key, seq, _} ->
+           {key, -seq} <= {target_key, -target_seq}
+         end) do
+      {k, s, offset} when k == target_key and s < target_seq -> offset
+      _ -> :not_found
     end
   end
 
-  defp min_key_offset_lookup(index, min) do
-    point = partition_point(index, fn {key, _, _} -> key < min end)
-
-    if point < tuple_size(index) do
-      {_, _, offset} = elem(index, point)
+  defp min_key_offset_lookup(disk_index, min) do
+    with {_, _, offset} <- DiskIndex.lookup(disk_index, fn {key, _, _} -> key < min end) do
       offset
-    else
-      :spill
     end
-  end
-
-  defp partition_point(index, pred),
-    do: partition_point(index, pred, 0, tuple_size(index))
-
-  defp partition_point(_, _, lo, lo), do: lo
-
-  defp partition_point(index, pred, lo, hi) do
-    mid = div(lo + hi, 2)
-
-    if pred.(elem(index, mid)),
-      do: partition_point(index, pred, mid + 1, hi),
-      else: partition_point(index, pred, lo, mid)
   end
 
   defp within_min_max?(%{key_range: {min, max}}, key),
