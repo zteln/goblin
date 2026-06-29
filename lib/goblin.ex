@@ -728,9 +728,9 @@ defmodule Goblin do
     new_seq = tx.sequence
     {_, monitor_ref, _} = db.writer
     Process.demonitor(monitor_ref, [:flush])
-    commits = Enum.reverse(tx.commits)
+    # commits = Enum.reverse(tx.commits)
 
-    with :ok <- MemTable.append(db.mem_table, commits) do
+    with :ok <- MemTable.append(db.mem_table, tx.commits) do
       db = %{db | sequence: new_seq, writer: nil}
       publish_snapshot(db)
       {:keep_state, db, [{:reply, from, :ok}, {:next_event, :internal, :flush}]}
