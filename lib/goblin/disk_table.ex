@@ -139,7 +139,7 @@ defmodule Goblin.DiskTable do
           with {:ok, io} <- FileIO.open(dt.id),
                disk_index_offset = MemIndex.lookup_offset(dt.index, min),
                {:ok, {:index, disk_index}} <-
-                 FileIO.read(io, verify_crc?: false, offset: disk_index_offset),
+                 FileIO.offset_read(io, disk_index_offset, verify_crc?: false),
                min_offset = min_key_offset_lookup(disk_index, min),
                :ok <- FileIO.set_position(io, min_offset || disk_index_offset) do
             io
@@ -148,7 +148,7 @@ defmodule Goblin.DiskTable do
           end
         end,
         fn io ->
-          case FileIO.read(io, verify_crc?: false) do
+          case FileIO.seq_read(io, verify_crc?: false) do
             {:ok, {k, _, _}} when k > max ->
               {:halt, io}
 
@@ -261,7 +261,7 @@ defmodule Goblin.DiskTable do
     disk_index_pos = MemIndex.lookup_offset(index, key)
 
     with {:ok, {:index, disk_index}} <-
-           FileIO.read(io, verify_crc?: false, offset: disk_index_pos) do
+           FileIO.offset_read(io, disk_index_pos, verify_crc?: false) do
       case key_offset_lookup(disk_index, key, seq) do
         :not_found -> :not_found
         key_offset -> key_lookup(io, key, key_offset)
@@ -270,7 +270,7 @@ defmodule Goblin.DiskTable do
   end
 
   defp key_lookup(io, key, offset) do
-    case FileIO.read(io, offset: offset, verify_crc?: false) do
+    case FileIO.offset_read(io, offset, verify_crc?: false) do
       {:ok, {k, _, _} = triple} when k == key -> {:ok, triple}
       {:ok, _} -> :not_found
       error -> error

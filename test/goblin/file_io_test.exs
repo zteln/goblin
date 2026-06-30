@@ -34,7 +34,7 @@ defmodule Goblin.FileIOTest do
     end
   end
 
-  describe "append/3, read/1" do
+  describe "append/3, offset_read/3, seq_read/2" do
     test "writing round-trips", ctx do
       io = FileIO.open!(ctx.test_path, write?: true)
       term = :foo
@@ -44,8 +44,8 @@ defmodule Goblin.FileIOTest do
       FileIO.close(io)
 
       io = FileIO.open!(ctx.test_path)
-      assert {:ok, term} == FileIO.read(io)
-      assert :eof == FileIO.read(io)
+      assert {:ok, term} == FileIO.seq_read(io)
+      assert :eof == FileIO.seq_read(io)
     end
 
     test "cannot append in read-only mode", ctx do
@@ -65,10 +65,40 @@ defmodule Goblin.FileIOTest do
       FileIO.close(io)
 
       {:ok, io} = FileIO.open(ctx.test_path)
-      assert {:ok, :foo} = FileIO.read(io)
-      assert {:ok, :bar} = FileIO.read(io)
-      assert {:ok, :baz} = FileIO.read(io)
-      assert :eof = FileIO.read(io)
+      assert {:ok, :foo} = FileIO.seq_read(io)
+      assert {:ok, :bar} = FileIO.seq_read(io)
+      assert {:ok, :baz} = FileIO.seq_read(io)
+      assert :eof = FileIO.seq_read(io)
+    end
+
+    test "can read from offsets", ctx do
+      {:ok, io} = FileIO.open(ctx.test_path, write?: true)
+      size1 = 0
+      assert {:ok, _} = FileIO.append(io, :foo)
+      size2 = :filelib.file_size(ctx.test_path)
+      assert {:ok, _} = FileIO.append(io, :bar)
+      size3 = :filelib.file_size(ctx.test_path)
+      assert {:ok, _} = FileIO.append(io, :baz)
+
+      assert {:ok, :foo} = FileIO.offset_read(io, size1)
+      assert {:ok, :bar} = FileIO.offset_read(io, size2)
+      assert {:ok, :baz} = FileIO.offset_read(io, size3)
+    end
+
+    test "can read from offset with smaller read size", ctx do
+      data = :binary.copy("x", 100)
+      {:ok, io} = FileIO.open(ctx.test_path, write?: true)
+      assert {:ok, _} = FileIO.append(io, data)
+
+      assert {:ok, data} == FileIO.offset_read(io, 0, read_size: 99)
+    end
+
+    test "fails to read if header is truncated", ctx do
+      {:ok, io} = FileIO.open(ctx.test_path, write?: true)
+      assert {:ok, _} = FileIO.append(io, :foo)
+      :ok = FileIO.truncate(io, 7)
+
+      assert {:error, :failed_to_read} == FileIO.offset_read(io, 0)
     end
 
     test "compress? = true compresses repetitive data", ctx do
@@ -80,9 +110,9 @@ defmodule Goblin.FileIOTest do
       FileIO.close(io)
 
       {:ok, io} = FileIO.open(ctx.test_path)
-      assert {:ok, term} == FileIO.read(io)
-      assert {:ok, term} == FileIO.read(io)
-      assert :eof = FileIO.read(io)
+      assert {:ok, term} == FileIO.seq_read(io)
+      assert {:ok, term} == FileIO.seq_read(io)
+      assert :eof = FileIO.seq_read(io)
     end
 
     test "returns size of written data", ctx do
@@ -93,21 +123,7 @@ defmodule Goblin.FileIOTest do
     end
   end
 
-  describe "read/1/2, read_footer/1" do
-    test "can read via position", ctx do
-      {:ok, io} = FileIO.open(ctx.test_path, write?: true)
-      offset1 = :filelib.file_size(io.path)
-      FileIO.append(io, :foo)
-      offset2 = :filelib.file_size(io.path)
-      FileIO.append(io, :bar)
-      offset3 = :filelib.file_size(io.path)
-      FileIO.append(io, :baz)
-
-      assert {:ok, :foo} = FileIO.read(io, offset: offset1)
-      assert {:ok, :bar} = FileIO.read(io, offset: offset2)
-      assert {:ok, :baz} = FileIO.read(io, offset: offset3)
-    end
-
+  describe "read_footer/1" do
     test "can read footer", ctx do
       {:ok, io} = FileIO.open(ctx.test_path, write?: true)
       FileIO.append(io, :foo, footer?: true)

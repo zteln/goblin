@@ -133,7 +133,7 @@ defmodule Goblin.DiskTableTest do
     test "point lookups across a multi-block table", ctx do
       data = for n <- 0..120, do: {2 * n, 2 * n, :binary.copy("x", 200)}
       {:ok, [dt]} = DiskTable.build(data, ctx.opts)
-      assert tuple_size(dt.index) > 1
+      assert byte_size(dt.index) > 1
 
       result = DiskTable.search(dt, [0, 120, 240], 241) |> Enum.to_list()
       assert Enum.any?(result, &match?({0, _, _}, &1))
@@ -213,7 +213,7 @@ defmodule Goblin.DiskTableTest do
     test "scans a table containing multiple index blocks", ctx do
       data = for n <- 0..120, do: {2 * n, 2 * n, :binary.copy("x", 200)}
       {:ok, [dt]} = DiskTable.build(data, ctx.opts)
-      assert tuple_size(dt.index) > 1
+      assert byte_size(dt.index) > 1
       assert data == DiskTable.stream(dt) |> Enum.to_list()
 
       for min <- [-5 | Enum.to_list(1..239//2)] do

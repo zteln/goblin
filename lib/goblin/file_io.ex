@@ -3,6 +3,7 @@ defmodule Goblin.FileIO do
 
   alias Goblin.IOError
 
+  @page_size 4096
   @header_size byte_size(<<0::integer-32, 0::integer-32>>)
 
   @default_modes [
@@ -58,20 +59,35 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec read(t(), keyword()) :: {:ok, term()} | {:error, term()} | :eof
-  def read(file, opts \\ []) do
-    reader =
-      cond do
-        opts[:offset] ->
-          fn offset, size -> :file.pread(file.iodev, opts[:offset] + offset, size) end
+  @spec offset_read(t(), non_neg_integer(), keyword()) :: {:ok, term()} | {:error, term()} | :eof
+  def offset_read(file, offset, opts \\ []) do
+    read_size = opts[:read_size] || @page_size
 
-        true ->
-          fn _, size -> :file.read(file.iodev, size) end
-      end
-
-    with {:ok, header} <- reader.(0, @header_size),
+    with {:ok, bin} <- :file.pread(file.iodev, offset, read_size),
+         :ok <- contains_size(byte_size(bin), @header_size),
+         header = :binary.part(bin, 0, @header_size),
          {:ok, size, crc} <- decode_header(header),
-         {:ok, payload} <- reader.(@header_size, size),
+         :ok <- contains_size(byte_size(bin), @header_size + size),
+         payload = :binary.part(bin, @header_size, size),
+         :ok <- validate_crc(payload, crc, Keyword.get(opts, :verify_crc?, true)) do
+      decode_payload(payload)
+    else
+      {:too_small, ^read_size} ->
+        {:error, :failed_to_read}
+
+      {:too_small, size} ->
+        offset_read(file, offset, Keyword.put(opts, :read_size, size))
+
+      error ->
+        error
+    end
+  end
+
+  @spec seq_read(t(), keyword()) :: {:ok, term()} | {:error, term()} | :eof
+  def seq_read(file, opts \\ []) do
+    with {:ok, header} <- :file.read(file.iodev, @header_size),
+         {:ok, size, crc} <- decode_header(header),
+         {:ok, payload} <- :file.read(file.iodev, size),
          :ok <- validate_size(byte_size(payload), size),
          :ok <- validate_crc(payload, crc, Keyword.get(opts, :verify_crc?, true)) do
       decode_payload(payload)
@@ -102,7 +118,7 @@ defmodule Goblin.FileIO do
           {:halt, nil}
 
         {file, pos} ->
-          case read(file) do
+          case seq_read(file) do
             {:ok, terms} when is_list(terms) ->
               {:ok, pos} = :file.position(file.iodev, :cur)
               {[{:ok, terms}], {file, pos}}
@@ -195,6 +211,9 @@ defmodule Goblin.FileIO do
        do: {:ok, payload_size, crc}
 
   defp decode_header(_), do: {:error, :invalid_header}
+
+  defp contains_size(size1, size2) when size1 >= size2, do: :ok
+  defp contains_size(_, size), do: {:too_small, size}
 
   defp validate_size(size, size), do: :ok
   defp validate_size(_, _), do: {:error, :invalid_size}

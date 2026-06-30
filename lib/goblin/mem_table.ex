@@ -103,9 +103,9 @@ defmodule Goblin.MemTable do
 
   defp insert_commits(commits, ref) do
     commits
-    |> Enum.reduce(-1, fn {key, seq, val}, _acc ->
+    |> Enum.reduce(-1, fn {key, seq, val}, acc ->
       insert(ref, key, seq, val)
-      seq
+      max(acc, seq)
     end)
   end
 
