@@ -487,7 +487,8 @@ defmodule Goblin do
       fn ->
         :gen_statem.cast(db, {:track_reader, self(), tx_key})
         {seq, _max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
-        {seq, MVCC.get_tables(mvcc, tx_id) |> Map.values() |> List.flatten()}
+        {seq, MVCC.get_tables(mvcc, tx_id)}
+        # {seq, MVCC.get_tables(mvcc, tx_id) |> Map.values() |> List.flatten()}
       end,
       Keyword.put(opts, :after, fn ->
         MVCC.release_reader(mvcc, tx_key)

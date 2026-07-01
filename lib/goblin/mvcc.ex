@@ -23,14 +23,76 @@ defmodule Goblin.MVCC do
         {_, _, version} -> version + 1
       end
 
-    max_lk = levels |> Map.keys() |> Enum.max(fn -> -1 end)
-    :ets.insert(ref, {{:snapshot, version}, seq, max_lk, levels})
+    max_lk =
+      Enum.reduce(levels, -1, fn
+        {lk, level}, max_lk when lk <= 0 ->
+          Enum.each(level, fn t ->
+            :ets.insert(ref, {{:table, version, lk, nil, nil, t.id}, t})
+          end)
+
+          max(lk, max_lk)
+
+        {lk, level}, max_lk ->
+          Enum.each(level, fn %{key_range: {min, max}} = dt ->
+            :ets.insert(ref, {{:table, version, lk, max, min, dt.id}, dt})
+          end)
+
+          max(lk, max_lk)
+      end)
+
+    :ets.insert(ref, {{:snapshot, version}, seq, max_lk})
     :ok
   end
 
   @spec get_tables(t(), non_neg_integer()) :: map()
-  def get_tables(ref, version),
-    do: :ets.lookup_element(ref, {:snapshot, version}, 4, %{})
+  def get_tables(ref, version) do
+    :ets.match(ref, {{:table, version, :_, :_, :_, :_}, :"$1"})
+    |> List.flatten()
+  end
+
+  def get_tables(ref, version, lk, _keys) when lk <= 0 do
+    next = :ets.next(ref, {:table, version, lk, nil, nil, ""})
+    enumerate(ref, version, lk, next, [])
+  end
+
+  def get_tables(ref, version, lk, [min_key | _] = keys) do
+    start = {:table, version, lk, min_key, min_key, ""}
+
+    acc =
+      case :ets.prev(ref, start) do
+        {:table, ^version, ^lk, ^min_key, _min, _id} = idx -> [:ets.lookup_element(ref, idx, 2)]
+        _ -> []
+      end
+
+    merge(ref, version, lk, keys, :ets.next(ref, start), acc)
+  end
+
+  defp enumerate(ref, version, lk, {:table, version, lk, _max, _min, _id} = idx, acc) do
+    enumerate(ref, version, lk, :ets.next(ref, idx), [:ets.lookup_element(ref, idx, 2) | acc])
+  end
+
+  defp enumerate(_ref, _version, _lk, _idx, acc), do: acc
+
+  defp merge(_ref, _version, _lk, [], _idx, acc), do: acc
+
+  defp merge(ref, version, lk, keys, {:table, version, lk, max_key, min_key, _id} = idx, acc) do
+    case Enum.drop_while(keys, &(&1 < min_key)) do
+      [] ->
+        acc
+
+      [k | _] = keys when k <= max_key ->
+        keys = Enum.drop_while(keys, &(&1 <= max_key))
+
+        merge(ref, version, lk, keys, :ets.next(ref, idx), [
+          :ets.lookup_element(ref, idx, 2) | acc
+        ])
+
+      keys ->
+        merge(ref, version, lk, keys, :ets.next(ref, idx), acc)
+    end
+  end
+
+  defp merge(_ref, _version, _lk, _keys, _idx, acc), do: acc
 
   @spec add_reader(t(), term()) :: {non_neg_integer(), level_key(), non_neg_integer()}
   def add_reader(ref, reader_key) do
@@ -79,8 +141,8 @@ defmodule Goblin.MVCC do
   defp sweepable_tables(ref, v, max_v, {all, in_use}) when v >= max_v do
     in_use =
       get_tables(ref, max_v)
-      |> Map.values()
-      |> List.flatten()
+      # |> Map.values()
+      # |> List.flatten()
       |> MapSet.new()
       |> MapSet.union(in_use)
 
@@ -93,8 +155,8 @@ defmodule Goblin.MVCC do
 
     tables =
       get_tables(ref, v)
-      |> Map.values()
-      |> List.flatten()
+      # |> Map.values()
+      # |> List.flatten()
       |> MapSet.new()
 
     {all, in_use} =

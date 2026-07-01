@@ -227,11 +227,6 @@ defmodule Goblin.Tx do
 
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    tables =
-      tx.mvcc
-      |> MVCC.get_tables(tx.tx_id)
-      |> Map.update(-1, [tx_table], &[tx_table | &1])
-
     {acc, _} =
       recurse_levels(tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
         sorted_keys = Enum.sort(keys)
@@ -239,8 +234,13 @@ defmodule Goblin.Tx do
         {acc, keys} =
           Merge.stream(
             fn ->
+              tables =
+                case lk do
+                  -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk, sorted_keys)]
+                  _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk, sorted_keys)
+                end
+
               tables
-              |> Map.get(lk, [])
               |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
               |> Enum.map(&table_search(&1, sorted_keys, tx.sequence))
             end,
@@ -293,14 +293,14 @@ defmodule Goblin.Tx do
     key = tag_key(key, opts[:tag])
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    tables =
-      tx.mvcc
-      |> MVCC.get_tables(tx.tx_id)
-      |> Map.update(-1, [tx_table], &[tx_table | &1])
-
     recurse_levels(tx.max_level_key, false, fn lk, _acc ->
+      tables =
+        case lk do
+          -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk, [key])]
+          _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk, [key])
+        end
+
       tables
-      |> Map.get(lk, [])
       |> Enum.filter(fn table -> table_has_key?(table, key) end)
       |> case do
         [_ | _] -> {:halt, true}
