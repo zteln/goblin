@@ -44,7 +44,7 @@ defmodule Goblin.MVCC do
     :ok
   end
 
-  @spec get_tables(t(), non_neg_integer()) :: map()
+  @spec get_tables(t(), non_neg_integer()) :: list(table())
   def get_tables(ref, version) do
     :ets.match(ref, {{:table, version, :_, :_, :_, :_}, :"$1"})
     |> List.flatten()
@@ -65,6 +65,87 @@ defmodule Goblin.MVCC do
       end
 
     merge(ref, version, lk, keys, :ets.next(ref, start), acc)
+  end
+
+  @spec add_reader(t(), term()) :: {non_neg_integer(), level_key(), non_neg_integer()}
+  def add_reader(ref, reader_key) do
+    :ets.insert(ref, {{:reader, :pending, reader_key}})
+
+    case current_meta(ref) do
+      {seq, max_lk, version} ->
+        :ets.insert(ref, {{:reader, version, reader_key}})
+        :ets.delete(ref, {:reader, :pending, reader_key})
+        {seq, max_lk, version}
+
+      :empty ->
+        :ets.delete(ref, {:reader, :pending, reader_key})
+        raise "MVCC.add_reader called before any snapshots were published"
+    end
+  end
+
+  @spec release_reader(t(), term()) :: :ok
+  def release_reader(ref, reader_key) do
+    :ets.match_delete(ref, {{:reader, :_, reader_key}})
+    :ok
+  end
+
+  @spec sweep(t()) :: list(table())
+  def sweep(ref) do
+    max_v =
+      case current_meta(ref) do
+        :empty -> 0
+        {_, _, max_v} -> max_v
+      end
+
+    first_v =
+      case :ets.next(ref, {:snapshot, -1}) do
+        {:snapshot, v} -> v
+        _ -> max_v
+      end
+
+    case has_pending_reader?(ref) do
+      true -> []
+      false -> sweepable_tables(ref, first_v, max_v)
+    end
+  end
+
+  defp sweepable_tables(ref, v, max_v, acc \\ {MapSet.new(), MapSet.new()})
+
+  defp sweepable_tables(ref, v, max_v, {all, in_use}) when v >= max_v do
+    in_use =
+      get_tables(ref, max_v)
+      |> MapSet.new()
+      |> MapSet.union(in_use)
+
+    MapSet.difference(all, in_use)
+    |> MapSet.to_list()
+  end
+
+  defp sweepable_tables(ref, v, max_v, {all, in_use}) do
+    key = {:snapshot, v}
+
+    tables =
+      get_tables(ref, v)
+      |> MapSet.new()
+
+    {all, in_use} =
+      case in_use?(ref, v) do
+        true ->
+          in_use = MapSet.union(in_use, tables)
+          all = MapSet.union(all, tables)
+          {all, in_use}
+
+        false ->
+          all = MapSet.union(all, tables)
+          :ets.match_delete(ref, {{:table, v, :_, :_, :_, :_}, :_})
+          :ets.delete(ref, key)
+          {all, in_use}
+      end
+
+    case :ets.next(ref, key) do
+      {:snapshot, next_v} -> sweepable_tables(ref, next_v, max_v, {all, in_use})
+      _ -> sweepable_tables(ref, max_v, max_v, {all, in_use})
+    end
   end
 
   defp enumerate(ref, version, lk, {:table, version, lk, _max, _min, _id} = idx, acc) do
@@ -94,92 +175,6 @@ defmodule Goblin.MVCC do
 
   defp merge(_ref, _version, _lk, _keys, _idx, acc), do: acc
 
-  @spec add_reader(t(), term()) :: {non_neg_integer(), level_key(), non_neg_integer()}
-  def add_reader(ref, reader_key) do
-    :ets.insert(ref, {{:reader, :pending, reader_key}})
-
-    case current_meta(ref) do
-      {seq, max_lk, version} ->
-        :ets.insert(ref, {{:reader, version, reader_key}})
-        :ets.delete(ref, {:reader, :pending, reader_key})
-        {seq, max_lk, version}
-
-      :empty ->
-        :ets.delete(ref, {:reader, :pending, reader_key})
-        raise "MVCC.add_reader called before any snapshots were published"
-    end
-  end
-
-  @spec release_reader(t(), term()) :: :ok
-  def release_reader(ref, reader_key) do
-    :ets.match_delete(ref, {{:reader, :_, reader_key}})
-    :ok
-  end
-
-  @spec sweep(t()) :: list(Goblin.MemTable.t() | Goblin.DiskTable.t())
-  def sweep(ref) do
-    max_v =
-      case current_meta(ref) do
-        :empty -> 0
-        {_, _, max_v} -> max_v
-      end
-
-    first_v =
-      case :ets.next(ref, {:snapshot, -1}) do
-        {:snapshot, v} -> v
-        _ -> max_v
-      end
-
-    case has_pending_reader?(ref) do
-      true -> []
-      false -> sweepable_tables(ref, first_v, max_v)
-    end
-  end
-
-  defp sweepable_tables(ref, v, max_v, acc \\ {MapSet.new(), MapSet.new()})
-
-  defp sweepable_tables(ref, v, max_v, {all, in_use}) when v >= max_v do
-    in_use =
-      get_tables(ref, max_v)
-      # |> Map.values()
-      # |> List.flatten()
-      |> MapSet.new()
-      |> MapSet.union(in_use)
-
-    MapSet.difference(all, in_use)
-    |> MapSet.to_list()
-  end
-
-  defp sweepable_tables(ref, v, max_v, {all, in_use}) do
-    key = {:snapshot, v}
-
-    tables =
-      get_tables(ref, v)
-      # |> Map.values()
-      # |> List.flatten()
-      |> MapSet.new()
-
-    {all, in_use} =
-      case in_use?(ref, v) do
-        true ->
-          in_use = MapSet.union(in_use, tables)
-          all = MapSet.union(all, tables)
-          {all, in_use}
-
-        false ->
-          all = MapSet.union(all, tables)
-          :ets.delete(ref, key)
-          {all, in_use}
-      end
-
-    case :ets.next(ref, key) do
-      {:snapshot, next_v} -> sweepable_tables(ref, next_v, max_v, {all, in_use})
-      _ -> sweepable_tables(ref, max_v, max_v, {all, in_use})
-    end
-  end
-
-  defp in_use?(ref, v), do: :ets.match(ref, {{:reader, v, :_}}) != []
-
   defp current_meta(ref) do
     case :ets.prev(ref, {:snapshot, nil}) do
       {:snapshot, version} = key ->
@@ -192,5 +187,6 @@ defmodule Goblin.MVCC do
     end
   end
 
+  defp in_use?(ref, v), do: :ets.match(ref, {{:reader, v, :_}}) != []
   defp has_pending_reader?(ref), do: :ets.match(ref, {{:reader, :pending, :_}}) != []
 end
