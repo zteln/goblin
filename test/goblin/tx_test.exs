@@ -8,6 +8,7 @@ defmodule Goblin.TxTest do
       mode: opts[:mode] || :write,
       sequence: opts[:sequence] || 0,
       tx_id: opts[:tx_id] || 0,
+      tx_key: opts[:tx_key] || make_ref(),
       mvcc: opts[:mvcc],
       max_level_key: opts[:max_level_key] || -1
     }
@@ -132,6 +133,30 @@ defmodule Goblin.TxTest do
       refute Tx.has_key?(tx, :key)
       tx = Tx.put(tx, :key, :val)
       assert Tx.has_key?(tx, :key)
+    end
+  end
+
+  describe "scan/1/2" do
+    setup do
+      mvcc = Goblin.MVCC.new()
+      Goblin.MVCC.put_snapshot(mvcc, %{}, 0)
+      %{mvcc: mvcc}
+    end
+
+    test "returns lazy stream over keys", ctx do
+      tx_key = make_ref()
+      tx = new_tx(mvcc: ctx.mvcc, tx_key: tx_key)
+      Goblin.MVCC.add_reader(ctx.mvcc, tx_key)
+      tx = Tx.put(tx, :key, :val)
+      assert [key: :val] == Goblin.Tx.scan(tx) |> Enum.to_list()
+    end
+
+    test "raises if transaction reader is not alive", ctx do
+      tx = new_tx(mvcc: ctx.mvcc)
+
+      assert_raise RuntimeError, fn ->
+        Tx.scan(tx) |> Enum.to_list()
+      end
     end
   end
 

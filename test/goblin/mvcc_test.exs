@@ -75,7 +75,7 @@ defmodule Goblin.MVCCTest do
     end
   end
 
-  describe "add_reader/2, release_reader/2" do
+  describe "add_reader/2, release_reader/2, reader_alive?/3" do
     test "pins to current snapshot", ctx do
       reader_key = make_ref()
       MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
@@ -113,6 +113,14 @@ defmodule Goblin.MVCCTest do
       key = make_ref()
       assert_raise RuntimeError, fn -> MVCC.add_reader(ctx.mvcc, key) end
       assert [] == :ets.match(ctx.mvcc, {{:reader, :_, key}})
+    end
+
+    test "returns boolean indicating if reader exists or not", ctx do
+      key = make_ref()
+      MVCC.put_snapshot(ctx.mvcc, %{}, 0)
+      refute MVCC.reader_alive?(ctx.mvcc, 0, key)
+      MVCC.add_reader(ctx.mvcc, key)
+      assert MVCC.reader_alive?(ctx.mvcc, 0, key)
     end
   end
 

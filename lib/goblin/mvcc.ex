@@ -89,6 +89,11 @@ defmodule Goblin.MVCC do
     :ok
   end
 
+  @spec reader_alive?(t(), non_neg_integer(), term()) :: boolean()
+  def reader_alive?(ref, version, reader_key) do
+    :ets.member(ref, {:reader, version, reader_key})
+  end
+
   @spec sweep(t()) :: list(table())
   def sweep(ref) do
     max_v =

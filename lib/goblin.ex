@@ -139,6 +139,7 @@ defmodule Goblin do
           mode: :write,
           mvcc: mvcc,
           tx_id: tx_id,
+          tx_key: tx_key,
           sequence: seq,
           max_level_key: max_lk
         }
@@ -539,6 +540,7 @@ defmodule Goblin do
       mode: :read,
       mvcc: mvcc,
       tx_id: tx_id,
+      tx_key: tx_key,
       sequence: seq,
       max_level_key: max_lk
     }
@@ -691,12 +693,11 @@ defmodule Goblin do
     mvcc = get_mvcc(db)
     tx_key = make_ref()
 
-    Tx.scan(
+    Tx.scan_stream(
       fn ->
         :gen_statem.cast(db, {:track_reader, self(), tx_key})
         {seq, _max_lk, tx_id} = MVCC.add_reader(mvcc, tx_key)
         {seq, MVCC.get_tables(mvcc, tx_id)}
-        # {seq, MVCC.get_tables(mvcc, tx_id) |> Map.values() |> List.flatten()}
       end,
       Keyword.put(opts, :after, fn ->
         MVCC.release_reader(mvcc, tx_key)

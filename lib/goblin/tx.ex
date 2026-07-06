@@ -23,6 +23,7 @@ defmodule Goblin.Tx do
     :mode,
     :sequence,
     :tx_id,
+    :tx_key,
     :mvcc,
     :max_level_key,
     commits: []
@@ -289,6 +290,7 @@ defmodule Goblin.Tx do
     Goblin.Tx.has_key?(tx, :alice)
     # => true
   """
+  @spec has_key?(t(), term(), keyword()) :: boolean()
   def has_key?(tx, key, opts \\ []) do
     key = tag_key(key, opts[:tag])
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
@@ -307,6 +309,51 @@ defmodule Goblin.Tx do
         _ -> {:cont, false}
       end
     end)
+  end
+
+  @doc """
+  Lazily streams the database inside a transaction, including pending writes.
+  The transaction must be enumerated inside the transaction, otherwise `RuntimeError` is raised.
+
+  ## Parameters
+    
+  - `tx` - The transaction struct
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:min` - Minimum key, inclusive (optional)
+    - `:max` - Maximum key, inclusive (optional)
+    - `:tag` - Tag the keys are namespaced under
+
+  ## Returns
+
+  - A lazy stream
+
+  ## Examples
+
+    Goblin.Tx.scan(tx) |> Enum.to_list()
+    # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
+
+    Goblin.Tx.scan(tx, min: :bob) |> Enum.to_list()
+    # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
+
+    Goblin.Tx.scan(tx, min: :alice, max: :bob) |> Enum.to_list()
+    # => [{:alice, "Alice"}, {:bob, "Bob"}]
+  """
+  @spec scan(t(), keyword()) :: Enumerable.t({term(), term()})
+  def scan(tx, opts \\ []) do
+    scan_stream(
+      fn ->
+        if not MVCC.reader_alive?(tx.mvcc, tx.tx_id, tx.tx_key),
+          do:
+            raise(
+              "Goblin.Tx.scan/2 stream was enumerated outside its transaction; " <>
+                "consume it inside the read/transaction callback that created it"
+            )
+
+        tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
+        {tx.sequence, [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id)]}
+      end,
+      opts
+    )
   end
 
   @doc """
@@ -354,9 +401,9 @@ defmodule Goblin.Tx do
   def abort(_tx, reply \\ :error), do: {:abort, reply}
 
   @doc false
-  @spec scan((-> {non_neg_integer(), list(term())}), keyword()) ::
+  @spec scan_stream((-> {non_neg_integer(), list(term())}), keyword()) ::
           Enumerable.t({term(), term()})
-  def scan(seq_and_tables, opts) do
+  def scan_stream(seq_and_tables, opts) do
     {min, max} = tag_bounds(opts[:min], opts[:max], opts[:tag])
 
     opts =

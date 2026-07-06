@@ -11,6 +11,7 @@
     * Added `Goblin.update/4/5` and `Goblin.update_multi/3/4` functions
     * Added `Goblin.get_and_update/3/4` and `Goblin.get_and_update_multi/3/4` functions
     * Added `Goblin.cas/4/5` function
+    * Added `Goblin.Tx.scan/1/2` function
 
 ## v0.11.0 (2026-06-16)
 * Breaking changes
