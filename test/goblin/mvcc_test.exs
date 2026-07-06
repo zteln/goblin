@@ -35,34 +35,43 @@ defmodule Goblin.MVCCTest do
       snapshot = %{
         -1 => [%{id: :mem1}, %{id: :mem2}],
         0 => [%{id: :disk0}],
-        1 => [%{id: :disk1}]
+        1 => [%{id: :disk1, key_range: {:min, :max}}]
       }
 
       MVCC.put_snapshot(ctx.mvcc, snapshot, 0)
-      assert snapshot == MVCC.get_tables(ctx.mvcc, 0)
+
+      assert snapshot |> Map.values() |> List.flatten() |> MapSet.new() ==
+               MVCC.get_tables(ctx.mvcc, 0) |> MapSet.new()
     end
 
     test "only gets tables for provided version", ctx do
       snapshot1 = %{
         -1 => [%{id: :mem1}, %{id: :mem2}],
         0 => [%{id: :disk0}],
-        1 => [%{id: :disk1}]
+        1 => [%{id: :disk1, key_range: {:min, :max}}]
       }
 
       snapshot2 = %{
         -1 => [%{id: :mem2}, %{id: :mem3}],
-        1 => [%{id: :disk1}]
+        1 => [%{id: :disk1, key_range: {:min, :max}}]
       }
 
       MVCC.put_snapshot(ctx.mvcc, snapshot1, 0)
       MVCC.put_snapshot(ctx.mvcc, snapshot2, 0)
 
-      assert snapshot1 == MVCC.get_tables(ctx.mvcc, 0)
-      assert snapshot2 == MVCC.get_tables(ctx.mvcc, 1)
+      assert snapshot1
+             |> Map.values()
+             |> List.flatten()
+             |> MapSet.new() == MVCC.get_tables(ctx.mvcc, 0) |> MapSet.new()
+
+      assert snapshot2
+             |> Map.values()
+             |> List.flatten()
+             |> MapSet.new() == MVCC.get_tables(ctx.mvcc, 1) |> MapSet.new()
     end
 
     test "returns empty for unknown version", ctx do
-      assert %{} == MVCC.get_tables(ctx.mvcc, 99)
+      assert [] == MVCC.get_tables(ctx.mvcc, 99)
     end
   end
 
@@ -73,7 +82,7 @@ defmodule Goblin.MVCCTest do
       assert {0, -1, v1} = MVCC.add_reader(ctx.mvcc, reader_key)
       MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 1)
       assert v1 == 0
-      assert %{-1 => [%{id: :mem1}]} == MVCC.get_tables(ctx.mvcc, v1)
+      assert [%{id: :mem1}] == MVCC.get_tables(ctx.mvcc, v1)
     end
 
     test "can release non-existing reader", ctx do
@@ -172,11 +181,11 @@ defmodule Goblin.MVCCTest do
           {mts, dts} = Enum.split_with(tables, &match?(%Goblin.MemTable{}, &1))
           levels = Enum.group_by(dts, & &1.level_key) |> Map.put(-1, mts)
           :ok = MVCC.put_snapshot(mvcc, levels, v)
-          {v, levels}
+          {v, tables}
         end)
 
       for {v, want} <- expected do
-        assert want == MVCC.get_tables(mvcc, v)
+        assert want |> MapSet.new() == MVCC.get_tables(mvcc, v) |> MapSet.new()
       end
     end
   end
@@ -200,7 +209,7 @@ defmodule Goblin.MVCCTest do
     levels = Enum.group_by(dts, & &1.level_key) |> Map.put(-1, mts)
     v = state.current + 1
     :ok = MVCC.put_snapshot(mvcc, levels, state.seq + 1)
-    assert levels == MVCC.get_tables(mvcc, v)
+    assert tables |> MapSet.new() == MVCC.get_tables(mvcc, v) |> MapSet.new()
 
     %{
       state
@@ -239,7 +248,7 @@ defmodule Goblin.MVCCTest do
     protected_versions = MapSet.new([state.current | Map.values(state.readers)])
 
     for v <- protected_versions do
-      live = MVCC.get_tables(mvcc, v) |> Map.values() |> List.flatten() |> MapSet.new()
+      live = MVCC.get_tables(mvcc, v) |> MapSet.new()
       assert MapSet.disjoint?(swept, live)
       assert live == state.versions[v]
     end
@@ -258,12 +267,23 @@ defmodule Goblin.MVCCTest do
   end
 
   defp pool_gen do
-    gen all(kinds <- list_of(member_of([:mem, :disk]), min_length: 1, max_length: 8)) do
+    gen all(
+          kinds <- list_of(member_of([:mem, :disk]), min_length: 1, max_length: 8),
+          min <- term(),
+          max <- term()
+        ) do
       kinds
       |> Enum.with_index()
       |> Enum.map(fn
-        {:mem, i} -> %Goblin.MemTable{id: "t#{i}"}
-        {:disk, i} -> %Goblin.DiskTable{id: "t#{i}", level_key: rem(i, 3)}
+        {:mem, i} ->
+          %Goblin.MemTable{id: "t#{i}"}
+
+        {:disk, i} ->
+          %Goblin.DiskTable{
+            id: "t#{i}",
+            level_key: rem(i, 3),
+            key_range: {min(min, max), max(min, max)}
+          }
       end)
     end
   end
