@@ -681,7 +681,8 @@ defmodule Goblin do
      [{:next_event, :internal, :sweep}]}
   end
 
-  def idle(:info, {ref, merge_result}, db) do
+  def idle(:info, {ref, merge_result}, %{flushing: flushing, compacting: compacting} = db)
+      when is_map_key(flushing, ref) or is_map_key(compacting, ref) do
     case handle_merge(db, ref, merge_result) do
       {:ok, db} -> {:next_state, :sweeping, db, [{:next_event, :internal, :sweep}]}
       {:error, reason} -> {:stop, reason, db}
@@ -694,6 +695,8 @@ defmodule Goblin do
       {:error, reason} -> {:stop, reason, db}
     end
   end
+
+  def idle(:info, _, db), do: {:keep_state, db}
 
   @doc false
   def occupied(:internal, :next_writer, db) do
@@ -729,7 +732,6 @@ defmodule Goblin do
     new_seq = tx.sequence
     {_, monitor_ref, _} = db.writer
     Process.demonitor(monitor_ref, [:flush])
-    # commits = Enum.reverse(tx.commits)
 
     with :ok <- MemTable.append(db.mem_table, tx.commits) do
       db = %{db | sequence: new_seq, writer: nil}
@@ -790,7 +792,8 @@ defmodule Goblin do
     {:keep_state, %{db | writer_queue: writer_queue}}
   end
 
-  def occupied(:info, {ref, merge_result}, db) do
+  def occupied(:info, {ref, merge_result}, %{flushing: flushing, compacting: compacting} = db)
+      when is_map_key(flushing, ref) or is_map_key(compacting, ref) do
     case handle_merge(db, ref, merge_result) do
       {:ok, db} -> {:keep_state, db}
       {:error, reason} -> {:stop, reason, db}
@@ -804,6 +807,8 @@ defmodule Goblin do
       {:error, reason} -> {:stop, reason, db}
     end
   end
+
+  def occupied(:info, _, db), do: {:keep_state, db}
 
   @doc false
   def sweeping(:internal, :sweep, db) do
@@ -832,7 +837,9 @@ defmodule Goblin do
     with {:ok, dirt} <- cleanup(dirt),
          {:ok, _} <- cleanup(orphans),
          {:ok, manifest} <- Manifest.sweep_dirt(db.manifest, dirt),
-         {:ok, db} <- handle_restore(%{db | manifest: manifest}, files) do
+         {:ok, db} <- handle_restore(%{db | manifest: manifest}, files),
+         {:ok, db} <- maybe_flush(db) do
+      db = maybe_compact(db)
       publish_snapshot(db)
       mark_ready(self(), db.mvcc)
       {:ok, db}
@@ -840,34 +847,26 @@ defmodule Goblin do
   end
 
   defp handle_merge(db, ref, {:ok, new, old}) do
-    if Map.has_key?(db.flushing, ref) or Map.has_key?(db.compacting, ref) do
-      flushing = Map.delete(db.flushing, ref)
-      compacting = Map.delete(db.compacting, ref)
+    flushing = Map.delete(db.flushing, ref)
+    compacting = Map.delete(db.compacting, ref)
 
-      with {:ok, manifest} <- Manifest.update(db.manifest, tag(new), tag(old), db.sequence) do
-        levels = Enum.reduce(new, db.levels, &Levels.put(&2, &1))
+    with {:ok, manifest} <- Manifest.update(db.manifest, tag(new), tag(old), db.sequence) do
+      levels = Enum.reduce(new, db.levels, &Levels.put(&2, &1))
 
-        db = %{
-          db
-          | levels: levels,
-            manifest: manifest,
-            flushing: flushing,
-            compacting: compacting
-        }
+      db = %{
+        db
+        | levels: levels,
+          manifest: manifest,
+          flushing: flushing,
+          compacting: compacting
+      }
 
-        publish_snapshot(db)
-        {:ok, compact(db)}
-      end
-    else
-      {:ok, db}
+      publish_snapshot(db)
+      {:ok, maybe_compact(db)}
     end
   end
 
-  defp handle_merge(db, ref, {:error, reason}) do
-    if Map.has_key?(db.flushing, ref) or Map.has_key?(db.compacting, ref),
-      do: {:error, reason},
-      else: {:ok, db}
-  end
+  defp handle_merge(_db, _ref, {:error, _reason} = error), do: error
 
   defp handle_export(db, export_dir) do
     {_, files, _} = Manifest.snapshot(db.manifest)
@@ -928,6 +927,44 @@ defmodule Goblin do
     end
   end
 
+  defp handle_restore(db, []) do
+    with {:ok, db} <- open_mem_table(db),
+         {:ok, manifest} <- Manifest.update(db.manifest, tag([db.mem_table]), [], db.sequence) do
+      {:ok, %{db | manifest: manifest}}
+    end
+  end
+
+  defp handle_restore(db, files) do
+    Enum.reduce_while(files, {:ok, db}, fn
+      {:mem, file}, {:ok, %{mem_table: nil} = acc} ->
+        case open_mem_table(acc, file) do
+          {:ok, db} -> {:cont, {:ok, db}}
+          error -> {:halt, error}
+        end
+
+      {:mem, file}, {:ok, acc} ->
+        mt = acc.mem_table
+
+        with :ok <- close_mem_table(acc),
+             {:ok, db} <- open_mem_table(acc, file) do
+          db = merge(db, 0, [mt])
+          {:cont, {:ok, db}}
+        else
+          error -> {:halt, error}
+        end
+
+      {:disk, file}, {:ok, acc} ->
+        case DiskTable.from_file(file) do
+          {:ok, dt} ->
+            levels = Levels.put(acc.levels, dt)
+            {:cont, {:ok, %{acc | levels: levels}}}
+
+          error ->
+            {:halt, error}
+        end
+    end)
+  end
+
   defp publish_snapshot(db) do
     flushing_mts = Map.values(db.flushing) |> Enum.map(fn {_task, mt} -> mt end)
     mts = [db.mem_table | flushing_mts]
@@ -941,62 +978,21 @@ defmodule Goblin do
     MVCC.put_snapshot(db.mvcc, Map.put(levels, -1, mts), db.sequence)
   end
 
-  defp handle_restore(db, []) do
-    if is_nil(db.mem_table) do
-      with {:ok, db} <- flush(db),
-           {:ok, manifest} <- Manifest.update(db.manifest, tag([db.mem_table]), [], db.sequence) do
-        {:ok, %{db | manifest: manifest}}
-      end
-    else
-      with {:ok, db} <- maybe_flush(db) do
-        {:ok, compact(db)}
-      end
-    end
-  end
-
-  defp handle_restore(db, [{:mem, file} | files]) do
-    with {:ok, db} <- flush(db, file) do
-      handle_restore(db, files)
-    end
-  end
-
-  defp handle_restore(db, [{:disk, file} | files]) do
-    with {:ok, dt} <- DiskTable.from_file(file) do
-      levels = Levels.put(db.levels, dt)
-      db = %{db | levels: levels}
-      handle_restore(db, files)
-    end
-  end
-
   defp maybe_flush(db) do
     if MemTable.size(db.mem_table) >= db.opts[:mem_limit] do
-      with {:ok, db} <- flush(db),
+      db = merge(db, 0, [db.mem_table])
+
+      with :ok <- close_mem_table(db),
+           {:ok, db} <- open_mem_table(db),
            {:ok, manifest} <- Manifest.update(db.manifest, tag([db.mem_table]), [], db.sequence) do
-        db = %{db | manifest: manifest}
-        publish_snapshot(db)
-        {:ok, db}
+        {:ok, %{db | manifest: manifest}}
       end
     else
       {:ok, db}
     end
   end
 
-  defp flush(db, file \\ nil) do
-    file = file || gen_file(db.file_counter, db.data_dir, @wal_suffix)
-
-    with {:ok, seq, new_mt} <- MemTable.new(file),
-         :ok <- close_wal(db.mem_table) do
-      db =
-        case db.mem_table do
-          nil -> db
-          mt -> merge(db, 0, [mt])
-        end
-
-      {:ok, %{db | mem_table: new_mt, sequence: max(db.sequence, seq)}}
-    end
-  end
-
-  defp compact(%{compacting: compacting} = db) when map_size(compacting) == 0 do
+  defp maybe_compact(%{compacting: compacting} = db) when map_size(compacting) == 0 do
     case Levels.next(db.levels, db.opts) do
       nil ->
         db
@@ -1006,7 +1002,7 @@ defmodule Goblin do
     end
   end
 
-  defp compact(db), do: db
+  defp maybe_compact(db), do: db
 
   defp merge(db, lk, tables, filter_tombstones? \\ false) do
     opts = [
@@ -1079,8 +1075,18 @@ defmodule Goblin do
   defp db_flushing?(db), do: map_size(db.flushing) != 0
   defp db_compacting?(db), do: map_size(db.compacting) != 0
 
-  defp close_wal(nil), do: :ok
-  defp close_wal(mt), do: MemTable.close(mt)
+  defp open_mem_table(db) do
+    file = gen_file(db.file_counter, db.data_dir, @wal_suffix)
+    open_mem_table(db, file)
+  end
+
+  defp open_mem_table(db, file) do
+    with {:ok, seq, mt} <- MemTable.new(file) do
+      {:ok, %{db | mem_table: mt, sequence: max(db.sequence, seq)}}
+    end
+  end
+
+  defp close_mem_table(db), do: MemTable.close(db.mem_table)
 
   defp cleanup(tables, acc \\ [])
   defp cleanup([], acc), do: {:ok, acc}
