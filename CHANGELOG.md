@@ -5,7 +5,12 @@
     * The header for each block is reduced. Files written by previous versions are incompatible.
 * Enhancements
     * Orphan files are removed when starting the database.
-    * add `Goblin.has_key?` and `Goblin.Tx.has_key?` functions
+    * Read path has been optimized
+* Added
+    * Added `Goblin.has_key?` and `Goblin.Tx.has_key?` functions
+    * Added `Goblin.update/4/5` and `Goblin.update_multi/3/4` functions
+    * Added `Goblin.get_and_update/3/4` and `Goblin.get_and_update_multi/3/4` functions
+    * Added `Goblin.cas/4/5` function
 
 ## v0.11.0 (2026-06-16)
 * Breaking changes

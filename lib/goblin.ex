@@ -99,7 +99,7 @@ defmodule Goblin do
   - `db` - The database server (PID or registered name)
   - `callback` - A function that takes a `Goblin.Tx.t()` and returns a transaction result
   - `opts` - A keyword list with options:
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -122,6 +122,11 @@ defmodule Goblin do
       end)
       # => :error
   """
+  @spec transaction(
+          :gen_statem.server_ref(),
+          (Tx.t() -> {:commit, Tx.t(), term()} | {:error, :aborted}),
+          keyword()
+        ) :: term()
   def transaction(db, callback, opts \\ []) do
     mvcc = get_mvcc(db)
     tx_key = make_ref()
@@ -159,7 +164,10 @@ defmodule Goblin do
 
         case result do
           {:commit, tx, reply} ->
-            with :ok <- commit_transaction(db, tx, opts), do: reply
+            case commit_transaction(db, tx, opts) do
+              :ok -> reply
+              error -> raise "Unable to commit due to following error: #{inspect(error)}"
+            end
 
           {:abort, reply} ->
             cancel_transaction(db, tx_key, opts)
@@ -171,7 +179,7 @@ defmodule Goblin do
         end
 
       {:error, :nested_transaction} ->
-        raise "cannot start a transaction from within a transaction"
+        raise "Cannot start a transaction from within a transaction"
     end
   end
 
@@ -185,7 +193,7 @@ defmodule Goblin do
   - `value` - Any Elixir term to be associated with `key`
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the key under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -199,6 +207,7 @@ defmodule Goblin do
       Goblin.put(db, :alice, "Alice", tag: :admins)
       # => :ok
   """
+  @spec put(:gen_statem.server_ref(), term(), keyword()) :: :ok
   def put(db, key, val, opts \\ []) do
     transaction(db, fn tx ->
       tx
@@ -216,7 +225,7 @@ defmodule Goblin do
   - `pairs` - A list of `{key, value}` tuples
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -227,11 +236,210 @@ defmodule Goblin do
       Goblin.put_multi(db, [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}])
       # => :ok
   """
+  @spec put_multi(:gen_statem.server_ref(), Enumerable.t({term(), term()}), keyword()) ::
+          :ok
   def put_multi(db, pairs, opts \\ []) do
     transaction(db, fn tx ->
       tx
       |> Tx.put_multi(pairs, opts)
       |> Tx.commit()
+    end)
+  end
+
+  @doc """
+  Updates the value corresponding to `key` either via the provided function or via `default`. 
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `key` - The key to update
+  - `default` - Default value if key is not present
+  - `updater` - A function that updates the value
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag to namespace the keys under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
+
+  ## Returns
+
+  - `:ok`
+
+  ## Examples
+
+      Goblin.update(db, :counter, 1, &(&1 + 1))
+      # => :ok
+  """
+  @spec update(:gen_statem.server_ref(), term(), term(), (term() -> term()), keyword()) ::
+          :ok
+  def update(db, key, default, updater, opts \\ []) do
+    transaction(db, fn tx ->
+      new =
+        case Tx.get(tx, key, Keyword.put(opts, :default, :"$goblin_missing")) do
+          :"$goblin_missing" -> default
+          old -> updater.(old)
+        end
+
+      tx
+      |> Tx.put(key, new, opts)
+      |> Tx.commit()
+    end)
+  end
+
+  @doc """
+  Updates multiple values corresponding to multiple keys via the provided function.
+  If any of the provided keys are not present in the database, then they are not inserted with some default value.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `keys` - The keys to update
+  - `updater` - A function that updates the value
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag to namespace the keys under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
+
+  ## Returns
+
+  - `:ok`
+
+  ## Examples
+
+      Goblin.update_multi(db, [:alice, :bob, :charlie], &String.upcase(&1))
+      # => :ok
+  """
+  @spec update_multi(:gen_statem.server_ref(), list(term()), (term() -> term()), keyword()) ::
+          :ok
+  def update_multi(db, keys, updater, opts \\ []) do
+    transaction(db, fn tx ->
+      new =
+        Tx.get_multi(tx, keys, opts)
+        |> Enum.map(fn {key, old} -> {key, updater.(old)} end)
+
+      tx
+      |> Tx.put_multi(new, opts)
+      |> Tx.commit()
+    end)
+  end
+
+  @doc """
+  Updates a value corresponding to `key` via the provided function and can return an arbitrary value.
+  The provided function gets the previous value (`nil` if previously not set) as the argument.
+  The provided function must return a two-tuple with the first element as the return value and the second element as the updated value.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `key` - The key to update
+  - `updater` - A function that updates the value
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag to namespace the keys under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
+
+  ## Returns
+
+  - Reply from the provided function
+
+  ## Examples
+
+      Goblin.get_and_update(db, :alice, fn name -> 
+        {String.upcase(name), name <> "alice"} 
+      end)
+      # => "ALICE"
+  """
+  @spec get_and_update(:gen_statem.server_ref(), term(), (term() -> {term(), term()}), keyword()) ::
+          term()
+  def get_and_update(db, key, updater, opts \\ []) do
+    transaction(db, fn tx ->
+      old = Tx.get(tx, key, opts)
+      {reply, new} = updater.(old)
+
+      tx
+      |> Tx.put(key, new, opts)
+      |> Tx.commit(reply)
+    end)
+  end
+
+  @doc """
+  Gets and updates multiple keys in a single transaction via a provided function.
+  Any keys not present in the database are not updated nor inserted with some default value.
+  The provided function must return a two-tuple with the first element as the return value and the second element as the updated value.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `keys` - The key to update
+  - `updater` - A function that updates the value
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag to namespace the keys under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
+
+  ## Returns
+
+  - Reply from the provided function
+
+  ## Examples
+
+      Goblin.get_and_update_multi(db, [:alice, :bob, :charlie], fn entries -> 
+        entries = Enum.map(entries, fn {key, val} -> {key, String.upcase(val)} end)
+        {Map.keys(entries), entries}
+      end)
+      # => [:alice, :bob, :charlie]
+  """
+  @spec get_and_update_multi(
+          :gen_statem.server_ref(),
+          list(term()),
+          (map() -> {term(), map()}),
+          keyword()
+        ) :: term()
+  def get_and_update_multi(db, keys, updater, opts \\ []) do
+    transaction(db, fn tx ->
+      old = Tx.get_multi(tx, keys, opts) |> Enum.into(%{})
+      {reply, new} = updater.(old)
+
+      tx
+      |> Tx.put_multi(new, opts)
+      |> Tx.commit(reply)
+    end)
+  end
+
+  @doc """
+  Compare and swap a value corresponding to `key`. 
+  Returns `true` if swapped, `false` otherwise.
+
+  Comparison is done via `==`.
+
+  ## Parameters
+
+  - `db` - The database server (PID or registered name)
+  - `key` - The key to update
+  - `old` - The value to compare with
+  - `new` - The value to swap to
+  - `opts` - A keyword list with the following options (default: `[]`):
+    - `:tag` - Tag to namespace the keys under
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
+
+  ## Returns
+
+  - `true` if swapped
+  - `false` if not swapped
+
+  ## Examples
+
+      Goblin.cas(db, :alice, "alice", "ALICE")
+      # => true
+  """
+  @spec cas(:gen_statem.server_ref(), term(), term(), term(), keyword()) :: boolean()
+  def cas(db, key, old, new, opts \\ []) do
+    transaction(db, fn tx ->
+      case Tx.get(tx, key, opts) do
+        from_store when from_store == old ->
+          tx
+          |> Tx.put(key, new, opts)
+          |> Tx.commit(true)
+
+        _ ->
+          tx
+          |> Tx.abort(false)
+      end
     end)
   end
 
@@ -244,7 +452,7 @@ defmodule Goblin do
   - `key` - The key to remove
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag the key is namespaced under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -275,7 +483,7 @@ defmodule Goblin do
   - `keys` - A list of keys to remove
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag the keys are namespaced under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `5000`)
+    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 

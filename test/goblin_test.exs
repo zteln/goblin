@@ -526,6 +526,68 @@ defmodule GoblinTest do
     end
   end
 
+  describe "writes" do
+    setup ctx, do: %{db: start_supervised_db(ctx)}
+
+    test "update sets default if key is not set", ctx do
+      assert nil == Goblin.get(ctx.db, :a)
+      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
+      assert 1 == Goblin.get(ctx.db, :a)
+    end
+
+    test "update updates with updating function", ctx do
+      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
+      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
+      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
+      assert 3 == Goblin.get(ctx.db, :a)
+    end
+
+    test "update_multi updates all provided keys", ctx do
+      Goblin.put_multi(ctx.db, %{a: 1, b: 1, c: 1, d: 1})
+      assert :ok == Goblin.update_multi(ctx.db, [:a, :b, :c], &(&1 + 1))
+
+      assert %{a: 2, b: 2, c: 2, d: 1} ==
+               Goblin.get_multi(ctx.db, [:a, :b, :c, :d]) |> Enum.into(%{})
+    end
+
+    test "update_multi does not update non-existing keys", ctx do
+      Goblin.put_multi(ctx.db, %{a: 1, b: 1})
+      assert nil == Goblin.get(ctx.db, :c)
+      assert :ok == Goblin.update_multi(ctx.db, [:a, :b, :c], &(&1 + 1))
+
+      assert %{a: 2, b: 2} ==
+               Goblin.get_multi(ctx.db, [:a, :b, :c]) |> Enum.into(%{})
+    end
+
+    test "get_and_update passes nil if key is not set to updater", ctx do
+      assert :ok ==
+               Goblin.get_and_update(ctx.db, :a, fn val ->
+                 assert is_nil(val)
+                 {:ok, val}
+               end)
+    end
+
+    test "get_and_update_multi gets all keys and values, exluding non-existing keys", ctx do
+      Goblin.put_multi(ctx.db, %{a: 1, b: 1})
+
+      assert :ok ==
+               Goblin.get_and_update_multi(ctx.db, [:a, :b, :c], fn entries ->
+                 assert MapSet.new([:a, :b]) == Map.keys(entries) |> MapSet.new()
+                 entries = Enum.into(entries, %{}, fn {k, v} -> {k, v + 1} end)
+                 {:ok, entries}
+               end)
+
+      assert %{a: 2, b: 2} == Goblin.get_multi(ctx.db, [:a, :b]) |> Enum.into(%{})
+    end
+
+    test "cas returns boolean indicating if swapped or not", ctx do
+      Goblin.put(ctx.db, :counter, 1)
+      assert Goblin.cas(ctx.db, :counter, 1, 2)
+      refute Goblin.cas(ctx.db, :counter, 1, 2)
+      assert Goblin.cas(ctx.db, :counter, 2, 3)
+    end
+  end
+
   describe "queries" do
     setup ctx, do: %{db: start_supervised_db(ctx)}
 
@@ -861,7 +923,7 @@ defmodule GoblinTest do
     test "cannot have nested transactions", ctx do
       db = start_supervised_db(ctx)
 
-      assert_raise RuntimeError, "cannot start a transaction from within a transaction", fn ->
+      assert_raise RuntimeError, "Cannot start a transaction from within a transaction", fn ->
         Goblin.transaction(db, fn _tx ->
           Goblin.put(db, :key, :val)
         end)
