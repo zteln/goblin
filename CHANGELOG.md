@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.12.0 (unreleased)
+## v0.12.0 (2026-07-07)
 * Breaking changes
     * The header for each block is reduced. Files written by previous versions are incompatible.
 * Enhancements
