@@ -248,6 +248,8 @@ defmodule Goblin do
   end
 
   @doc """
+  Updates a key.
+
   Updates the value corresponding to `key` either via the provided function or via `default`. 
   See `update_multi` for more information.
 
@@ -283,6 +285,8 @@ defmodule Goblin do
   end
 
   @doc """
+  Updates multiple keys.
+
   Updates multiple values corresponding to multiple keys via the provided function.
   The update function can be of either arity 1 or 2.
   With arity 1, the function receives only the previous value.
@@ -307,6 +311,13 @@ defmodule Goblin do
   ## Examples
 
       Goblin.update_multi(db, [:alice, :bob, :charlie], &String.upcase(&1))
+      # => {:ok, 3}
+
+      Goblin.update_multi(db, [:alice, :bob, :charlie], fn k, v ->
+        if k == :bob,
+          do: String.upcase(v),
+          else: String.downcase(v)
+      end)
       # => {:ok, 3}
   """
   @spec update_multi(
@@ -354,6 +365,8 @@ defmodule Goblin do
   end
 
   @doc """
+  Updates a key and returns a value.
+
   Updates a value corresponding to `key` via the provided function and can return an arbitrary value.
   The provided function gets the previous value (`nil` if previously not set) as the argument.
   The provided function must return a two-tuple with the first element as the return value and the second element as the updated value.
@@ -392,6 +405,8 @@ defmodule Goblin do
   end
 
   @doc """
+  Updates multiple keys and returns a value.
+
   Gets and updates multiple keys in a single transaction via a provided function.
   Any keys that are not already present in the database receive the value set in the `:default` option, if provided, otherwise excluded.
   The provided function must return a two-tuple with the first element as the return value and the second element as the updated value.
@@ -443,6 +458,8 @@ defmodule Goblin do
   end
 
   @doc """
+  Compare and swap a key.
+
   Compare and swap a value corresponding to `key`. 
   Returns `true` if swapped, `false` otherwise.
 
@@ -680,11 +697,11 @@ defmodule Goblin do
 
   ## Examples
 
-    Goblin.has_key?(db, :alice)
-    # => false
-    Goblin.put(db, :alice, "Alice")
-    Goblin.has_key?(db, :alice)
-    # => true
+      Goblin.has_key?(db, :alice)
+      # => false
+      Goblin.put(db, :alice, "Alice")
+      Goblin.has_key?(db, :alice)
+      # => true
   """
   def has_key?(db, key, opts \\ []) do
     read(db, fn tx -> Tx.has_key?(tx, key, opts) end)
