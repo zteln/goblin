@@ -329,14 +329,14 @@ defmodule Goblin.Tx do
 
   ## Examples
 
-    Goblin.Tx.scan(tx) |> Enum.to_list()
-    # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
+      Goblin.Tx.scan(tx) |> Enum.to_list()
+      # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
 
-    Goblin.Tx.scan(tx, min: :bob) |> Enum.to_list()
-    # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
+      Goblin.Tx.scan(tx, min: :bob) |> Enum.to_list()
+      # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
 
-    Goblin.Tx.scan(tx, min: :alice, max: :bob) |> Enum.to_list()
-    # => [{:alice, "Alice"}, {:bob, "Bob"}]
+      Goblin.Tx.scan(tx, min: :alice, max: :bob) |> Enum.to_list()
+      # => [{:alice, "Alice"}, {:bob, "Bob"}]
   """
   @spec scan(t(), keyword()) :: Enumerable.t({term(), term()})
   def scan(tx, opts \\ []) do
