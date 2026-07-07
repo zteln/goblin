@@ -249,15 +249,16 @@ defmodule Goblin do
 
   @doc """
   Updates the value corresponding to `key` either via the provided function or via `default`. 
+  See `update_multi` for more information.
 
   ## Parameters
 
   - `db` - The database server (PID or registered name)
   - `key` - The key to update
-  - `default` - Default value if key is not present
   - `updater` - A function that updates the value
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
+    - `:default` - Default value if key does not already exist
     - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
@@ -266,28 +267,28 @@ defmodule Goblin do
 
   ## Examples
 
-      Goblin.update(db, :counter, 1, &(&1 + 1))
+      Goblin.update(db, :counter, &(&1 + 1), default: 1)
       # => :ok
   """
-  @spec update(:gen_statem.server_ref(), term(), term(), (term() -> term()), keyword()) ::
+  @spec update(
+          :gen_statem.server_ref(),
+          term(),
+          (term() -> term()) | (term(), term() -> term()),
+          keyword()
+        ) ::
           :ok
-  def update(db, key, default, updater, opts \\ []) do
-    transaction(db, fn tx ->
-      new =
-        case Tx.get(tx, key, Keyword.put(opts, :default, :"$goblin_missing")) do
-          :"$goblin_missing" -> default
-          old -> updater.(old)
-        end
-
-      tx
-      |> Tx.put(key, new, opts)
-      |> Tx.commit()
-    end)
+  def update(db, key, updater, opts \\ []) do
+    {:ok, _} = update_multi(db, [key], updater, opts)
+    :ok
   end
 
   @doc """
   Updates multiple values corresponding to multiple keys via the provided function.
-  If any of the provided keys are not present in the database, then they are not inserted with some default value.
+  The update function can be of either arity 1 or 2.
+  With arity 1, the function receives only the previous value.
+  With arity 2, the function receives both the key and the previous value. 
+  For any non-existing keys, they are inserted with the `:default` option.
+  If `:default` is not provided, then non-existing keys are not inserted.
 
   ## Parameters
 
@@ -296,28 +297,59 @@ defmodule Goblin do
   - `updater` - A function that updates the value
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
+    - `:default` - Default value for non-existing keys
     - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
-  - `:ok`
+  - `{:ok, no_entries_updated}`
 
   ## Examples
 
       Goblin.update_multi(db, [:alice, :bob, :charlie], &String.upcase(&1))
-      # => :ok
+      # => {:ok, 3}
   """
-  @spec update_multi(:gen_statem.server_ref(), list(term()), (term() -> term()), keyword()) ::
-          :ok
+  @spec update_multi(
+          :gen_statem.server_ref(),
+          list(term()),
+          (term() -> term()) | (term(), term() -> term()),
+          keyword()
+        ) ::
+          {:ok, non_neg_integer()}
   def update_multi(db, keys, updater, opts \\ []) do
+    keys =
+      keys
+      |> Enum.sort(:desc)
+      |> Enum.reduce([], fn
+        key1, [key2 | _] = acc when key1 == key2 -> acc
+        key, acc -> [key | acc]
+      end)
+
     transaction(db, fn tx ->
-      new =
-        Tx.get_multi(tx, keys, opts)
-        |> Enum.map(fn {key, old} -> {key, updater.(old)} end)
+      found = Tx.get_multi(tx, keys, opts)
+
+      updated =
+        Enum.map(found, fn {key, old} ->
+          if is_function(updater, 2),
+            do: {key, updater.(key, old)},
+            else: {key, updater.(old)}
+        end)
+
+      inserted =
+        case Keyword.fetch(opts, :default) do
+          {:ok, default} ->
+            found_keys = MapSet.new(found, &elem(&1, 0))
+            for k <- keys, k not in found_keys, do: {k, default}
+
+          :error ->
+            []
+        end
+
+      new = inserted ++ updated
 
       tx
       |> Tx.put_multi(new, opts)
-      |> Tx.commit()
+      |> Tx.commit({:ok, length(new)})
     end)
   end
 
@@ -361,7 +393,7 @@ defmodule Goblin do
 
   @doc """
   Gets and updates multiple keys in a single transaction via a provided function.
-  Any keys not present in the database are not updated nor inserted with some default value.
+  Any keys that are not already present in the database receive the value set in the `:default` option, if provided, otherwise excluded.
   The provided function must return a two-tuple with the first element as the return value and the second element as the updated value.
 
   ## Parameters
@@ -371,6 +403,7 @@ defmodule Goblin do
   - `updater` - A function that updates the value
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
+    - `:default` - Default value for non-existing keys
     - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
@@ -380,7 +413,7 @@ defmodule Goblin do
   ## Examples
 
       Goblin.get_and_update_multi(db, [:alice, :bob, :charlie], fn entries -> 
-        entries = Enum.map(entries, fn {key, val} -> {key, String.upcase(val)} end)
+        entries = Enum.into(entries, %{}, fn {key, val} -> {key, String.upcase(val)} end)
         {Map.keys(entries), entries}
       end)
       # => [:alice, :bob, :charlie]
@@ -393,8 +426,15 @@ defmodule Goblin do
         ) :: term()
   def get_and_update_multi(db, keys, updater, opts \\ []) do
     transaction(db, fn tx ->
-      old = Tx.get_multi(tx, keys, opts) |> Enum.into(%{})
-      {reply, new} = updater.(old)
+      old = Tx.get_multi(tx, keys, opts) |> Map.new()
+
+      entries =
+        case Keyword.fetch(opts, :default) do
+          {:ok, default} -> Map.new(keys, &{&1, default}) |> Map.merge(old)
+          :error -> old
+        end
+
+      {reply, new} = updater.(entries)
 
       tx
       |> Tx.put_multi(new, opts)

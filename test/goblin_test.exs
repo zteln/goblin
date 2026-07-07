@@ -531,20 +531,20 @@ defmodule GoblinTest do
 
     test "update sets default if key is not set", ctx do
       assert nil == Goblin.get(ctx.db, :a)
-      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
+      assert :ok == Goblin.update(ctx.db, :a, &(&1 + 1), default: 1)
       assert 1 == Goblin.get(ctx.db, :a)
     end
 
     test "update updates with updating function", ctx do
-      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
-      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
-      assert :ok == Goblin.update(ctx.db, :a, 1, &(&1 + 1))
+      assert :ok == Goblin.update(ctx.db, :a, &(&1 + 1), default: 1)
+      assert :ok == Goblin.update(ctx.db, :a, &(&1 + 1), default: 1)
+      assert :ok == Goblin.update(ctx.db, :a, &(&1 + 1), default: 1)
       assert 3 == Goblin.get(ctx.db, :a)
     end
 
     test "update_multi updates all provided keys", ctx do
       Goblin.put_multi(ctx.db, %{a: 1, b: 1, c: 1, d: 1})
-      assert :ok == Goblin.update_multi(ctx.db, [:a, :b, :c], &(&1 + 1))
+      assert {:ok, 3} == Goblin.update_multi(ctx.db, [:a, :b, :c], &(&1 + 1))
 
       assert %{a: 2, b: 2, c: 2, d: 1} ==
                Goblin.get_multi(ctx.db, [:a, :b, :c, :d]) |> Enum.into(%{})
@@ -553,10 +553,28 @@ defmodule GoblinTest do
     test "update_multi does not update non-existing keys", ctx do
       Goblin.put_multi(ctx.db, %{a: 1, b: 1})
       assert nil == Goblin.get(ctx.db, :c)
-      assert :ok == Goblin.update_multi(ctx.db, [:a, :b, :c], &(&1 + 1))
+      assert {:ok, 2} == Goblin.update_multi(ctx.db, [:a, :b, :c], &(&1 + 1))
 
       assert %{a: 2, b: 2} ==
                Goblin.get_multi(ctx.db, [:a, :b, :c]) |> Enum.into(%{})
+    end
+
+    test "update_multi inserts default value for non-existing keys", ctx do
+      assert {:ok, 2} == Goblin.update_multi(ctx.db, [:a, :b], &(&1 + 1), default: 1)
+
+      assert %{a: 1, b: 1} ==
+               Goblin.get_multi(ctx.db, [:a, :b]) |> Enum.into(%{})
+    end
+
+    test "update_multi pass arity 1 or 2 update functions", ctx do
+      Goblin.put_multi(ctx.db, %{a: 1, b: 1})
+
+      assert {:ok, 2} ==
+               Goblin.update_multi(ctx.db, [:a, :b], fn key, val ->
+                 assert key in [:a, :b]
+                 assert val == 1
+                 2
+               end)
     end
 
     test "get_and_update passes nil if key is not set to updater", ctx do
