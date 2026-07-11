@@ -34,51 +34,49 @@ defmodule Goblin.DiskTable do
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}
   def build(stream, opts) do
-    max_size = opts[:max_size]
-    filer = opts[:filer]
-    compress? = opts[:compress?]
     bf = BloomFilter.new(opts)
     dt = %__MODULE__{bloom_filter: bf, level_key: opts[:level_key], index: MemIndex.new()}
 
     stream
     |> Stream.transform(
-      fn -> {nil, 0, nil, DiskIndex.new()} end,
+      fn ->
+        %{
+          file: nil,
+          boundary: 0,
+          disk_table: nil,
+          index: DiskIndex.new(),
+          compress?: opts[:compress?],
+          filer: opts[:filer],
+          max_size: opts[:max_size]
+        }
+      end,
       fn
-        _, {:halt, file} ->
-          FileIO.close(file)
-          {:halt, nil}
+        _, {:halt, acc} ->
+          {:halt, acc}
 
-        triple, {file, boundary, acc, disk_index} ->
-          file = file || FileIO.open!(filer.(), write?: true)
-          acc = acc || %{dt | id: file.path}
-          {key, _, _} = triple
-
-          with {:ok, acc, disk_index, boundary} <-
-                 maybe_append_index(file, acc, disk_index, key, boundary, compress?),
-               {:ok, acc, disk_index} <-
-                 append_data(file, acc, disk_index, triple, compress?),
-               {:ok, acc, wrapped?} <-
-                 maybe_append_footer(file, acc, disk_index, max_size, compress?) do
-            if wrapped?,
-              do: {[{:ok, acc}], {nil, 0, nil, DiskIndex.new()}},
-              else: {[], {file, boundary, acc, disk_index}}
+        {key, _, _} = triple, acc ->
+          with {:ok, acc} <- maybe_init(acc, dt),
+               {:ok, acc} <- maybe_append_index(acc, key),
+               {:ok, acc} <- append_data(acc, triple),
+               {:ok, acc, out} <- maybe_finalize(acc) do
+            {out, acc}
           else
-            error -> {[error], {:halt, file}}
+            error -> {[error], {:halt, acc}}
           end
       end,
       fn
-        {%FileIO{} = file, _, acc, disk_index} ->
-          case maybe_append_footer(file, acc, disk_index, 0, compress?) do
-            {:ok, acc, _} -> {[{:ok, acc}], nil}
-            error -> {[error], {:halt, file}}
+        %{file: %FileIO{}} = acc ->
+          case finalize(acc) do
+            {:ok, _acc, out} -> {out, nil}
+            error -> {[error], {:halt, acc}}
           end
 
         _ ->
           {[], nil}
       end,
       fn
-        {%FileIO{} = file, _, _, _} -> FileIO.close(file)
-        {:halt, %FileIO{} = file} -> FileIO.close(file)
+        %{file: %FileIO{} = file} -> FileIO.close(file)
+        {:halt, %{file: %FileIO{} = file}} -> FileIO.close(file)
         _ -> :ok
       end
     )
@@ -176,58 +174,77 @@ defmodule Goblin.DiskTable do
     end
   end
 
+  defp maybe_init(%{file: nil, disk_table: nil} = acc, new_dt) do
+    with {:ok, file} <- FileIO.open(acc.filer.(), write?: true) do
+      {:ok,
+       %{
+         acc
+         | file: file,
+           disk_table: %{new_dt | id: file.path},
+           boundary: 0,
+           index: DiskIndex.new()
+       }}
+    end
+  end
+
+  defp maybe_init(acc, _new_dt), do: {:ok, acc}
+
   defp maybe_append_index(
-         file,
-         %{size: size} = dt,
-         [{last, _, _} | _] = disk_index,
-         key,
-         boundary,
-         compress?
+         %{disk_table: %{size: size}, boundary: boundary, index: [{last, _, _} | _]} = acc,
+         key
        )
        when size - boundary >= @index_interval and last != key do
-    with {:ok, dt, disk_index} <- append_index(file, dt, disk_index, compress?) do
-      {:ok, dt, disk_index, dt.size}
+    append_index(acc)
+  end
+
+  defp maybe_append_index(acc, _key), do: {:ok, acc}
+
+  defp maybe_finalize(%{disk_table: %{size: size}, max_size: max_size} = acc)
+       when size >= max_size, do: finalize(acc)
+
+  defp maybe_finalize(acc), do: {:ok, acc, []}
+
+  defp finalize(acc) do
+    with {:ok, %{disk_table: dt} = acc} <- append_and_finalize_index(acc),
+         {:ok, acc} <- append_footer(acc) do
+      {:ok, acc, [{:ok, dt}]}
     end
   end
 
-  defp maybe_append_index(_, dt, disk_index, _, boundary, _),
-    do: {:ok, dt, disk_index, boundary}
-
-  defp maybe_append_footer(_, %{size: size} = dt, _, max_size, _) when size < max_size,
-    do: {:ok, dt, false}
-
-  defp maybe_append_footer(file, dt, disk_index, _, compress?) do
-    with {:ok, dt, _} <- append_index(file, dt, disk_index, compress?),
-         dt = %{dt | index: MemIndex.finalize(dt.index)},
-         :ok <- append_footer(file, dt, compress?) do
-      {:ok, dt, true}
+  defp append_footer(acc) do
+    with {:ok, _} <-
+           FileIO.append(acc.file, acc.disk_table, compress?: acc.compress?, footer?: true),
+         :ok <- FileIO.sync(acc.file),
+         :ok <- FileIO.close(acc.file) do
+      {:ok, %{acc | file: nil, disk_table: nil}}
     end
   end
 
-  defp append_data(file, dt, disk_index, triple, compress?) do
+  defp append_and_finalize_index(acc) do
+    with {:ok, acc} <- append_index(acc) do
+      dt = %{acc.disk_table | index: MemIndex.finalize(acc.disk_table.index)}
+      {:ok, %{acc | disk_table: dt}}
+    end
+  end
+
+  defp append_index(acc) do
+    dt = acc.disk_table
+    {start, disk_index} = DiskIndex.finalize(acc.index)
+
+    with {:ok, inc_size} <-
+           FileIO.append(acc.file, {:index, disk_index}, compress?: acc.compress?) do
+      dt = %{dt | size: dt.size + inc_size, index: MemIndex.append(dt.index, start, dt.size)}
+      {:ok, %{acc | disk_table: dt, index: DiskIndex.new(), boundary: dt.size}}
+    end
+  end
+
+  defp append_data(acc, triple) do
     {key, seq, _} = triple
 
-    with {:ok, size} <- FileIO.append(file, triple, compress?: compress?) do
-      disk_index = DiskIndex.append(disk_index, key, seq, dt.size)
-      {:ok, update_table(dt, triple, size), disk_index}
-    end
-  end
-
-  defp append_index(_, dt, [], _), do: {:ok, dt, []}
-
-  defp append_index(file, dt, disk_index, compress?) do
-    {start, disk_index} = DiskIndex.finalize(disk_index)
-
-    with {:ok, inc_size} <- FileIO.append(file, {:index, disk_index}, compress?: compress?) do
-      dt = %{dt | size: dt.size + inc_size, index: MemIndex.append(dt.index, start, dt.size)}
-      {:ok, dt, []}
-    end
-  end
-
-  defp append_footer(file, dt, compress?) do
-    with {:ok, _} <- FileIO.append(file, dt, compress?: compress?, footer?: true),
-         :ok <- FileIO.sync(file) do
-      FileIO.close(file)
+    with {:ok, size} <- FileIO.append(acc.file, triple, compress?: acc.compress?) do
+      disk_index = DiskIndex.append(acc.index, key, seq, acc.disk_table.size)
+      dt = update_table(acc.disk_table, triple, size)
+      {:ok, %{acc | disk_table: dt, index: disk_index}}
     end
   end
 
