@@ -160,7 +160,7 @@ defmodule Goblin.DiskTable do
           {:ok, {_, s, _} = triple} when s < seq -> {[triple], io}
           {:ok, %__MODULE__{}} -> {:halt, io}
           {:ok, _} -> {[], io}
-          :eof -> {:halt, io}
+          {:error, :eof} -> {:halt, io}
           {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
         end
       end,

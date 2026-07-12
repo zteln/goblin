@@ -59,7 +59,7 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec offset_read(t(), non_neg_integer(), keyword()) :: {:ok, term()} | {:error, term()} | :eof
+  @spec offset_read(t(), non_neg_integer(), keyword()) :: {:ok, term()} | {:error, term()}
   def offset_read(file, offset, opts \\ []) do
     read_size = opts[:read_size] || @page_size
 
@@ -78,12 +78,15 @@ defmodule Goblin.FileIO do
       {:too_small, size} ->
         offset_read(file, offset, Keyword.put(opts, :read_size, size))
 
+      :eof ->
+        {:error, :eof}
+
       error ->
         error
     end
   end
 
-  @spec seq_read(t(), keyword()) :: {:ok, term()} | {:error, term()} | :eof
+  @spec seq_read(t(), keyword()) :: {:ok, term()} | {:error, term()}
   def seq_read(file, opts \\ []) do
     with {:ok, header} <- :file.read(file.iodev, @header_size),
          {:ok, size, crc} <- decode_header(header),
@@ -91,10 +94,13 @@ defmodule Goblin.FileIO do
          :ok <- validate_size(byte_size(payload), size),
          :ok <- validate_crc(payload, crc, Keyword.get(opts, :verify_crc?, true)) do
       decode_payload(payload)
+    else
+      :eof -> {:error, :eof}
+      error -> error
     end
   end
 
-  @spec read_footer(t()) :: {:ok, term()} | {:error, term()} | :eof
+  @spec read_footer(t()) :: {:ok, term()} | {:error, term()}
   def read_footer(file) do
     size = :filelib.file_size(file.path)
 
@@ -105,6 +111,9 @@ defmodule Goblin.FileIO do
          :ok <- validate_size(byte_size(payload), payload_size),
          :ok <- validate_crc(payload, crc, true) do
       decode_payload(payload)
+    else
+      :eof -> {:error, :eof}
+      error -> error
     end
   end
 
@@ -127,7 +136,7 @@ defmodule Goblin.FileIO do
               {:ok, pos} = :file.position(file.iodev, :cur)
               {[{:ok, term}], {file, pos}}
 
-            :eof ->
+            {:error, :eof} ->
               {:halt, :eof}
 
             {:error, :invalid_size} ->

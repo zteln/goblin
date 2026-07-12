@@ -45,7 +45,7 @@ defmodule Goblin.FileIOTest do
 
       io = FileIO.open!(ctx.test_path)
       assert {:ok, term} == FileIO.seq_read(io)
-      assert :eof == FileIO.seq_read(io)
+      assert {:error, :eof} == FileIO.seq_read(io)
     end
 
     test "cannot append in read-only mode", ctx do
@@ -68,7 +68,7 @@ defmodule Goblin.FileIOTest do
       assert {:ok, :foo} = FileIO.seq_read(io)
       assert {:ok, :bar} = FileIO.seq_read(io)
       assert {:ok, :baz} = FileIO.seq_read(io)
-      assert :eof = FileIO.seq_read(io)
+      assert {:error, :eof} = FileIO.seq_read(io)
     end
 
     test "can read from offsets", ctx do
@@ -112,7 +112,7 @@ defmodule Goblin.FileIOTest do
       {:ok, io} = FileIO.open(ctx.test_path)
       assert {:ok, term} == FileIO.seq_read(io)
       assert {:ok, term} == FileIO.seq_read(io)
-      assert :eof = FileIO.seq_read(io)
+      assert {:error, :eof} = FileIO.seq_read(io)
     end
 
     test "returns size of written data", ctx do
