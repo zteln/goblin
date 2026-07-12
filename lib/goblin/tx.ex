@@ -64,7 +64,8 @@ defmodule Goblin.Tx do
     do: raise(ArgumentError, "Operation not allowed during read")
 
   def put(tx, key, value, opts) do
-    key = tag_key(key, opts[:tag])
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    key = tag_key(key, tag)
     commit = {key, tx.sequence, value}
     %{tx | sequence: tx.sequence + 1, commits: [commit | tx.commits]}
   end
@@ -94,8 +95,10 @@ defmodule Goblin.Tx do
     do: raise(ArgumentError, "Operation not allowed during read")
 
   def put_multi(tx, pairs, opts) do
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+
     Enum.reduce(pairs, tx, fn {key, value}, acc ->
-      key = tag_key(key, opts[:tag])
+      key = tag_key(key, tag)
       commit = {key, acc.sequence, value}
       %{acc | sequence: acc.sequence + 1, commits: [commit | acc.commits]}
     end)
@@ -126,7 +129,8 @@ defmodule Goblin.Tx do
     do: raise(ArgumentError, "Operation not allowed during read")
 
   def remove(tx, key, opts) do
-    key = tag_key(key, opts[:tag])
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    key = tag_key(key, tag)
     commit = {key, tx.sequence, :"$goblin_tombstone"}
     %{tx | sequence: tx.sequence + 1, commits: [commit | tx.commits]}
   end
@@ -156,8 +160,10 @@ defmodule Goblin.Tx do
     do: raise(ArgumentError, "Operation not allowed during read")
 
   def remove_multi(tx, keys, opts) do
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+
     Enum.reduce(keys, tx, fn key, acc ->
-      key = tag_key(key, opts[:tag])
+      key = tag_key(key, tag)
       commit = {key, acc.sequence, :"$goblin_tombstone"}
       %{acc | sequence: acc.sequence + 1, commits: [commit | acc.commits]}
     end)
@@ -216,6 +222,8 @@ defmodule Goblin.Tx do
   """
   @spec get_multi(t(), list(term()), keyword()) :: list({term(), term()})
   def get_multi(tx, keys, opts \\ []) do
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+
     keys =
       keys
       |> Enum.sort(:desc)
@@ -223,7 +231,7 @@ defmodule Goblin.Tx do
         key1, [key2 | _] = acc when key1 == key2 -> acc
         key, acc -> [key | acc]
       end)
-      |> Enum.map(&tag_key(&1, opts[:tag]))
+      |> Enum.map(&tag_key(&1, tag))
       |> MapSet.new()
 
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
@@ -292,7 +300,8 @@ defmodule Goblin.Tx do
   """
   @spec has_key?(t(), term(), keyword()) :: boolean()
   def has_key?(tx, key, opts \\ []) do
-    key = tag_key(key, opts[:tag])
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    key = tag_key(key, tag)
     tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
     recurse_levels(tx.max_level_key, false, fn lk, _acc ->
@@ -404,7 +413,10 @@ defmodule Goblin.Tx do
   @spec scan_stream((-> {non_neg_integer(), list(term())}), keyword()) ::
           Enumerable.t({term(), term()})
   def scan_stream(seq_and_tables, opts) do
-    {min, max} = tag_bounds(opts[:min], opts[:max], opts[:tag])
+    min = Keyword.get(opts, :min, :"$goblin_nil")
+    max = Keyword.get(opts, :max, :"$goblin_nil")
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    {min, max} = tag_bounds(min, max, tag)
 
     opts =
       opts
@@ -414,7 +426,7 @@ defmodule Goblin.Tx do
     seq_and_tables
     |> scan_levels(opts)
     |> Stream.flat_map(fn triple ->
-      case filter_triple_by_tag(triple, opts[:tag]) do
+      case filter_triple_by_tag(triple, tag) do
         nil -> []
         pair -> [pair]
       end
@@ -461,31 +473,38 @@ defmodule Goblin.Tx do
   defp table_stream(%MemTable{} = mt, _min, _max, seq), do: MemTable.stream(mt, seq)
 
   defp table_stream(%DiskTable{} = dt, min, max, seq),
-    do: DiskTable.stream(dt, bounds: {min, max}, seq: seq)
+    do: DiskTable.stream(dt, min, max, seq)
 
   defp table_stream(table, min, max, seq) when is_list(table) do
     cond do
-      is_nil(min) and is_nil(max) -> Enum.filter(table, fn {_k, s, _v} -> s < seq end)
-      is_nil(max) -> Enum.filter(table, fn {k, s, _v} -> min <= k and s < seq end)
-      is_nil(min) -> Enum.filter(table, fn {k, s, _v} -> k <= max and s < seq end)
-      true -> Enum.filter(table, fn {k, s, _v} -> min <= k and k <= max and s < seq end)
+      min == :"$goblin_nil" and max == :"$goblin_nil" ->
+        Enum.filter(table, fn {_k, s, _v} -> s < seq end)
+
+      max == :"$goblin_nil" ->
+        Enum.filter(table, fn {k, s, _v} -> min <= k and s < seq end)
+
+      min == :"$goblin_nil" ->
+        Enum.filter(table, fn {k, s, _v} -> k <= max and s < seq end)
+
+      true ->
+        Enum.filter(table, fn {k, s, _v} -> min <= k and k <= max and s < seq end)
     end
   end
 
-  defp tag_key(key, nil), do: key
+  defp tag_key(key, :"$goblin_nil"), do: key
   defp tag_key(key, tag), do: {:"$goblin_tag", tag, key}
 
   defp untag_pair({{:"$goblin_tag", _tag, key}, val}), do: {key, val}
   defp untag_pair(pair), do: pair
 
-  defp tag_bounds(min, max, nil), do: {min, max}
-  defp tag_bounds(nil, nil, _tag), do: {nil, nil}
-  defp tag_bounds(min, nil, tag), do: {{:"$goblin_tag", tag, min}, nil}
-  defp tag_bounds(nil, max, tag), do: {nil, {:"$goblin_tag", tag, max}}
+  defp tag_bounds(min, max, :"$goblin_nil"), do: {min, max}
+  defp tag_bounds(:"$goblin_nil", :"$goblin_nil", _tag), do: {:"$goblin_nil", :"$goblin_nil"}
+  defp tag_bounds(min, :"$goblin_nil", tag), do: {{:"$goblin_tag", tag, min}, :"$goblin_nil"}
+  defp tag_bounds(:"$goblin_nil", max, tag), do: {:"$goblin_nil", {:"$goblin_tag", tag, max}}
   defp tag_bounds(min, max, tag), do: {{:"$goblin_tag", tag, min}, {:"$goblin_tag", tag, max}}
 
-  defp filter_triple_by_tag({{:"$goblin_tag", _tag, _key}, _seq, _val}, nil), do: nil
+  defp filter_triple_by_tag({{:"$goblin_tag", _tag, _key}, _seq, _val}, :"$goblin_nil"), do: nil
   defp filter_triple_by_tag({{:"$goblin_tag", tag, key}, _seq, val}, tag), do: {key, val}
-  defp filter_triple_by_tag({key, _seq, val}, nil), do: {key, val}
+  defp filter_triple_by_tag({key, _seq, val}, :"$goblin_nil"), do: {key, val}
   defp filter_triple_by_tag(_triple, _tag), do: nil
 end

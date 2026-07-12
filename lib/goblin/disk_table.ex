@@ -115,7 +115,7 @@ defmodule Goblin.DiskTable do
       fn key, io ->
         case lookup(io, dt.index, key, seq) do
           {:ok, triple} -> {[triple], io}
-          :not_found -> {[], io}
+          {:error, :not_found} -> {[], io}
           :eof -> {:halt, io}
           {:error, reason} -> raise IOError, operation: :search, path: dt.id, reason: reason
         end
@@ -124,53 +124,59 @@ defmodule Goblin.DiskTable do
     )
   end
 
-  @spec stream(t(), keyword()) :: Enumerable.t({term(), non_neg_integer(), term()})
-  def stream(dt, opts \\ []) do
-    {min, max} = opts[:bounds] || dt.key_range
-    min = min || elem(dt.key_range, 0)
-    max = max || elem(dt.key_range, 1)
-    seq = opts[:seq] || :infinity
+  @spec stream(t()) :: Enumerable.t({term(), non_neg_integer(), term()})
+  @spec stream(t(), term(), term(), non_neg_integer()) ::
+          Enumerable.t({term(), non_neg_integer(), term()})
+  def stream(dt) do
+    {min, max} = dt.key_range
+    stream_table(dt, min, max, :infinity)
+  end
 
-    if within_bounds?(dt, min, max) do
-      Stream.resource(
-        fn ->
-          with {:ok, io} <- FileIO.open(dt.id),
-               disk_index_offset = MemIndex.lookup_offset(dt.index, min),
-               {:ok, {:index, disk_index}} <-
-                 FileIO.offset_read(io, disk_index_offset, verify_crc?: false),
-               min_offset = min_key_offset_lookup(disk_index, min),
-               :ok <- FileIO.set_position(io, min_offset || disk_index_offset) do
-            io
-          else
-            {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
-          end
-        end,
-        fn io ->
-          case FileIO.seq_read(io, verify_crc?: false) do
-            {:ok, {k, _, _}} when k > max ->
-              {:halt, io}
+  def stream(dt, min, max, seq) do
+    {dt_min, dt_max} = dt.key_range
+    min = if min == :"$goblin_nil", do: dt_min, else: min
+    max = if max == :"$goblin_nil", do: dt_max, else: max
 
-            {:ok, {_, s, _} = triple} when s < seq ->
-              {[triple], io}
+    if within_bounds?(dt, min, max),
+      do: stream_table(dt, min, max, seq),
+      else: []
+  end
 
-            {:ok, %__MODULE__{}} ->
-              {:halt, io}
+  defp stream_table(dt, min, max, seq) do
+    Stream.resource(
+      fn ->
+        disk_index_offset = MemIndex.lookup_offset(dt.index, min)
 
-            {:ok, _} ->
-              {[], io}
+        with {:ok, io} <- FileIO.open(dt.id),
+             :ok <- set_position_to_min(io, min, disk_index_offset) do
+          io
+        else
+          {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
+        end
+      end,
+      fn io ->
+        case FileIO.seq_read(io, verify_crc?: false) do
+          {:ok, {k, _, _}} when k > max -> {:halt, io}
+          {:ok, {_, s, _} = triple} when s < seq -> {[triple], io}
+          {:ok, %__MODULE__{}} -> {:halt, io}
+          {:ok, _} -> {[], io}
+          :eof -> {:halt, io}
+          {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
+        end
+      end,
+      fn io -> FileIO.close(io) end
+    )
+  end
 
-            :eof ->
-              {:halt, io}
+  defp set_position_to_min(io, min, offset) do
+    with {:ok, {:index, disk_index}} <- FileIO.offset_read(io, offset, verify_crc?: false) do
+      min_offset =
+        case DiskIndex.lookup(disk_index, fn {key, _, _} -> key < min end) do
+          {_, _, offset} -> offset
+          nil -> offset
+        end
 
-            {:error, reason} ->
-              FileIO.close(io)
-              raise IOError, operation: :stream, path: dt.id, reason: reason
-          end
-        end,
-        fn io -> FileIO.close(io) end
-      )
-    else
-      []
+      FileIO.set_position(io, min_offset)
     end
   end
 
@@ -278,18 +284,16 @@ defmodule Goblin.DiskTable do
     disk_index_pos = MemIndex.lookup_offset(index, key)
 
     with {:ok, {:index, disk_index}} <-
-           FileIO.offset_read(io, disk_index_pos, verify_crc?: false) do
-      case key_offset_lookup(disk_index, key, seq) do
-        :not_found -> :not_found
-        key_offset -> key_lookup(io, key, key_offset)
-      end
+           FileIO.offset_read(io, disk_index_pos, verify_crc?: false),
+         {:ok, key_offset} <- key_offset_lookup(disk_index, key, seq) do
+      key_lookup(io, key, key_offset)
     end
   end
 
   defp key_lookup(io, key, offset) do
     case FileIO.offset_read(io, offset, verify_crc?: false) do
       {:ok, {k, _, _} = triple} when k == key -> {:ok, triple}
-      {:ok, _} -> :not_found
+      {:ok, _} -> {:error, :not_found}
       error -> error
     end
   end
@@ -298,14 +302,8 @@ defmodule Goblin.DiskTable do
     case DiskIndex.lookup(disk_index, fn {key, seq, _} ->
            {key, -seq} <= {target_key, -target_seq}
          end) do
-      {k, s, offset} when k == target_key and s < target_seq -> offset
-      _ -> :not_found
-    end
-  end
-
-  defp min_key_offset_lookup(disk_index, min) do
-    with {_, _, offset} <- DiskIndex.lookup(disk_index, fn {key, _, _} -> key < min end) do
-      offset
+      {k, s, offset} when k == target_key and s < target_seq -> {:ok, offset}
+      _ -> {:error, :not_found}
     end
   end
 
@@ -314,10 +312,6 @@ defmodule Goblin.DiskTable do
 
   defp bloom_filter_member?(dt, key),
     do: BloomFilter.member?(dt.bloom_filter, key)
-
-  defp within_bounds?(_dt, nil, nil), do: true
-  defp within_bounds?(%{key_range: {_, max}}, min, nil), do: min <= max
-  defp within_bounds?(%{key_range: {min, _}}, nil, max), do: min <= max
 
   defp within_bounds?(%{key_range: {min1, max1}}, min2, max2),
     do: min1 <= max2 and min2 <= max1

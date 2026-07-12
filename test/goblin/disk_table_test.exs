@@ -190,14 +190,14 @@ defmodule Goblin.DiskTableTest do
 
       {:ok, [dt]} = DiskTable.build(data, ctx.opts)
 
-      assert data == DiskTable.stream(dt, bounds: {0, 10}) |> Enum.to_list()
-      assert data == DiskTable.stream(dt, bounds: {-1, 11}) |> Enum.to_list()
+      assert data == DiskTable.stream(dt, 0, 10, 11) |> Enum.to_list()
+      assert data == DiskTable.stream(dt, -1, 11, 11) |> Enum.to_list()
 
       assert Enum.filter(data, fn {k, _, _} -> k in 5..7 end) ==
-               DiskTable.stream(dt, bounds: {5, 7}) |> Enum.to_list()
+               DiskTable.stream(dt, 5, 7, 11) |> Enum.to_list()
 
-      assert [] == DiskTable.stream(dt, bounds: {-10, -1}) |> Enum.to_list()
-      assert [] == DiskTable.stream(dt, bounds: {11, 12}) |> Enum.to_list()
+      assert [] == DiskTable.stream(dt, -10, -1, 11) |> Enum.to_list()
+      assert [] == DiskTable.stream(dt, 11, 12, 11) |> Enum.to_list()
     end
 
     test "streams up to (exclusive) provided sequence", ctx do
@@ -207,7 +207,7 @@ defmodule Goblin.DiskTableTest do
 
       {:ok, [dt]} = DiskTable.build(data, ctx.opts)
 
-      assert Enum.take(data, 5) == DiskTable.stream(dt, seq: 5) |> Enum.to_list()
+      assert Enum.take(data, 5) == DiskTable.stream(dt, 0, 10, 5) |> Enum.to_list()
     end
 
     test "scans a table containing multiple index blocks", ctx do
@@ -218,7 +218,7 @@ defmodule Goblin.DiskTableTest do
 
       for min <- [-5 | Enum.to_list(1..239//2)] do
         expected = Enum.filter(data, fn {k, _, _} -> k >= min end)
-        assert expected == DiskTable.stream(dt, bounds: {min, 240}) |> Enum.to_list()
+        assert expected == DiskTable.stream(dt, min, 240, 241) |> Enum.to_list()
       end
     end
 

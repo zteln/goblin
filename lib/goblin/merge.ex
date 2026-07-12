@@ -3,9 +3,13 @@ defmodule Goblin.Merge do
 
   @spec stream((-> list(Enumerable.t())), keyword()) :: Enumerable.t()
   def stream(init, opts \\ []) do
+    min = Keyword.get(opts, :min, :"$goblin_nil")
+    max = Keyword.get(opts, :max, :"$goblin_nil")
+    filter_tombstones? = Keyword.get(opts, :filter_tombstones?, true)
+
     Stream.resource(
       fn -> init.() |> build_heap() end,
-      fn heap -> step(heap, opts) end,
+      fn heap -> step(heap, min, max, filter_tombstones?) end,
       fn heap -> close_all(heap, opts) end
     )
   end
@@ -20,19 +24,15 @@ defmodule Goblin.Merge do
     end)
   end
 
-  defp step(heap, opts) do
-    filter_tombstones? = Keyword.get(opts, :filter_tombstones?, true)
-    min = opts[:min]
-    max = opts[:max]
-
+  defp step(heap, min, max, filter_tombstones?) do
     case take_smallest(heap) do
       :empty ->
         {:halt, heap}
 
-      {{key, _, _}, heap} when not is_nil(max) and key > max ->
+      {{key, _, _}, heap} when max != :"$goblin_nil" and key > max ->
         {:halt, heap}
 
-      {{key, _, _}, heap} when not is_nil(min) and key < min ->
+      {{key, _, _}, heap} when min != :"$goblin_nil" and key < min ->
         {[], heap}
 
       {{_, _, :"$goblin_tombstone"}, heap} when filter_tombstones? ->
