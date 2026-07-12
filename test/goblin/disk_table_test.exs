@@ -222,6 +222,12 @@ defmodule Goblin.DiskTableTest do
       end
     end
 
+    test "can scan with nil as bounds", ctx do
+      data = [{nil, 0, "nil"}]
+      {:ok, [dt]} = DiskTable.build(data, ctx.opts)
+      assert [{nil, 0, "nil"}] == DiskTable.stream(dt, nil, nil, 1) |> Enum.to_list()
+    end
+
     test "is lazy", ctx do
       data =
         for(n <- 0..10, do: {n, n, "val-#{n}"})
