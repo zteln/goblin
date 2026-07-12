@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.12.1 (2026-07-12)
+* Enhancements
+    * Added nil sentinel to allow `nil` in boundary
+
 ## v0.12.0 (2026-07-07)
 * Breaking changes
     * The header for each block is reduced. Files written by previous versions are incompatible.
