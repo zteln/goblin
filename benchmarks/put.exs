@@ -1,37 +1,34 @@
-Code.require_file("support.exs", __DIR__)
-alias Bench.Support
+tmp_dir = Path.join([File.cwd!(), "tmp", "goblin_benchmark", "put"])
+if File.exists?(tmp_dir), do: File.rm_rf!(tmp_dir)
 
-goblin_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put/goblin"
-cubdb_dir = "#{File.cwd!()}/tmp/goblin_benchmark/put/cubdb"
+sizes = %{
+  "1B" => 1,
+  "1kB" => 1024,
+  "1MB" => 1024 * 1024,
+  "10MB" => 10 * 1024 * 1024,
+  "100MB" => 100 * 1024 * 1024
+}
 
-Support.run(
-  "put",
-  %{
-    "Goblin.put/3" => fn {goblin, _cubdb, key, value} ->
-      Goblin.put(goblin, key, value)
-    end
-  },
-  %{
-    "CubDB.put/3" => fn {_goblin, cubdb, key, value} ->
-      CubDB.put(cubdb, key, value)
-    end
-  },
-  inputs: Support.value_size_inputs(),
-  before_scenario: fn size ->
-    File.rm_rf!(goblin_dir)
-    File.rm_rf!(cubdb_dir)
-    goblin = Support.start_goblin(goblin_dir)
-    cubdb = Support.start_cubdb(cubdb_dir, auto_compact: false, auto_file_sync: true)
-    {goblin, cubdb, size}
-  end,
-  before_each: fn {goblin, cubdb, size} ->
-    key = :rand.uniform(100_000)
-    {goblin, cubdb, key, :crypto.strong_rand_bytes(size)}
-  end,
-  after_scenario: fn {goblin, cubdb, _size} ->
-    Support.stop_goblin(goblin)
-    Support.stop_cubdb(cubdb)
-    File.rm_rf!(goblin_dir)
-    File.rm_rf!(cubdb_dir)
+inputs =
+  for {size, no_bytes} <- sizes, into: %{} do
+    dir = Path.join(tmp_dir, size)
+    {:ok, db} = Goblin.start(data_dir: dir, name: :"goblin_#{size}")
+    {size, {db, no_bytes}}
   end
+
+Benchee.run(
+  %{
+    "put/2" => fn {db, key, val} ->
+      Goblin.put(db, key, val)
+    end
+  },
+  inputs: inputs,
+  before_each: fn {db, no_bytes} ->
+    key = :rand.uniform(100_000)
+    val = :crypto.strong_rand_bytes(no_bytes)
+    {db, key, val}
+  end,
+  profile_after: if("--profile" in System.argv(), do: :tprof, else: false)
 )
+
+File.rm_rf!(tmp_dir)

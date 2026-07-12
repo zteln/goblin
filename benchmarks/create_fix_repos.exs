@@ -1,58 +1,54 @@
-Code.require_file("support.exs", __DIR__)
-alias Bench.Support
+fixture_dir = Path.join([File.cwd!(), "tmp", "goblin_benchmark", "fixtures"])
 
-defmodule CreateRepo do
-  @batch_size 1000
-
-  def run(db_name, start, put, stop, repo) do
-    num_keys = Bench.Support.num_keys(repo)
-    dir = Path.join([Bench.Support.fixtures_dir(), db_name, repo])
-
-    File.rm_rf!(dir)
-    File.mkdir_p!(dir)
-
-    IO.puts("Creating #{db_name}/#{repo} (#{num_keys} keys)...")
-
-    {:ok, db} = start.(dir)
-
-    1..num_keys
-    |> Stream.chunk_every(@batch_size)
-    |> Enum.each(fn batch ->
-      pairs = Enum.map(batch, fn i -> {i, :crypto.strong_rand_bytes(Bench.Support.value_size())} end)
-      put.(db, pairs)
-    end)
-
-    stop.(db)
-
-    IO.puts("  Done: #{db_name}/#{repo}")
+wait_idle = fn db, wait_idle ->
+  if Goblin.flushing?(db) or Goblin.compacting?(db) do
+    Process.sleep(100)
+    wait_idle.(db, wait_idle)
   end
 end
 
-File.rm_rf!(Support.fixtures_dir())
-File.mkdir_p!(Support.fixtures_dir())
+[
+  {"1_mb_repo", 1024},
+  {"10_mb_repo", 10 * 1024},
+  {"100_mb_repo", 100 * 1024},
+  {"1_gb_repo", 1024 * 1024}
+]
+|> Enum.each(fn {dir, num_keys} ->
+  IO.puts("Inserting #{num_keys} keys...")
+  dir = Path.join(fixture_dir, dir)
+  {:ok, db} = Goblin.start(data_dir: dir) 
 
-goblin = {
-  "goblin",
-  fn dir -> Goblin.start_link(data_dir: dir) end,
-  fn db, pairs -> Goblin.put_multi(db, pairs) end,
-  fn db ->
-    Support.wait_idle(db)
-    Goblin.stop(db)
-  end
-}
+  1..num_keys
+  |> Stream.chunk_every(1_000)
+  |> Enum.each(fn keys ->
+    pairs = Enum.map(keys, &{&1, :crypto.strong_rand_bytes(1024)})
+    Goblin.put_multi(db, pairs)
+  end)
 
-cubdb = {
-  "cubdb",
-  fn dir -> CubDB.start_link(data_dir: dir) end,
-  fn db, pairs -> CubDB.put_multi(db, pairs) end,
-  fn db -> CubDB.stop(db) end
-}
+  wait_idle.(db, wait_idle)
+  Goblin.stop(db)
+end)
 
-db_callbacks = if Support.cubdb?(), do: [goblin, cubdb], else: [goblin]
-
-for {db_name, start, put, stop} <- db_callbacks,
-    repo <- Map.values(Support.dataset_inputs()) do
-  CreateRepo.run(db_name, start, put, stop, repo)
-end
-
-IO.puts("\nAll fixtures created.")
+####
+# Code.require_file("support.exs", __DIR__)
+#
+# # Builds the warm fixture repos the overwrite/read benchmarks run against.
+# # Existing fixtures are kept; delete tmp/goblin_benchmark/fixtures to rebuild.
+# for {repo, num_keys} <- Bench.repos() do
+#   dir = Path.join([File.cwd!(), "tmp", "goblin_benchmark", "fixtures", repo])
+#
+#   if File.dir?(dir) do
+#     IO.puts("#{repo} already exists, skipping")
+#   else
+#     IO.puts("Creating #{repo} (#{num_keys} keys)...")
+#     File.mkdir_p!(dir)
+#     db = Bench.start_db(dir)
+#
+#     1..num_keys
+#     |> Stream.chunk_every(1_000)
+#     |> Enum.each(fn keys -> Goblin.put_multi(db, Enum.map(keys, &{&1, Bench.value()})) end)
+#
+#     Bench.wait_idle(db)
+#     Goblin.stop(db)
+#   end
+# end

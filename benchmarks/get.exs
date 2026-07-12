@@ -1,41 +1,32 @@
-Code.require_file("support.exs", __DIR__)
-alias Bench.Support
+fixture_dir = Path.join([File.cwd!(), "tmp", "goblin_benchmark", "fixtures"])
 
-Support.require_fixtures!()
+sizes = [
+  {"1MB", "1_mb_repo", 1024},
+  {"10MB", "10_mb_repo", 10 * 1024},
+  {"100MB", "100_mb_repo", 100 * 1024},
+  {"1GB", "1_gb_repo", 1024 * 1024}
+]
 
-# Fixtures populate keys 1..num_keys, so a key in num_keys+1..2*num_keys is
-# guaranteed absent — that exercises the bloom-filter reject path (a "miss").
-Support.run(
-  "get",
-  %{
-    "Goblin.get/2 (hit)" => fn {goblin, _cubdb, hit, _miss} ->
-      Goblin.get(goblin, hit)
-    end,
-    "Goblin.get/2 (miss)" => fn {goblin, _cubdb, _hit, miss} ->
-      Goblin.get(goblin, miss)
-    end
-  },
-  %{
-    "CubDB.get/2 (hit)" => fn {_goblin, cubdb, hit, _miss} ->
-      CubDB.get(cubdb, hit)
-    end,
-    "CubDB.get/2 (miss)" => fn {_goblin, cubdb, _hit, miss} ->
-      CubDB.get(cubdb, miss)
-    end
-  },
-  inputs: Support.dataset_inputs(),
-  before_scenario: fn repo ->
-    goblin = Support.start_goblin(Support.goblin_fixture(repo))
-    cubdb = Support.start_cubdb(Support.cubdb_fixture(repo))
-    # warm the dbs before measuring
-    _ = Goblin.get(goblin, 1)
-    {goblin, cubdb, Support.num_keys(repo)}
-  end,
-  before_each: fn {goblin, cubdb, num_keys} ->
-    {goblin, cubdb, :rand.uniform(num_keys), num_keys + :rand.uniform(num_keys)}
-  end,
-  after_scenario: fn {goblin, cubdb, _num_keys} ->
-    Support.stop_goblin(goblin)
-    Support.stop_cubdb(cubdb)
+inputs =
+  for {name, loc, size} <- sizes, into: %{} do
+    dir = Path.join(fixture_dir, loc)
+    {:ok, db} = Goblin.start(data_dir: dir, name: :"goblin_#{name}")
+    {name, {db, size}}
   end
+
+Benchee.run(
+  %{
+    "get/2 (hit)" => fn {db, hit, _miss} ->
+      Goblin.get(db, hit)
+    end,
+    "get/2 (miss)" => fn {db, _hit, miss} ->
+      Goblin.get(db, miss)
+    end
+  },
+  inputs: inputs,
+  before_each: fn {db, num_keys} ->
+    key = :rand.uniform(num_keys)
+    {db, key, key + num_keys}
+  end,
+  profile_after: if("--profile" in System.argv(), do: :tprof, else: false)
 )

@@ -220,10 +220,6 @@ A long-running read or scan delays deletion of compacted files, temporarily incr
 Goblin does not perform automatic data migration between versions.
 To upgrade, stream entries from the old database into a new instance running the newer version.
 
-## Benchmarks
-
-See [BENCHMARKS.md](https://github.com/zteln/goblin/blob/main/BENCHMARKS.md) for benchmark results comparing Goblin against CubDB.
-
 ## Transactional consistency checks
 
 Goblin is checked for transactional consistency via [Elle](https://github.com/jepsen-io/elle) in [GoblinKVStore](https://github.com/zteln/goblin_kv_store).
