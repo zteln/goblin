@@ -116,7 +116,7 @@ defmodule Goblin.DiskTable do
         case lookup(io, dt.index, key, seq) do
           {:ok, triple} -> {[triple], io}
           {:error, :not_found} -> {[], io}
-          :eof -> {:halt, io}
+          {:error, :eof} -> {:halt, io}
           {:error, reason} -> raise IOError, operation: :search, path: dt.id, reason: reason
         end
       end,
