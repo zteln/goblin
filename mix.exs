@@ -26,6 +26,7 @@ defmodule Goblin.MixProject do
   defp deps do
     [
       {:ex_doc, "~> 0.40.0", only: :dev, runtime: false, warn_if_outdated: true},
+      {:benchee, "~> 1.5", only: :dev, runtime: false},
       {:stream_data, "~> 1.2", only: :test, runtime: false}
     ]
   end
