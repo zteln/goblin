@@ -3,6 +3,8 @@
 ## v0.12.2 (unreleased)
 * Bug fixes
     * Changed `:eof` in `{:error, :eof}` in a case when reading from disk.
+* Enhancements
+    * Bloom filters have been changed to standard Bloom filter, instead of scalable Bloom filters.
 
 ## v0.12.1 (2026-07-12)
 * Enhancements
