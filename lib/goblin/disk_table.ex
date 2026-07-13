@@ -34,8 +34,7 @@ defmodule Goblin.DiskTable do
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}
   def build(stream, opts) do
-    bf = BloomFilter.new(opts)
-    dt = %__MODULE__{bloom_filter: bf, level_key: opts[:level_key], index: MemIndex.new()}
+    dt = %__MODULE__{level_key: opts[:level_key], index: MemIndex.new()}
 
     stream
     |> Stream.transform(
@@ -43,11 +42,13 @@ defmodule Goblin.DiskTable do
         %{
           file: nil,
           boundary: 0,
+          keys: {0, []},
           disk_table: nil,
           index: DiskIndex.new(),
           compress?: opts[:compress?],
           filer: opts[:filer],
-          max_size: opts[:max_size]
+          max_size: opts[:max_size],
+          fpp: opts[:fpp]
         }
       end,
       fn
@@ -188,7 +189,8 @@ defmodule Goblin.DiskTable do
          | file: file,
            disk_table: %{new_dt | id: file.path},
            boundary: 0,
-           index: DiskIndex.new()
+           index: DiskIndex.new(),
+           keys: {0, []}
        }}
     end
   end
@@ -211,6 +213,8 @@ defmodule Goblin.DiskTable do
   defp maybe_finalize(acc), do: {:ok, acc, []}
 
   defp finalize(acc) do
+    acc = finalize_table(acc)
+
     with {:ok, %{disk_table: dt} = acc} <- append_and_finalize_index(acc),
          {:ok, acc} <- append_footer(acc) do
       {:ok, acc, [{:ok, dt}]}
@@ -246,11 +250,12 @@ defmodule Goblin.DiskTable do
 
   defp append_data(acc, triple) do
     {key, seq, _} = triple
+    {no_keys, keys} = acc.keys
 
     with {:ok, size} <- FileIO.append(acc.file, triple, compress?: acc.compress?) do
       disk_index = DiskIndex.append(acc.index, key, seq, acc.disk_table.size)
       dt = update_table(acc.disk_table, triple, size)
-      {:ok, %{acc | disk_table: dt, index: disk_index}}
+      {:ok, %{acc | disk_table: dt, index: disk_index, keys: {no_keys + 1, [key | keys]}}}
     end
   end
 
@@ -269,15 +274,19 @@ defmodule Goblin.DiskTable do
         {min, _} -> {min, seq}
       end
 
-    bloom_filter = BloomFilter.put(dt.bloom_filter, key)
-
     %{
       dt
       | key_range: key_range,
         seq_range: seq_range,
-        bloom_filter: bloom_filter,
         size: dt.size + size
     }
+  end
+
+  defp finalize_table(acc) do
+    {no_keys, keys} = acc.keys
+    bf = BloomFilter.new(no_keys, keys, acc.fpp)
+    dt = %{acc.disk_table | bloom_filter: bf}
+    %{acc | disk_table: dt}
   end
 
   defp lookup(io, index, key, seq) do

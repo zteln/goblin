@@ -1,48 +1,83 @@
 defmodule Goblin.BloomFilter do
   @moduledoc false
-  alias Goblin.BloomFilter.BitArray
 
   defstruct [
-    :fpp,
-    :bit_array_size,
-    :bit_arrays
+    :bits,
+    :size,
+    :no_bits,
+    :no_hashes
   ]
 
-  @tightening_ratio 0.5
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{
+          bits: <<>>,
+          size: non_neg_integer(),
+          no_bits: non_neg_integer(),
+          no_hashes: non_neg_integer()
+        }
 
-  @spec new(keyword()) :: t()
-  def new(opts) do
-    fpp = opts[:fpp]
-    bit_array_size = opts[:bit_array_size]
-    segment_fpp = calculate_fpp([], fpp)
-    bit_array = BitArray.new(bit_array_size, segment_fpp)
-    %__MODULE__{bit_arrays: [bit_array], fpp: fpp, bit_array_size: bit_array_size}
-  end
+  @spec new(non_neg_integer(), list(term()), number()) :: t()
+  def new(no_keys, keys, fpp) do
+    no_bits = no_bits(no_keys, fpp)
+    no_bytes = div(no_bits + 7, 8)
+    no_hashes = no_hashes(no_keys, no_bits)
 
-  @spec put(t(), term()) :: t()
-  def put(bf, key) do
-    [current_bit_array | bit_arrays] = bf.bit_arrays
+    bits =
+      keys
+      |> into_positions(no_hashes, no_bits)
+      |> build_filter(no_bytes)
 
-    case BitArray.add_key(current_bit_array, key) do
-      {:ok, bit_array} ->
-        %{bf | bit_arrays: [bit_array | bit_arrays]}
-
-      {:error, :full} ->
-        segment_fpp = calculate_fpp(bf.bit_arrays, bf.fpp)
-        bit_array = BitArray.new(bf.bit_array_size, segment_fpp)
-
-        %{bf | bit_arrays: [bit_array | bf.bit_arrays]}
-        |> put(key)
-    end
+    %__MODULE__{
+      bits: bits,
+      size: no_keys,
+      no_bits: no_bits,
+      no_hashes: no_hashes
+    }
   end
 
   @spec member?(t(), term()) :: boolean()
   def member?(bf, key) do
-    Enum.any?(bf.bit_arrays, &BitArray.member?(&1, key))
+    hashes(key, bf.no_hashes, bf.no_bits)
+    |> Enum.all?(fn hash ->
+      byte_pos = div(hash, 8)
+      bit_offset = rem(hash, 8)
+      byte = :binary.at(bf.bits, byte_pos)
+      Bitwise.band(byte, Bitwise.bsl(1, bit_offset)) != 0
+    end)
   end
 
-  defp calculate_fpp(bit_arrays, fpp) do
-    fpp * (1 - @tightening_ratio) * :math.pow(@tightening_ratio, length(bit_arrays))
+  defp into_positions(keys, no_hashes, no_bits) do
+    keys
+    |> Enum.flat_map(&hashes(&1, no_hashes, no_bits))
+    |> Enum.sort()
   end
+
+  defp build_filter(positions, next_byte \\ 0, no_bytes, acc \\ [])
+
+  defp build_filter([], next_byte, no_bytes, acc),
+    do: :erlang.iolist_to_binary([acc | :binary.copy(<<0>>, no_bytes - next_byte)])
+
+  defp build_filter([pos | _] = positions, next_byte, no_bytes, acc) do
+    byte_idx = div(pos, 8)
+    gap = :binary.copy(<<0>>, byte_idx - next_byte)
+    {byte, rest} = fill_byte(positions, byte_idx, 0)
+    build_filter(rest, byte_idx + 1, no_bytes, [acc, gap, byte])
+  end
+
+  defp fill_byte([pos | rest], byte_idx, byte) when div(pos, 8) == byte_idx do
+    fill_byte(rest, byte_idx, Bitwise.bor(byte, Bitwise.bsl(1, rem(pos, 8))))
+  end
+
+  defp fill_byte(positions, _byte_idx, byte), do: {byte, positions}
+
+  defp hashes(key, no_hashes, range) do
+    h1 = :erlang.phash2({key, 1}, range)
+    h2 = :erlang.phash2({key, 2}, range)
+
+    for i <- 0..(no_hashes - 1) do
+      rem(h1 + i * h2, range)
+    end
+  end
+
+  defp no_bits(size, fpp), do: floor(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
+  defp no_hashes(size, no_bits), do: round(no_bits / size * :math.log(2))
 end

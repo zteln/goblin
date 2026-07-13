@@ -16,7 +16,8 @@ defmodule Goblin.DiskTable.DiskIndex do
     {start, index}
   end
 
-  @spec lookup(tuple(), ({term(), non_neg_integer(), non_neg_integer()} -> boolean())) :: {term(), non_neg_integer(), non_neg_integer()} | nil
+  @spec lookup(tuple(), ({term(), non_neg_integer(), non_neg_integer()} -> boolean())) ::
+          {term(), non_neg_integer(), non_neg_integer()} | nil
   def lookup(index, pred) do
     size = tuple_size(index)
 
