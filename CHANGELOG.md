@@ -1,8 +1,13 @@
 # Changelog
 
+## v0.12.2 (unreleased)
+* Bug fixes
+    * Changed `:eof` in `{:error, :eof}` in a case when reading from disk.
+
 ## v0.12.1 (2026-07-12)
 * Enhancements
     * Added nil sentinel to allow `nil` in boundary
+    * Explicit nil for :min, :max, and :tag now means the literal value nil instead of 'not set'; omit the option to leave it unset.
 
 ## v0.12.0 (2026-07-07)
 * Breaking changes

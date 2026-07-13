@@ -93,6 +93,14 @@ Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
 # => [{:alice, "Alice"}, {:bob, "Bob"}]
 ```
 
+> #### `nil` options {: .warning}
+>
+> Since a key can be any Elixir term, `nil` is a valid key: `min: nil`,
+> `max: nil`, and `tag: nil` refer to the literal value `nil`, not "unset".
+> Take care with dynamically built options — `Goblin.scan(db, min: params[:from])`
+> scans from the key `nil` when `params[:from]` is absent, rather than from the
+> beginning. Omit an option entirely to leave it unbounded/untagged.
+
 ### Transactions
 
 There are two types of transactions: **write** and **read**.
