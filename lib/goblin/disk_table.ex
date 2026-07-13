@@ -250,12 +250,17 @@ defmodule Goblin.DiskTable do
 
   defp append_data(acc, triple) do
     {key, seq, _} = triple
-    {no_keys, keys} = acc.keys
+
+    keys =
+      case acc.keys do
+        {no_keys, [^key | _] = keys} -> {no_keys, keys}
+        {no_keys, keys} -> {no_keys + 1, [key | keys]}
+      end
 
     with {:ok, size} <- FileIO.append(acc.file, triple, compress?: acc.compress?) do
       disk_index = DiskIndex.append(acc.index, key, seq, acc.disk_table.size)
       dt = update_table(acc.disk_table, triple, size)
-      {:ok, %{acc | disk_table: dt, index: disk_index, keys: {no_keys + 1, [key | keys]}}}
+      {:ok, %{acc | disk_table: dt, index: disk_index, keys: keys}}
     end
   end
 

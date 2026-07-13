@@ -1,6 +1,8 @@
 # Changelog
 
-## v0.12.2 (unreleased)
+## v0.13.0 (unreleased)
+* Breaking changes
+    * Bloom filters have changed format, making it incompatible with previous versions
 * Bug fixes
     * Changed `:eof` in `{:error, :eof}` in a case when reading from disk.
 * Enhancements

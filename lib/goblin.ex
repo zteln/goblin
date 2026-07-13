@@ -66,7 +66,6 @@ defmodule Goblin do
   @default_mem_limit 64 * 1024 * 1024
   @default_level_base_size 256 * 1024 * 1024
   @default_level_size_multiplier 10
-  @default_bit_array_size 10_000
   @default_fpp 0.01
 
   defstruct [
@@ -82,6 +81,7 @@ defmodule Goblin do
     flushing: %{},
     compacting: %{},
     readers: %{},
+    reader_keys: %{},
     writer_queue: :queue.new()
   ]
 
@@ -891,7 +891,6 @@ defmodule Goblin do
 
     opts =
       args
-      |> Keyword.put_new(:bit_array_size, @default_bit_array_size)
       |> Keyword.put_new(:fpp, @default_fpp)
       |> Keyword.put_new(:mem_limit, @default_mem_limit)
       |> Keyword.put_new(:flush_level_file_limit, @default_flush_level_file_limit)
@@ -1153,8 +1152,9 @@ defmodule Goblin do
 
       Map.has_key?(db.readers, ref) ->
         {tx_key, readers} = Map.pop(db.readers, ref)
+        reader_keys = Map.delete(db.reader_keys, tx_key)
         MVCC.release_reader(db.mvcc, tx_key)
-        {:ok, %{db | readers: readers}}
+        {:ok, %{db | readers: readers, reader_keys: reader_keys}}
 
       true ->
         writer_queue =
@@ -1172,24 +1172,19 @@ defmodule Goblin do
   defp handle_track_reader(db, pid, tx_key) do
     monitor_ref = Process.monitor(pid)
     readers = Map.put(db.readers, monitor_ref, tx_key)
-    %{db | readers: readers}
+    reader_keys = Map.put(db.reader_keys, tx_key, monitor_ref)
+    %{db | readers: readers, reader_keys: reader_keys}
   end
 
   defp handle_untrack_reader(db, tx_key) do
-    monitor_ref =
-      Enum.find_value(db.readers, fn
-        {monitor_ref, ^tx_key} -> monitor_ref
-        _ -> false
-      end)
-
-    case monitor_ref do
-      nil ->
+    case Map.pop(db.reader_keys, tx_key) do
+      {nil, _reader_keys} ->
         db
 
-      monitor_ref ->
+      {monitor_ref, reader_keys} ->
         Process.demonitor(monitor_ref, [:flush])
         readers = Map.delete(db.readers, monitor_ref)
-        %{db | readers: readers}
+        %{db | readers: readers, reader_keys: reader_keys}
     end
   end
 
@@ -1274,7 +1269,6 @@ defmodule Goblin do
     opts = [
       level_key: lk,
       compress?: lk > 1,
-      bit_array_size: db.opts[:bit_array_size],
       max_size: db.opts[:max_sst_size],
       fpp: db.opts[:fpp],
       filer: fn -> gen_file(db.file_counter, db.data_dir) end,
