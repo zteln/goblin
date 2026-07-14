@@ -213,7 +213,7 @@ defmodule Goblin.DiskTable do
   defp maybe_finalize(acc), do: {:ok, acc, []}
 
   defp finalize(acc) do
-    acc = finalize_table(acc)
+    acc = finalize_bloom_filter(acc)
 
     with {:ok, %{disk_table: dt} = acc} <- append_and_finalize_index(acc),
          {:ok, acc} <- append_footer(acc) do
@@ -287,7 +287,7 @@ defmodule Goblin.DiskTable do
     }
   end
 
-  defp finalize_table(acc) do
+  defp finalize_bloom_filter(acc) do
     {no_keys, keys} = acc.keys
     bf = BloomFilter.new(no_keys, keys, acc.fpp)
     dt = %{acc.disk_table | bloom_filter: bf}
