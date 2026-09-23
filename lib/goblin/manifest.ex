@@ -3,43 +3,40 @@ defmodule Goblin.Manifest do
 
   alias Goblin.FileIO
 
-  @log_file "manifest.goblin"
-  @default_max_log_size 10 * 1024 * 1024
+  @alog_file "manifest.a"
+  @blog_file "manifest.b"
 
   defstruct [
-    :io,
+    :a,
+    :b,
     :data_dir,
-    :path,
-    :max_log_size,
-    size: 0,
-    snapshot: {0, [], []}
+    :active,
+    version: 0,
+    snapshot: []
   ]
 
-  @type snapshot :: {non_neg_integer(), list({atom(), Path.t()}), list({atom(), Path.t()})}
+  @type snapshot :: list({atom(), Path.t()})
+
   @type t :: %__MODULE__{
-          io: FileIO.t(),
+          a: FileIO.t(),
+          b: FileIO.t(),
           data_dir: Path.t(),
-          path: Path.t(),
-          size: non_neg_integer(),
+          active: :a | :b,
+          version: non_neg_integer(),
           snapshot: snapshot()
         }
 
-  @spec open(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
-  def open(data_dir, opts \\ []) do
-    path = Path.join(data_dir, @log_file)
+  @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
+  def open(data_dir) do
+    alog_path = apath(data_dir)
+    blog_path = bpath(data_dir)
 
-    if File.exists?(tmp(path)),
-      do: FileIO.rename(tmp(path), path)
-
-    with {:ok, io} <- FileIO.open(path, write?: true) do
-      size = FileIO.size_of(path)
-
+    with {:ok, alog} <- FileIO.open(alog_path, write?: true),
+         {:ok, blog} <- FileIO.open(blog_path, write?: true) do
       manifest = %__MODULE__{
-        path: path,
         data_dir: data_dir,
-        io: io,
-        size: size,
-        max_log_size: opts[:max_log_size] || @default_max_log_size
+        a: alog,
+        b: blog
       }
 
       recover_manifest(manifest)
@@ -47,117 +44,102 @@ defmodule Goblin.Manifest do
   end
 
   @spec close(t()) :: :ok | {:error, term()}
-  def close(manifest), do: FileIO.close(manifest.io)
-
-  @spec current_file(t()) :: Path.t()
-  def current_file(manifest), do: Path.join(manifest.data_dir, @log_file)
-
-  @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()}), non_neg_integer()) ::
-          {:ok, t()} | {:error, term()}
-  def update(manifest, add, del, seq) do
-    {_, files, dirt} = manifest.snapshot
-    add = Enum.map(add, &trim_dir/1)
-    del = Enum.map(del, &trim_dir/1)
-
-    files =
-      (files ++ add)
-      |> Enum.reject(&(&1 in del))
-
-    dirt = del ++ dirt
-    snapshot = {seq, files, dirt}
-    manifest = %{manifest | snapshot: snapshot}
-    write_snapshot(manifest)
+  def close(manifest) do
+    with :ok <- FileIO.close(manifest.a) do
+      FileIO.close(manifest.b)
+    end
   end
 
   @spec snapshot(t()) :: snapshot()
   def snapshot(manifest) do
-    {seq, files, dirt} = manifest.snapshot
-
-    files =
-      Enum.map(files, fn {type, name} ->
-        {type, Path.join(manifest.data_dir, name)}
-      end)
-
-    dirt =
-      Enum.map(dirt, fn {_type, name} ->
-        Path.join(manifest.data_dir, name)
-      end)
-
-    {seq, files, dirt}
+    manifest.snapshot
+    |> Enum.map(&Path.join(manifest.data_dir, &1))
   end
 
-  @spec sweep_dirt(t(), list(Path.t())) :: {:ok, t()} | {:error, term()}
-  def sweep_dirt(manifest, paths) do
-    {seq, files, dirt} = manifest.snapshot
+  @spec logs(t()) :: list(Path.t())
+  def logs(manifest),
+    do: [Path.join(manifest.data_dir, @alog_file), Path.join(manifest.data_dir, @blog_file)]
 
-    dirt =
-      Enum.reject(dirt, fn {_, name} ->
-        path = Path.join(manifest.data_dir, name)
-        path in paths
-      end)
+  @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()})) ::
+          {:ok, t()} | {:error, term()}
+  def update(manifest, add, del) do
+    add = Enum.map(add, &trim_dir/1)
+    del = Enum.map(del, &trim_dir/1)
 
-    snapshot = {seq, files, dirt}
+    snapshot =
+      (manifest.snapshot ++ add)
+      |> Enum.reject(&(&1 in del))
+
     manifest = %{manifest | snapshot: snapshot}
     write_snapshot(manifest)
   end
 
   defp write_snapshot(manifest) do
-    with {:ok, size} <- FileIO.append(manifest.io, manifest.snapshot),
-         :ok <- FileIO.sync(manifest.io) do
-      manifest = %{manifest | size: manifest.size + size}
-      maybe_rotate(manifest)
+    log_key = switch(manifest.active)
+    log = Map.get(manifest, log_key)
+    version = manifest.version + 1
+
+    with :ok <- FileIO.truncate(log, 0),
+         {:ok, _} <- FileIO.append(log, {version, manifest.snapshot}),
+         :ok <- FileIO.sync(log) do
+      {:ok, %{manifest | active: log_key, version: version}}
     end
   end
 
   defp recover_manifest(manifest) do
-    with {:ok, snapshot} <- recover_snapshot(manifest) do
-      {:ok, %{manifest | snapshot: snapshot}}
+    a = recover_snapshot(manifest.a)
+    b = recover_snapshot(manifest.b)
+
+    case {a, b} do
+      {{:ok, a_ver, a_snapshot}, {:ok, b_ver, _}} when a_ver >= b_ver ->
+        {:ok, %{manifest | active: :a, version: a_ver, snapshot: a_snapshot}}
+
+      {{:ok, _, _}, {:ok, b_ver, b_snapshot}} ->
+        {:ok, %{manifest | active: :b, version: b_ver, snapshot: b_snapshot}}
+
+      {{:ok, a_ver, a_snapshot}, :corrupt} ->
+        {:ok, %{manifest | active: :a, version: a_ver, snapshot: a_snapshot}}
+
+      {:corrupt, {:ok, b_ver, b_snapshot}} ->
+        {:ok, %{manifest | active: :b, version: b_ver, snapshot: b_snapshot}}
+
+      {:corrupt, :corrupt} ->
+        {:error, :corrupt_manifest}
+
+      {{:error, _reason} = e, _} ->
+        e
+
+      {_, {:error, _reason} = e} ->
+        e
     end
   end
 
-  defp recover_snapshot(manifest) do
-    manifest.io
-    |> FileIO.stream()
-    |> Enum.reduce_while({:ok, manifest.snapshot}, fn
-      {:ok, snapshot}, _acc ->
-        {:cont, {:ok, snapshot}}
+  defp recover_snapshot(log) do
+    case FileIO.offset_read(log, 0) do
+      {:ok, {version, snapshot}} ->
+        {:ok, version, snapshot}
 
-      {:corrupt, pos}, {:ok, acc} ->
-        if valid_snapshot?(acc, manifest.data_dir) do
-          FileIO.truncate(manifest.io, pos)
-          {:halt, {:ok, acc}}
-        else
-          {:halt, {:error, :corrupt_manifest}}
-        end
+      {:error, :eof} ->
+        {:ok, 0, {0, []}}
 
-      error, _acc ->
-        {:halt, error}
-    end)
-  end
+      {:error, reason}
+      when reason in [
+             :failed_to_read,
+             :invalid_crc,
+             :invalid_size,
+             :invalid_header,
+             :invalid_term
+           ] ->
+        :corrupt
 
-  defp maybe_rotate(%{size: size, max_log_size: max_log_size} = manifest)
-       when size >= max_log_size do
-    tmp_path = tmp(manifest.path)
-
-    with :ok <- FileIO.close(manifest.io),
-         :ok <- FileIO.rename(manifest.path, tmp_path),
-         {:ok, new_io} <- FileIO.open(manifest.path, write?: true),
-         {:ok, size} <- FileIO.append(new_io, manifest.snapshot),
-         :ok <- FileIO.sync(new_io),
-         :ok <- FileIO.remove(tmp_path) do
-      {:ok, %{manifest | io: new_io, size: size}}
+      error ->
+        error
     end
-  end
-
-  defp maybe_rotate(manifest), do: {:ok, manifest}
-
-  defp valid_snapshot?({_, files, _}, dir) do
-    files
-    |> Enum.map(&elem(&1, 1))
-    |> Enum.map(&Path.join(dir, &1))
-    |> Enum.all?(&File.exists?/1)
   end
 
   defp trim_dir({type, path}), do: {type, Path.basename(path)}
-  defp tmp(path), do: path <> ".tmp"
+  defp apath(dir), do: Path.join(dir, @alog_file)
+  defp bpath(dir), do: Path.join(dir, @blog_file)
+  defp switch(:a), do: :b
+  defp switch(:b), do: :a
 end
