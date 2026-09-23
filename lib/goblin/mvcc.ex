@@ -1,197 +1,206 @@
 defmodule Goblin.MVCC do
   @moduledoc false
 
+  alias Goblin.{MemTable, DiskTable}
+
   @type t :: :ets.table()
   @type table :: Goblin.MemTable.t() | Goblin.DiskTable.t()
   @type level_key :: -1 | non_neg_integer()
 
   @spec new() :: t()
   def new() do
-    :ets.new(:goblin_mvcc, [
-      :public,
-      :ordered_set,
-      write_concurrency: true,
-      read_concurrency: true
-    ])
+    ref =
+      :ets.new(:goblin_mvcc, [
+        :public,
+        :ordered_set,
+        write_concurrency: true,
+        read_concurrency: true
+      ])
+
+    :ets.insert(ref, {:meta, 0, 0, -1})
+    ref
   end
 
-  @spec put_snapshot(t(), map(), non_neg_integer()) :: :ok
-  def put_snapshot(ref, levels, seq) do
-    version =
-      case current_meta(ref) do
-        :empty -> 0
-        {_, _, version} -> version + 1
-      end
-
-    max_lk =
-      Enum.reduce(levels, -1, fn
-        {lk, level}, max_lk when lk <= 0 ->
-          Enum.each(level, fn t ->
-            :ets.insert(ref, {{:table, version, lk, nil, nil, t.id}, t})
-          end)
-
-          max(lk, max_lk)
-
-        {lk, level}, max_lk ->
-          Enum.each(level, fn %{key_range: {min, max}} = dt ->
-            :ets.insert(ref, {{:table, version, lk, max, min, dt.id}, dt})
-          end)
-
-          max(lk, max_lk)
-      end)
-
-    :ets.insert(ref, {{:snapshot, version}, seq, max_lk})
+  @spec update_sequence(t(), non_neg_integer()) :: :ok
+  def update_sequence(ref, seq) do
+    :ets.update_element(ref, :meta, {3, seq})
     :ok
   end
 
-  @spec get_tables(t(), non_neg_integer()) :: list(table())
-  def get_tables(ref, version) do
-    :ets.match(ref, {{:table, version, :_, :_, :_, :_}, :"$1"})
-    |> List.flatten()
-  end
+  @spec put_version(t(), list(), list()) :: :ok
+  def put_version(ref, new, old) do
+    [{:meta, version, _seq, max_lk}] = :ets.lookup(ref, :meta)
 
-  def get_tables(ref, version, lk, _keys) when lk <= 0 do
-    next = :ets.next(ref, {:table, version, lk, nil, nil, ""})
-    enumerate(ref, version, lk, next, [])
-  end
+    version = version + 1
+    max_lk = Enum.reduce(new, max_lk, &max(&1.level_key, &2))
 
-  def get_tables(ref, version, lk, [min_key | _] = keys) do
-    start = {:table, version, lk, min_key, min_key, ""}
+    Enum.each(new, fn tab ->
+      key = table_key(tab)
+      :ets.insert(ref, {key, version, nil, tab})
+    end)
 
-    acc =
-      case :ets.prev(ref, start) do
-        {:table, ^version, ^lk, ^min_key, _min, _id} = idx -> [:ets.lookup_element(ref, idx, 2)]
-        _ -> []
-      end
+    Enum.each(old, fn tab ->
+      key = {:table, tab.level_key, tab.max_key, tab.min_key, tab.id}
+      :ets.update_element(ref, key, {3, version})
+    end)
 
-    merge(ref, version, lk, keys, :ets.next(ref, start), acc)
-  end
-
-  @spec add_reader(t(), term()) :: {non_neg_integer(), level_key(), non_neg_integer()}
-  def add_reader(ref, reader_key) do
-    :ets.insert(ref, {{:reader, :pending, reader_key}})
-
-    case current_meta(ref) do
-      {seq, max_lk, version} ->
-        :ets.insert(ref, {{:reader, version, reader_key}})
-        :ets.delete(ref, {:reader, :pending, reader_key})
-        {seq, max_lk, version}
-
-      :empty ->
-        :ets.delete(ref, {:reader, :pending, reader_key})
-        raise "MVCC.add_reader called before any snapshots were published"
-    end
-  end
-
-  @spec release_reader(t(), term()) :: :ok
-  def release_reader(ref, reader_key) do
-    :ets.match_delete(ref, {{:reader, :_, reader_key}})
+    :ets.update_element(ref, :meta, [{2, version}, {4, max_lk}])
     :ok
   end
 
-  @spec reader_alive?(t(), non_neg_integer(), term()) :: boolean()
-  def reader_alive?(ref, version, reader_key) do
-    :ets.member(ref, {:reader, version, reader_key})
-  end
+  @spec pin(t()) :: {reference(), non_neg_integer(), -1 | non_neg_integer()}
+  def pin(ref) do
+    key = make_ref()
+    [{_, ver, seq, max_lk}] = :ets.lookup(ref, :meta)
+    :ets.insert(ref, {{:pin, key}, ver, self()})
 
-  @spec sweep(t()) :: list(table())
-  def sweep(ref) do
-    max_v =
-      case current_meta(ref) do
-        :empty -> 0
-        {_, _, max_v} -> max_v
-      end
-
-    first_v =
-      case :ets.next(ref, {:snapshot, -1}) do
-        {:snapshot, v} -> v
-        _ -> max_v
-      end
-
-    case has_pending_reader?(ref) do
-      true -> []
-      false -> sweepable_tables(ref, first_v, max_v)
-    end
-  end
-
-  defp sweepable_tables(ref, v, max_v, acc \\ {MapSet.new(), MapSet.new()})
-
-  defp sweepable_tables(ref, v, max_v, {all, in_use}) when v >= max_v do
-    in_use =
-      get_tables(ref, max_v)
-      |> MapSet.new()
-      |> MapSet.union(in_use)
-
-    MapSet.difference(all, in_use)
-    |> MapSet.to_list()
-  end
-
-  defp sweepable_tables(ref, v, max_v, {all, in_use}) do
-    key = {:snapshot, v}
-
-    tables =
-      get_tables(ref, v)
-      |> MapSet.new()
-
-    {all, in_use} =
-      case in_use?(ref, v) do
-        true ->
-          in_use = MapSet.union(in_use, tables)
-          all = MapSet.union(all, tables)
-          {all, in_use}
-
-        false ->
-          all = MapSet.union(all, tables)
-          :ets.match_delete(ref, {{:table, v, :_, :_, :_, :_}, :_})
-          :ets.delete(ref, key)
-          {all, in_use}
-      end
-
-    case :ets.next(ref, key) do
-      {:snapshot, next_v} -> sweepable_tables(ref, next_v, max_v, {all, in_use})
-      _ -> sweepable_tables(ref, max_v, max_v, {all, in_use})
-    end
-  end
-
-  defp enumerate(ref, version, lk, {:table, version, lk, _max, _min, _id} = idx, acc) do
-    enumerate(ref, version, lk, :ets.next(ref, idx), [:ets.lookup_element(ref, idx, 2) | acc])
-  end
-
-  defp enumerate(_ref, _version, _lk, _idx, acc), do: acc
-
-  defp merge(_ref, _version, _lk, [], _idx, acc), do: acc
-
-  defp merge(ref, version, lk, keys, {:table, version, lk, max_key, min_key, _id} = idx, acc) do
-    case Enum.drop_while(keys, &(&1 < min_key)) do
-      [] ->
-        acc
-
-      [k | _] = keys when k <= max_key ->
-        keys = Enum.drop_while(keys, &(&1 <= max_key))
-
-        merge(ref, version, lk, keys, :ets.next(ref, idx), [
-          :ets.lookup_element(ref, idx, 2) | acc
-        ])
-
-      keys ->
-        merge(ref, version, lk, keys, :ets.next(ref, idx), acc)
-    end
-  end
-
-  defp merge(_ref, _version, _lk, _keys, _idx, acc), do: acc
-
-  defp current_meta(ref) do
-    case :ets.prev(ref, {:snapshot, nil}) do
-      {:snapshot, version} = key ->
-        seq = :ets.lookup_element(ref, key, 2)
-        max_lk = :ets.lookup_element(ref, key, 3)
-        {seq, max_lk, version}
+    case :ets.lookup_element(ref, :meta, 2) do
+      ^ver ->
+        {key, seq, max_lk}
 
       _ ->
-        :empty
+        :ets.delete(ref, {:pin, key})
+        pin(ref)
     end
   end
 
-  defp in_use?(ref, v), do: :ets.match(ref, {{:reader, v, :_}}) != []
-  defp has_pending_reader?(ref), do: :ets.match(ref, {{:reader, :pending, :_}}) != []
+  @spec unpin(t(), reference() | pid()) :: :ok
+  def unpin(ref, pid) when is_pid(pid) do
+    :ets.match_delete(ref, {{:pin, :_}, :_, pid})
+    :ok
+  end
+
+  def unpin(ref, key) do
+    :ets.delete(ref, {:pin, key})
+    :ok
+  end
+
+  @spec pinned?(t(), reference()) :: boolean()
+  def pinned?(ref, key), do: :ets.member(ref, {:pin, key})
+
+  @spec sweep(t()) :: list()
+  def sweep(ref) do
+    min_pinned =
+      :ets.select(ref, [{{{:pin, :_}, :"$1", :_}, [], [:"$1"]}])
+      |> Enum.min(fn -> :ets.lookup_element(ref, :meta, 2) end)
+
+    :ets.select(ref, [
+      {
+        {{:table, :_, :_, :_, :_}, :_, :"$5", :"$6"},
+        [
+          {:andalso, {:"/=", :"$5", nil}, {:"=<", :"$5", min_pinned}}
+        ],
+        [:"$_"]
+      }
+    ])
+    |> Enum.map(fn {key, _born, _dies, tab} ->
+      :ets.delete(ref, key)
+      tab
+    end)
+  end
+
+  @spec get_all_tables(t(), reference()) :: {:ok, list()} | {:error, :no_pin}
+  def get_all_tables(ref, pin_key) do
+    with {:ok, version} <- pinned(ref, pin_key) do
+      tabs =
+        ref
+        |> :ets.select([
+          {
+            {{:table, :_, :_, :_, :_}, :"$1", :"$2", :"$3"},
+            [
+              {:andalso, {:"=<", :"$1", version},
+               {:orelse, {:==, :"$2", nil}, {:>, :"$2", version}}}
+            ],
+            [:"$3"]
+          }
+        ])
+        |> List.flatten()
+
+      {:ok, tabs}
+    end
+  end
+
+  @spec get_matching_tables(t(), reference(), -1 | non_neg_integer(), list(term())) ::
+          {:ok, list()} | {:error, :no_pin}
+  def get_matching_tables(ref, pin_key, lk, _keys) when lk <= 0 do
+    with {:ok, version} <- pinned(ref, pin_key) do
+      tabs =
+        ref
+        |> :ets.select([
+          {
+            {{:table, lk, :_, :_, :_}, :"$1", :"$2", :"$3"},
+            [
+              {:andalso, {:"=<", :"$1", version},
+               {:orelse, {:==, :"$2", nil}, {:>, :"$2", version}}}
+            ],
+            [:"$3"]
+          }
+        ])
+        |> List.flatten()
+
+      {:ok, tabs}
+    end
+  end
+
+  def get_matching_tables(ref, pin_key, lk, [min_key | _] = keys) do
+    with {:ok, version} <- pinned(ref, pin_key) do
+      start = {:table, lk, min_key, min_key, ""}
+
+      first =
+        case :ets.prev(ref, start) do
+          {:table, ^lk, _, _, _} = idx -> idx
+          _ -> :ets.next(ref, start)
+        end
+
+      {:ok, walk(ref, version, lk, first, keys, [])}
+    end
+  end
+
+  defp walk(_ref, _version, _lk, _idx, [], acc), do: acc
+
+  defp walk(ref, version, lk, {:table, lk, max, min, _} = idx, keys, acc) do
+    case visible(ref, version, idx) do
+      nil ->
+        walk(ref, version, lk, :ets.next(ref, idx), keys, acc)
+
+      tab ->
+        case Enum.drop_while(keys, &(&1 < min)) do
+          [] ->
+            acc
+
+          [k | _] = keys when k <= max ->
+            keys = Enum.drop_while(keys, &(&1 <= max))
+            walk(ref, version, lk, :ets.next(ref, idx), keys, [tab | acc])
+
+          keys ->
+            walk(ref, version, lk, :ets.next(ref, idx), keys, acc)
+        end
+    end
+  end
+
+  defp walk(_ref, _version, _lk, _idx, _keys, acc), do: acc
+
+  defp visible(ref, version, idx) do
+    born = :ets.lookup_element(ref, idx, 2, nil)
+    dies = :ets.lookup_element(ref, idx, 3, nil)
+
+    with born when is_integer(born) and born <= version <- born,
+         dies when is_nil(dies) or dies > version <- dies do
+      :ets.lookup_element(ref, idx, 4, nil)
+    else
+      _ -> nil
+    end
+  end
+
+  defp pinned(ref, pin_key) do
+    case :ets.lookup_element(ref, {:pin, pin_key}, 2, nil) do
+      nil -> {:error, :no_pin}
+      version -> {:ok, version}
+    end
+  end
+
+  defp table_key(%MemTable{} = mt), do: {:table, -1, nil, nil, mt.id}
+
+  defp table_key(%DiskTable{key_range: {min, max}} = dt),
+    do: {:table, dt.level_key, max, min, dt.id}
 end
