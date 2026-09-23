@@ -1,70 +1,36 @@
 defmodule Goblin.MemTable do
   @moduledoc false
-  alias Goblin.FileIO
 
-  defstruct [:id, :io, :ref]
+  defstruct [:id, :tid]
 
-  @type t :: %__MODULE__{
-          id: Path.t(),
-          io: FileIO.t(),
-          ref: :ets.table()
-        }
+  @type t :: %__MODULE__{}
 
-  @spec new(Path.t()) :: {:ok, non_neg_integer(), t()} | {:error, term()}
-  def new(path) do
-    with {:ok, io} <- FileIO.open(path, write?: true) do
-      ref = new_table()
+  @spec new(Path.t()) :: t()
+  def new(id), do: %__MODULE__{id: id, tid: :ets.new(:mem_table, [:ordered_set])}
 
-      max_seq =
-        FileIO.stream(io)
-        |> Enum.reduce_while(-1, fn
-          {:ok, commits}, _acc ->
-            {:cont, insert_commits(commits, ref)}
+  @spec delete(t()) :: :ok
+  def delete(mt), do: :ets.delete(mt.tid)
 
-          {:corrupt, pos}, acc ->
-            FileIO.truncate(io, pos)
-            {:halt, acc}
-
-          {:error, _reason}, acc ->
-            {:halt, acc}
-        end)
-
-      {:ok, max_seq + 1,
-       %__MODULE__{
-         io: io,
-         id: path,
-         ref: ref
-       }}
-    end
-  end
-
-  @spec close(t()) :: :ok | {:error, term()}
-  def close(mt), do: FileIO.close(mt.io)
-
-  @spec destroy(t()) :: :ok
-  def destroy(mt) do
-    :ets.delete(mt.ref)
-    :ok
-  end
-
-  @spec append(t(), list({term(), non_neg_integer(), term()})) :: :ok | {:error, term()}
-  def append(mem_table, commits) do
-    with {:ok, _size} <- FileIO.append(mem_table.io, commits),
-         :ok <- FileIO.sync(mem_table.io) do
-      _ = insert_commits(commits, mem_table.ref)
-      :ok
-    end
+  @spec append(t(), list({term(), non_neg_integer(), term()})) :: non_neg_integer()
+  def append(mt, commits) do
+    Enum.reduce(commits, -1, fn {key, seq, val}, acc ->
+      :ets.insert(mt.tid, {{key, -seq}, val})
+      max(acc, seq)
+    end)
   end
 
   @spec has_key?(t(), term()) :: boolean()
-  def has_key?(mem_table, key) do
-    table_has_key?(mem_table.ref, key)
+  def has_key?(mt, key) do
+    case :ets.prev(mt.tid, {key, 1}) do
+      {k, _} when k == key -> true
+      _ -> false
+    end
   end
 
   @spec search(t(), list(term()), non_neg_integer()) :: list({term(), non_neg_integer(), term()})
-  def search(mem_table, keys, seq) do
+  def search(mt, keys, seq) do
     Enum.flat_map(keys, fn key ->
-      case search_table(mem_table.ref, key, seq) do
+      case search_table(mt.tid, key, seq) do
         nil -> []
         triple -> [triple]
       end
@@ -73,88 +39,63 @@ defmodule Goblin.MemTable do
 
   @spec stream(t(), non_neg_integer() | :infinity) ::
           Enumerable.t({term(), non_neg_integer(), term()})
-  def stream(mem_table, max_seq \\ :infinity) do
+  def stream(mt, max_seq \\ :infinity) do
     Stream.resource(
-      fn -> iterate(mem_table.ref) end,
+      fn -> iterate(mt) end,
       fn
         :end_of_iteration ->
           {:halt, nil}
 
         {key, seq} = idx when seq < max_seq ->
-          case get(mem_table.ref, key, seq) do
-            nil -> {[], iterate(mem_table.ref, idx)}
-            triple -> {[triple], iterate(mem_table.ref, idx)}
+          case get(mt, key, seq) do
+            nil -> {[], iterate(mt, idx)}
+            triple -> {[triple], iterate(mt, idx)}
           end
 
         idx ->
-          {[], iterate(mem_table.ref, idx)}
+          {[], iterate(mt, idx)}
       end,
       fn _ -> :ok end
     )
   end
 
   @spec size(t()) :: non_neg_integer()
-  def size(mt),
-    do: :ets.info(mt.ref, :memory) * :erlang.system_info(:wordsize)
+  def size(mt), do: :ets.info(mt.tid, :memory) * :erlang.system_info(:wordsize)
 
-  defp new_table() do
-    :ets.new(:mem_table, [:ordered_set])
-  end
-
-  defp insert_commits(commits, ref) do
-    commits
-    |> Enum.reduce(-1, fn {key, seq, val}, acc ->
-      insert(ref, key, seq, val)
-      max(acc, seq)
-    end)
-  end
-
-  defp insert(ref, key, seq, value) do
-    :ets.insert(ref, {{key, -seq}, value})
-    :ok
-  end
-
-  defp get(ref, key, seq) do
-    case :ets.lookup(ref, {key, -seq}) do
+  defp get(mt, key, seq) do
+    case :ets.lookup(mt.tid, {key, -seq}) do
       [] -> nil
       [{_, value}] -> {key, seq, value}
     end
   end
 
-  defp search_table(ref, key, seq) do
-    case :ets.next(ref, {key, -seq}) do
+  defp search_table(mt, key, seq) do
+    case :ets.next(mt.tid, {key, -seq}) do
       {k, s} when key == k ->
-        [{_, value}] = :ets.lookup(ref, {k, s})
-        {key, abs(s), value}
+        [{_, val}] = :ets.lookup(mt, {k, s})
+        {key, abs(s), val}
 
       _ ->
         nil
     end
   end
 
-  defp table_has_key?(ref, key) do
-    case :ets.prev(ref, {key, 1}) do
-      {k, _} when k == key -> true
-      _ -> false
-    end
+  defp iterate(mt) do
+    idx = :ets.first(mt.tid)
+    handle_iteration(mt, idx)
   end
 
-  defp iterate(ref) do
-    idx = :ets.first(ref)
-    handle_iteration(ref, idx)
+  defp iterate(mt, {key, seq}) do
+    idx = :ets.next(mt.tid, {key, -seq})
+    handle_iteration(mt, idx)
   end
 
-  defp iterate(ref, {key, seq}) do
-    idx = :ets.next(ref, {key, -seq})
-    handle_iteration(ref, idx)
+  defp iterate(mt, idx) do
+    idx = :ets.next(mt.tid, idx)
+    handle_iteration(mt, idx)
   end
 
-  defp iterate(ref, idx) do
-    idx = :ets.next(ref, idx)
-    handle_iteration(ref, idx)
-  end
-
-  defp handle_iteration(_ref, :"$end_of_table"), do: :end_of_iteration
-  defp handle_iteration(_ref, {key, seq}), do: {key, abs(seq)}
-  defp handle_iteration(ref, idx), do: iterate(ref, idx)
+  defp handle_iteration(_mt, :"$end_of_table"), do: :end_of_iteration
+  defp handle_iteration(_mt, {key, seq}), do: {key, abs(seq)}
+  defp handle_iteration(mt, idx), do: iterate(mt, idx)
 end
