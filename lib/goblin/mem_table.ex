@@ -1,27 +1,30 @@
 defmodule Goblin.MemTable do
   @moduledoc false
 
-  defstruct [:id, :tid]
+  defstruct [
+    :ref,
+    level_key: -1
+  ]
 
-  @type t :: %__MODULE__{}
+  @type t :: %__MODULE__{ref: :ets.tid()}
 
-  @spec new(Path.t()) :: t()
-  def new(id), do: %__MODULE__{id: id, tid: :ets.new(:mem_table, [:ordered_set])}
+  @spec new() :: t()
+  def new(), do: %__MODULE__{ref: :ets.new(:mem_table, [:ordered_set])}
 
   @spec delete(t()) :: :ok
-  def delete(mt), do: :ets.delete(mt.tid)
+  def delete(mt), do: :ets.delete(mt.ref)
 
   @spec append(t(), list({term(), non_neg_integer(), term()})) :: non_neg_integer()
   def append(mt, commits) do
     Enum.reduce(commits, -1, fn {key, seq, val}, acc ->
-      :ets.insert(mt.tid, {{key, -seq}, val})
+      :ets.insert(mt.ref, {{key, -seq}, val})
       max(acc, seq)
     end)
   end
 
   @spec has_key?(t(), term()) :: boolean()
   def has_key?(mt, key) do
-    case :ets.prev(mt.tid, {key, 1}) do
+    case :ets.prev(mt.ref, {key, 1}) do
       {k, _} when k == key -> true
       _ -> false
     end
@@ -30,7 +33,7 @@ defmodule Goblin.MemTable do
   @spec search(t(), list(term()), non_neg_integer()) :: list({term(), non_neg_integer(), term()})
   def search(mt, keys, seq) do
     Enum.flat_map(keys, fn key ->
-      case search_table(mt.tid, key, seq) do
+      case search_table(mt, key, seq) do
         nil -> []
         triple -> [triple]
       end
@@ -60,19 +63,19 @@ defmodule Goblin.MemTable do
   end
 
   @spec size(t()) :: non_neg_integer()
-  def size(mt), do: :ets.info(mt.tid, :memory) * :erlang.system_info(:wordsize)
+  def size(mt), do: :ets.info(mt.ref, :memory) * :erlang.system_info(:wordsize)
 
   defp get(mt, key, seq) do
-    case :ets.lookup(mt.tid, {key, -seq}) do
+    case :ets.lookup(mt.ref, {key, -seq}) do
       [] -> nil
       [{_, value}] -> {key, seq, value}
     end
   end
 
   defp search_table(mt, key, seq) do
-    case :ets.next(mt.tid, {key, -seq}) do
+    case :ets.next(mt.ref, {key, -seq}) do
       {k, s} when key == k ->
-        [{_, val}] = :ets.lookup(mt, {k, s})
+        [{_, val}] = :ets.lookup(mt.ref, {k, s})
         {key, abs(s), val}
 
       _ ->
@@ -81,17 +84,17 @@ defmodule Goblin.MemTable do
   end
 
   defp iterate(mt) do
-    idx = :ets.first(mt.tid)
+    idx = :ets.first(mt.ref)
     handle_iteration(mt, idx)
   end
 
   defp iterate(mt, {key, seq}) do
-    idx = :ets.next(mt.tid, {key, -seq})
+    idx = :ets.next(mt.ref, {key, -seq})
     handle_iteration(mt, idx)
   end
 
   defp iterate(mt, idx) do
-    idx = :ets.next(mt.tid, idx)
+    idx = :ets.next(mt.ref, idx)
     handle_iteration(mt, idx)
   end
 
