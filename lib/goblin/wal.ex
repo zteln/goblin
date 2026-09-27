@@ -17,7 +17,7 @@ defmodule Goblin.WAL do
   end
 
   @spec delete(t()) :: :ok | {:error, term()}
-  def delete(wal), do: FileIO.remove(wal.io)
+  def delete(wal), do: FileIO.remove(wal.id)
 
   @spec close(t()) :: :ok | {:error, term()}
   def close(wal), do: FileIO.close(wal.io)
