@@ -3,7 +3,14 @@ defmodule Goblin.MemTableTest do
   use ExUnitProperties
   alias Goblin.MemTable
 
-  @moduletag :tmp_dir
+  setup do
+    %{mem_table: MemTable.new()}
+  end
+
+  describe "new/0, delete/1" do
+  end
+
+  ######
 
   setup ctx do
     path = Path.join(ctx.tmp_dir, "test.wal")
