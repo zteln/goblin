@@ -23,6 +23,8 @@ end
 ```
 Then run `mix deps.get`.
 
+Goblin requires Erlang/OTP 26 or later.
+
 ### Starting a database
 
 ```elixir
