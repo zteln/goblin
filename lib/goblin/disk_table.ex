@@ -1,12 +1,9 @@
 defmodule Goblin.DiskTable do
   @moduledoc false
 
-  alias Goblin.{
-    BloomFilter,
-    FileIO,
-    IOError
-  }
-
+  alias Goblin.BloomFilter
+  alias Goblin.FileIO
+  alias Goblin.IOError
   alias Goblin.DiskTable.{MemIndex, DiskIndex}
 
   @index_interval 4096
@@ -30,6 +27,9 @@ defmodule Goblin.DiskTable do
           index: MemIndex.t(),
           size: non_neg_integer()
         }
+
+  @spec delete(t()) :: :ok | {:error, term()}
+  def delete(dt), do: FileIO.remove(dt.id)
 
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}
@@ -276,7 +276,7 @@ defmodule Goblin.DiskTable do
     seq_range =
       case dt.seq_range do
         nil -> {seq, seq}
-        {min, _} -> {min, seq}
+        {min, max} -> {min(min, seq), max(max, seq)}
       end
 
     %{
