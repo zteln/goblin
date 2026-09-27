@@ -1,7 +1,8 @@
 defmodule Goblin.MVCC do
   @moduledoc false
 
-  alias Goblin.{MemTable, DiskTable}
+  alias Goblin.MemTable
+  alias Goblin.DiskTable
 
   @type t :: :ets.table()
   @type table :: Goblin.MemTable.t() | Goblin.DiskTable.t()
@@ -30,7 +31,6 @@ defmodule Goblin.MVCC do
   @spec put_version(t(), list(), list()) :: :ok
   def put_version(ref, new, old) do
     [{:meta, version, _seq, max_lk}] = :ets.lookup(ref, :meta)
-
     version = version + 1
     max_lk = Enum.reduce(new, max_lk, &max(&1.level_key, &2))
 
@@ -40,7 +40,7 @@ defmodule Goblin.MVCC do
     end)
 
     Enum.each(old, fn tab ->
-      key = {:table, tab.level_key, tab.max_key, tab.min_key, tab.id}
+      key = table_key(tab)
       :ets.update_element(ref, key, {3, version})
     end)
 
@@ -48,19 +48,18 @@ defmodule Goblin.MVCC do
     :ok
   end
 
-  @spec pin(t()) :: {reference(), non_neg_integer(), -1 | non_neg_integer()}
-  def pin(ref) do
-    key = make_ref()
+  @spec pin(t(), reference()) :: {non_neg_integer(), -1 | non_neg_integer()}
+  def pin(ref, key) do
     [{_, ver, seq, max_lk}] = :ets.lookup(ref, :meta)
     :ets.insert(ref, {{:pin, key}, ver, self()})
 
     case :ets.lookup_element(ref, :meta, 2) do
       ^ver ->
-        {key, seq, max_lk}
+        {seq, max_lk}
 
       _ ->
         :ets.delete(ref, {:pin, key})
-        pin(ref)
+        pin(ref, key)
     end
   end
 
@@ -75,6 +74,12 @@ defmodule Goblin.MVCC do
     :ok
   end
 
+  @spec pinned_pids(t()) :: list(pid())
+  def pinned_pids(ref) do
+    :ets.match(ref, {{:pin, :_}, :_, :"$1"})
+    |> List.flatten()
+  end
+
   @spec pinned?(t(), reference()) :: boolean()
   def pinned?(ref, key), do: :ets.member(ref, {:pin, key})
 
@@ -86,7 +91,7 @@ defmodule Goblin.MVCC do
 
     :ets.select(ref, [
       {
-        {{:table, :_, :_, :_, :_}, :_, :"$5", :"$6"},
+        {{:table, :_, :_, :_, :_}, :_, :"$5", :_},
         [
           {:andalso, {:"/=", :"$5", nil}, {:"=<", :"$5", min_pinned}}
         ],
@@ -99,61 +104,52 @@ defmodule Goblin.MVCC do
     end)
   end
 
-  @spec get_all_tables(t(), reference()) :: {:ok, list()} | {:error, :no_pin}
+  @spec get_all_tables(t(), reference()) :: list()
   def get_all_tables(ref, pin_key) do
-    with {:ok, version} <- pinned(ref, pin_key) do
-      tabs =
-        ref
-        |> :ets.select([
-          {
-            {{:table, :_, :_, :_, :_}, :"$1", :"$2", :"$3"},
-            [
-              {:andalso, {:"=<", :"$1", version},
-               {:orelse, {:==, :"$2", nil}, {:>, :"$2", version}}}
-            ],
-            [:"$3"]
-          }
-        ])
-        |> List.flatten()
+    ver = pinned(ref, pin_key)
 
-      {:ok, tabs}
-    end
+    ref
+    |> :ets.select([
+      {
+        {{:table, :_, :_, :_, :_}, :"$1", :"$2", :"$3"},
+        [
+          {:andalso, {:"=<", :"$1", ver}, {:orelse, {:==, :"$2", nil}, {:>, :"$2", ver}}}
+        ],
+        [:"$3"]
+      }
+    ])
+    |> List.flatten()
   end
 
   @spec get_matching_tables(t(), reference(), -1 | non_neg_integer(), list(term())) ::
-          {:ok, list()} | {:error, :no_pin}
+          list()
   def get_matching_tables(ref, pin_key, lk, _keys) when lk <= 0 do
-    with {:ok, version} <- pinned(ref, pin_key) do
-      tabs =
-        ref
-        |> :ets.select([
-          {
-            {{:table, lk, :_, :_, :_}, :"$1", :"$2", :"$3"},
-            [
-              {:andalso, {:"=<", :"$1", version},
-               {:orelse, {:==, :"$2", nil}, {:>, :"$2", version}}}
-            ],
-            [:"$3"]
-          }
-        ])
-        |> List.flatten()
+    ver = pinned(ref, pin_key)
 
-      {:ok, tabs}
-    end
+    ref
+    |> :ets.select([
+      {
+        {{:table, lk, :_, :_, :_}, :"$1", :"$2", :"$3"},
+        [
+          {:andalso, {:"=<", :"$1", ver}, {:orelse, {:==, :"$2", nil}, {:>, :"$2", ver}}}
+        ],
+        [:"$3"]
+      }
+    ])
+    |> List.flatten()
   end
 
   def get_matching_tables(ref, pin_key, lk, [min_key | _] = keys) do
-    with {:ok, version} <- pinned(ref, pin_key) do
-      start = {:table, lk, min_key, min_key, ""}
+    ver = pinned(ref, pin_key)
+    start = {:table, lk, min_key, min_key, ""}
 
-      first =
-        case :ets.prev(ref, start) do
-          {:table, ^lk, _, _, _} = idx -> idx
-          _ -> :ets.next(ref, start)
-        end
+    first =
+      case :ets.prev(ref, start) do
+        {:table, ^lk, _, _, _} = idx -> idx
+        _ -> :ets.next(ref, start)
+      end
 
-      {:ok, walk(ref, version, lk, first, keys, [])}
-    end
+    walk(ref, ver, lk, first, keys, [])
   end
 
   defp walk(_ref, _version, _lk, _idx, [], acc), do: acc
@@ -193,13 +189,12 @@ defmodule Goblin.MVCC do
   end
 
   defp pinned(ref, pin_key) do
-    case :ets.lookup_element(ref, {:pin, pin_key}, 2, nil) do
-      nil -> {:error, :no_pin}
-      version -> {:ok, version}
-    end
+    :ets.lookup_element(ref, {:pin, pin_key}, 2, nil) ||
+      raise ArgumentError,
+            "transaction is no longer active (used outside its Goblin.read/transaction scope?)"
   end
 
-  defp table_key(%MemTable{} = mt), do: {:table, -1, nil, nil, mt.id}
+  defp table_key(%MemTable{} = mt), do: {:table, mt.level_key, nil, nil, mt.ref}
 
   defp table_key(%DiskTable{key_range: {min, max}} = dt),
     do: {:table, dt.level_key, max, min, dt.id}
