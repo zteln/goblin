@@ -17,12 +17,14 @@ defmodule Goblin.Tx do
       end)
   """
 
-  alias Goblin.{MVCC, MemTable, DiskTable, Merge}
+  alias Goblin.MVCC
+  alias Goblin.MemTable
+  alias Goblin.DiskTable
+  alias Goblin.Merge
 
   defstruct [
     :mode,
     :sequence,
-    :tx_id,
     :tx_key,
     :mvcc,
     :max_level_key,
@@ -32,7 +34,7 @@ defmodule Goblin.Tx do
   @type t :: %__MODULE__{
           mode: :write | :read,
           sequence: non_neg_integer(),
-          tx_id: non_neg_integer(),
+          tx_key: reference(),
           mvcc: :ets.table(),
           max_level_key: -1 | non_neg_integer(),
           commits: list({term(), non_neg_integer(), term()})
@@ -240,16 +242,15 @@ defmodule Goblin.Tx do
       recurse_levels(tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
         sorted_keys = Enum.sort(keys)
 
+        tables = fn
+          -2 -> tx_table
+          lk -> MVCC.get_matching_tables(tx.mvcc, tx.tx_key, lk, sorted_keys)
+        end
+
         {acc, keys} =
           Merge.stream(
             fn ->
-              tables =
-                case lk do
-                  -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk, sorted_keys)]
-                  _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk, sorted_keys)
-                end
-
-              tables
+              tables.(lk)
               |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
               |> Enum.map(&table_search(&1, sorted_keys, tx.sequence))
             end,
@@ -307,8 +308,8 @@ defmodule Goblin.Tx do
     recurse_levels(tx.max_level_key, false, fn lk, _acc ->
       tables =
         case lk do
-          -1 -> [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id, lk, [key])]
-          _ -> MVCC.get_tables(tx.mvcc, tx.tx_id, lk, [key])
+          -1 -> [tx_table | MVCC.get_matching_tables(tx.mvcc, tx.tx_key, lk, [key])]
+          _ -> MVCC.get_matching_tables(tx.mvcc, tx.tx_key, lk, [key])
         end
 
       tables
@@ -351,7 +352,7 @@ defmodule Goblin.Tx do
   def scan(tx, opts \\ []) do
     scan_stream(
       fn ->
-        if not MVCC.reader_alive?(tx.mvcc, tx.tx_id, tx.tx_key),
+        if not MVCC.pinned?(tx.mvcc, tx.tx_key),
           do:
             raise(
               "Goblin.Tx.scan/2 stream was enumerated outside its transaction; " <>
@@ -359,7 +360,7 @@ defmodule Goblin.Tx do
             )
 
         tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
-        {tx.sequence, [tx_table | MVCC.get_tables(tx.mvcc, tx.tx_id)]}
+        {tx.sequence, [tx_table | MVCC.get_all_tables(tx.mvcc, tx.tx_key)]}
       end,
       opts
     )
@@ -433,7 +434,7 @@ defmodule Goblin.Tx do
     end)
   end
 
-  defp recurse_levels(lk \\ -1, max_lk, acc, f)
+  defp recurse_levels(lk \\ -2, max_lk, acc, f)
   defp recurse_levels(lk, max_lk, acc, _f) when lk > max_lk, do: acc
 
   defp recurse_levels(lk, max_lk, acc, f) do
