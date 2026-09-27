@@ -25,8 +25,11 @@ Benchee.run(
   },
   inputs: inputs,
   before_each: fn {db, num_keys} ->
-    key = :rand.uniform(num_keys)
-    {db, key, key + num_keys}
+    key = :rand.uniform(2 * num_keys)
+    # hits are even integer keys
+    # misses are odd integer keys (to be within disk table key range)
+    {hit, miss} = if rem(key, 2) == 0, do: {key, key + 1}, else: {key - 1, key}
+    {db, hit, miss}
   end,
   profile_after: if("--profile" in System.argv(), do: :tprof, else: false)
 )
