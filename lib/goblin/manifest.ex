@@ -52,19 +52,15 @@ defmodule Goblin.Manifest do
 
   @spec snapshot(t()) :: snapshot()
   def snapshot(manifest) do
-    manifest.snapshot
+    [@alog_file, @blog_file | manifest.snapshot]
     |> Enum.map(&Path.join(manifest.data_dir, &1))
   end
-
-  @spec logs(t()) :: list(Path.t())
-  def logs(manifest),
-    do: [Path.join(manifest.data_dir, @alog_file), Path.join(manifest.data_dir, @blog_file)]
 
   @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()})) ::
           {:ok, t()} | {:error, term()}
   def update(manifest, add, del) do
-    add = Enum.map(add, &trim_dir/1)
-    del = Enum.map(del, &trim_dir/1)
+    add = Enum.map(add, &Path.basename/1)
+    del = Enum.map(del, &Path.basename/1)
 
     snapshot =
       (manifest.snapshot ++ add)
@@ -120,7 +116,7 @@ defmodule Goblin.Manifest do
         {:ok, version, snapshot}
 
       {:error, :eof} ->
-        {:ok, 0, {0, []}}
+        {:ok, 0, []}
 
       {:error, reason}
       when reason in [
@@ -137,7 +133,6 @@ defmodule Goblin.Manifest do
     end
   end
 
-  defp trim_dir({type, path}), do: {type, Path.basename(path)}
   defp apath(dir), do: Path.join(dir, @alog_file)
   defp bpath(dir), do: Path.join(dir, @blog_file)
   defp switch(:a), do: :b
