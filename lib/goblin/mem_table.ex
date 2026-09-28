@@ -12,7 +12,10 @@ defmodule Goblin.MemTable do
   def new(), do: %__MODULE__{ref: :ets.new(:mem_table, [:ordered_set])}
 
   @spec delete(t()) :: :ok
-  def delete(mt), do: :ets.delete(mt.ref)
+  def delete(mt) do
+    :ets.delete(mt.ref)
+    :ok
+  end
 
   @spec append(t(), list({term(), non_neg_integer(), term()})) :: non_neg_integer()
   def append(mt, commits) do
