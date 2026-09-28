@@ -121,7 +121,12 @@ defmodule Goblin.FileIO do
           Enumerable.t({:ok, any()} | {:corrupt, non_neg_integer()} | {:error, term()})
   def stream(file) do
     Stream.resource(
-      fn -> {file, 0} end,
+      fn ->
+        case set_position(file, 0) do
+          :ok -> {file, 0}
+          _ -> :halt
+        end
+      end,
       fn
         :halt ->
           {:halt, nil}
