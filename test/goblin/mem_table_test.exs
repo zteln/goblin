@@ -8,86 +8,29 @@ defmodule Goblin.MemTableTest do
   end
 
   describe "new/0, delete/1" do
-  end
-
-  ######
-
-  setup ctx do
-    path = Path.join(ctx.tmp_dir, "test.wal")
-    {:ok, _, mem_table} = MemTable.new(path)
-    %{wal_path: path, mem_table: mem_table}
-  end
-
-  describe "new/1, close/1, destroy/1" do
-    test "creates new file", ctx do
-      path = uniq_rand_path(ctx.tmp_dir)
-      refute File.exists?(path)
-      assert {:ok, _, _} = MemTable.new(path)
-      assert File.exists?(path)
+    test "can create new mem table" do
+      assert %MemTable{} = MemTable.new()
     end
 
-    test "data is durable", ctx do
-      path = uniq_rand_path(ctx.tmp_dir)
-      commits = [{:foo, 0, :bar}, {:baz, 1, :baq}]
-      assert {:ok, _, mt} = MemTable.new(path)
-      MemTable.append(mt, commits)
-      assert :ok == MemTable.close(mt)
-      assert :ok == MemTable.destroy(mt)
-      assert :undefined == :ets.info(mt.ref)
-
-      assert {:ok, 2, mt} = MemTable.new(path)
-      assert Enum.sort_by(commits, &elem(&1, 0)) == MemTable.stream(mt) |> Enum.to_list()
-    end
-
-    test "recovers from trailing garbage", ctx do
-      commits = [{:foo, 0, :bar}, {:baz, 1, :baq}]
-      assert :ok == MemTable.append(ctx.mem_table, commits)
-      assert :ok == MemTable.close(ctx.mem_table)
-
-      valid_size = :filelib.file_size(ctx.wal_path)
-      File.write!(ctx.wal_path, :binary.copy(<<0xFF>>, 512), [:append])
-
-      assert {:ok, seq, mt} = MemTable.new(ctx.wal_path)
-      assert [{:foo, 0, :bar}, {:baz, 1, :baq}] == MemTable.search(mt, [:foo, :baz], seq)
-      assert seq == 2
-      assert valid_size == :filelib.file_size(ctx.wal_path)
-    end
-
-    test "recovers from WAL truncations mid-write", ctx do
-      assert :ok == MemTable.append(ctx.mem_table, [{:foo, 0, :bar}])
-      survived_size = :filelib.file_size(ctx.wal_path)
-      assert :ok == MemTable.append(ctx.mem_table, [{:baz, 1, :baq}])
-      assert :ok == MemTable.close(ctx.mem_table)
-
-      {:ok, f} = :file.open(ctx.wal_path, [:read, :write, :raw, :binary])
-      # survived_size + something less than block header (< 8 bytes)
-      {:ok, _} = :file.position(f, survived_size + 2)
-      :ok = :file.truncate(f)
-      :file.close(f)
-
-      assert {:ok, seq, mt} = MemTable.new(ctx.wal_path)
-
-      assert [{:foo, 0, :bar}] == MemTable.search(mt, [:foo], seq)
-      assert [] == MemTable.search(mt, [:baz], seq)
-      assert seq == 1
-      assert :filelib.file_size(ctx.wal_path) == survived_size
+    test "can delete created table" do
+      assert :ok == MemTable.new() |> MemTable.delete()
     end
   end
 
   describe "append/2" do
     test "can round-trip", ctx do
       commits = [{:foo, 0, :bar}, {:baz, 1, :baq}]
-      assert :ok == MemTable.append(ctx.mem_table, commits)
+      assert 1 == MemTable.append(ctx.mem_table, commits)
       assert [{:foo, 0, :bar}] == MemTable.search(ctx.mem_table, [:foo], 2)
       assert [{:baz, 1, :baq}] == MemTable.search(ctx.mem_table, [:baz], 2)
     end
 
     test "latest append overshadows previous appends", ctx do
       commits = [{:foo, 0, :bar}]
-      assert :ok == MemTable.append(ctx.mem_table, commits)
+      assert 0 == MemTable.append(ctx.mem_table, commits)
       assert [{:foo, 0, :bar}] == MemTable.search(ctx.mem_table, [:foo], 2)
       commits = [{:foo, 1, :bar2}]
-      assert :ok == MemTable.append(ctx.mem_table, commits)
+      assert 1 == MemTable.append(ctx.mem_table, commits)
       assert [{:foo, 1, :bar2}] == MemTable.search(ctx.mem_table, [:foo], 2)
     end
   end
@@ -177,7 +120,7 @@ defmodule Goblin.MemTableTest do
         end
 
       {_, seq, val} = List.last(commits)
-      assert :ok == MemTable.append(ctx.mem_table, commits)
+      assert seq == MemTable.append(ctx.mem_table, commits)
       assert MemTable.has_key?(ctx.mem_table, key)
       assert [{key, seq, val}] == MemTable.search(ctx.mem_table, [key], seq + 1)
     end
@@ -191,22 +134,22 @@ defmodule Goblin.MemTableTest do
             seq <- repeatedly(fn -> System.unique_integer([:positive, :monotonic]) end),
             commit = [{key, seq, val}]
           ) do
-      assert :ok == MemTable.append(ctx.mem_table, commit)
+      MemTable.append(ctx.mem_table, commit)
       assert [{key, seq, val}] == MemTable.search(ctx.mem_table, [key], seq + 1)
-      assert :ok == MemTable.append(ctx.mem_table, commit)
+      MemTable.append(ctx.mem_table, commit)
       assert [{key, seq, val}] == MemTable.search(ctx.mem_table, [key], seq + 1)
     end
   end
 
   @tag :property_tests
-  property "stream sort order by key is preserved", ctx do
+  property "stream sort order by key is preserved" do
     seq_gen = repeatedly(fn -> System.unique_integer([:positive, :monotonic]) end)
 
     check all(
             keys <- list_of(term(), length: 5),
             vals <- list_of(term(), length: 5)
           ) do
-      {:ok, _, mem_table} = MemTable.new(uniq_rand_path(ctx.tmp_dir))
+      mt = MemTable.new()
 
       commits =
         Enum.zip_with(keys, vals, fn key, val ->
@@ -214,24 +157,8 @@ defmodule Goblin.MemTableTest do
           {key, seq, val}
         end)
 
-      assert :ok == MemTable.append(mem_table, commits)
-      assert Enum.sort(keys) == MemTable.stream(mem_table) |> Enum.map(&elem(&1, 0))
+      MemTable.append(mt, commits)
+      assert Enum.sort(keys) == MemTable.stream(mt) |> Enum.map(&elem(&1, 0))
     end
-  end
-
-  defp uniq_rand_path(dir) do
-    letters = for x <- ?a..?z, do: <<x>>
-
-    name =
-      0..8
-      |> Enum.map(fn _ -> Enum.random(letters) end)
-      |> Enum.join("")
-
-    filename = "#{name}.wal"
-    path = Path.join(dir, filename)
-
-    if File.exists?(path),
-      do: uniq_rand_path(dir),
-      else: path
   end
 end
