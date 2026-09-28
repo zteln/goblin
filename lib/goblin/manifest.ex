@@ -15,7 +15,7 @@ defmodule Goblin.Manifest do
     snapshot: []
   ]
 
-  @type snapshot :: list({atom(), Path.t()})
+  @type snapshot :: list(Path.t())
 
   @type t :: %__MODULE__{
           a: FileIO.t(),
