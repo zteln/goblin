@@ -22,7 +22,7 @@ defmodule Goblin.WAL do
   @spec close(t()) :: :ok | {:error, term()}
   def close(wal), do: FileIO.close(wal.io)
 
-  @spec append(t(), list({term(), non_neg_integer(), term()})) :: :ok | {:error, term()}
+  @spec append(t(), list(term())) :: :ok | {:error, term()}
   def append(wal, commits) do
     with {:ok, _size} <- FileIO.append(wal.io, commits) do
       FileIO.sync(wal.io)
