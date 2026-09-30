@@ -40,6 +40,24 @@ defmodule Goblin.Tx do
           commits: list({term(), non_neg_integer(), term()})
         }
 
+  @doc false
+  @spec new(MVCC.t(), reference(), :write | :read) :: t()
+  def new(mvcc, ref, mode \\ :read) do
+    {seq, max_lk} = MVCC.pin(mvcc, ref)
+
+    %__MODULE__{
+      mode: mode,
+      mvcc: mvcc,
+      tx_key: ref,
+      sequence: seq,
+      max_level_key: max_lk
+    }
+  end
+
+  @doc false
+  @spec release(t()) :: :ok
+  def release(tx), do: MVCC.unpin(tx.mvcc, tx.tx_key)
+
   @doc """
   Writes a key-value pair within a transaction.
 
@@ -359,9 +377,9 @@ defmodule Goblin.Tx do
                 "consume it inside the read/transaction callback that created it"
             )
 
-        tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
-        {tx.sequence, [tx_table | MVCC.get_all_tables(tx.mvcc, tx.tx_key)]}
+        tx
       end,
+      fn -> :ok end,
       opts
     )
   end
@@ -411,21 +429,26 @@ defmodule Goblin.Tx do
   def abort(_tx, reply \\ :error), do: {:abort, reply}
 
   @doc false
-  @spec scan_stream((-> {non_neg_integer(), list(term())}), keyword()) ::
-          Enumerable.t({term(), term()})
-  def scan_stream(seq_and_tables, opts) do
+  # @spec scan_stream((-> {non_neg_integer(), list(term())}), keyword()) ::
+  #         Enumerable.t({term(), term()})
+  def scan_stream(start, finish, opts) do
     min = Keyword.get(opts, :min, :"$goblin_nil")
     max = Keyword.get(opts, :max, :"$goblin_nil")
     tag = Keyword.get(opts, :tag, :"$goblin_nil")
     {min, max} = tag_bounds(min, max, tag)
 
-    opts =
-      opts
-      |> Keyword.put(:min, min)
-      |> Keyword.put(:max, max)
+    Merge.stream(
+      fn ->
+        tx = start.()
+        tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
 
-    seq_and_tables
-    |> scan_levels(opts)
+        [tx_table | MVCC.get_all_tables(tx.mvcc, tx.tx_key)]
+        |> Enum.map(&table_stream(&1, min, max, tx.sequence))
+      end,
+      after: finish,
+      min: min,
+      max: max
+    )
     |> Stream.flat_map(fn triple ->
       case filter_triple_by_tag(triple, tag) do
         nil -> []
@@ -442,21 +465,6 @@ defmodule Goblin.Tx do
       {:cont, acc} -> recurse_levels(lk + 1, max_lk, acc, f)
       {:halt, acc} -> acc
     end
-  end
-
-  defp scan_levels(seq_and_tables, opts) do
-    min = opts[:min]
-    max = opts[:max]
-
-    Merge.stream(
-      fn ->
-        {seq, tables} = seq_and_tables.()
-        Enum.map(tables, &table_stream(&1, min, max, seq))
-      end,
-      after: opts[:after],
-      min: min,
-      max: max
-    )
   end
 
   defp table_has_key?(%MemTable{} = mt, key), do: MemTable.has_key?(mt, key)

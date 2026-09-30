@@ -5,8 +5,8 @@ defmodule Goblin.MVCC do
   alias Goblin.DiskTable
 
   @type t :: :ets.table()
-  @type table :: Goblin.MemTable.t() | Goblin.DiskTable.t()
-  @type level_key :: -1 | non_neg_integer()
+  @typep table :: Goblin.MemTable.t() | Goblin.DiskTable.t()
+  @typep level_key :: -1 | non_neg_integer()
 
   @spec new() :: t()
   def new() do
@@ -28,7 +28,7 @@ defmodule Goblin.MVCC do
     :ok
   end
 
-  @spec put_version(t(), list(), list()) :: :ok
+  @spec put_version(t(), list(table()), list(table())) :: :ok
   def put_version(ref, new, old) do
     [{:meta, version, _seq, max_lk}] = :ets.lookup(ref, :meta)
     version = version + 1
@@ -48,7 +48,7 @@ defmodule Goblin.MVCC do
     :ok
   end
 
-  @spec pin(t(), reference()) :: {non_neg_integer(), -1 | non_neg_integer()}
+  @spec pin(t(), term()) :: {non_neg_integer(), level_key()}
   def pin(ref, key) do
     [{_, ver, seq, max_lk}] = :ets.lookup(ref, :meta)
     :ets.insert(ref, {{:pin, key}, ver, self()})
@@ -63,7 +63,7 @@ defmodule Goblin.MVCC do
     end
   end
 
-  @spec unpin(t(), reference() | pid()) :: :ok
+  @spec unpin(t(), term()) :: :ok
   def unpin(ref, pid) when is_pid(pid) do
     :ets.match_delete(ref, {{:pin, :_}, :_, pid})
     :ok
@@ -80,14 +80,16 @@ defmodule Goblin.MVCC do
     |> List.flatten()
   end
 
-  @spec pinned?(t(), reference()) :: boolean()
+  @spec pinned?(t(), term()) :: boolean()
   def pinned?(ref, key), do: :ets.member(ref, {:pin, key})
 
-  @spec sweep(t()) :: list()
+  @spec sweep(t()) :: list(table())
   def sweep(ref) do
+    current = :ets.lookup_element(ref, :meta, 2)
+
     min_pinned =
       :ets.select(ref, [{{{:pin, :_}, :"$1", :_}, [], [:"$1"]}])
-      |> Enum.min(fn -> :ets.lookup_element(ref, :meta, 2) end)
+      |> Enum.min(fn -> current end)
 
     :ets.select(ref, [
       {
@@ -104,7 +106,7 @@ defmodule Goblin.MVCC do
     end)
   end
 
-  @spec get_all_tables(t(), reference()) :: list()
+  @spec get_all_tables(t(), reference()) :: list(table())
   def get_all_tables(ref, pin_key) do
     ver = pinned(ref, pin_key)
 
@@ -121,8 +123,8 @@ defmodule Goblin.MVCC do
     |> List.flatten()
   end
 
-  @spec get_matching_tables(t(), reference(), -1 | non_neg_integer(), list(term())) ::
-          list()
+  @spec get_matching_tables(t(), reference(), level_key(), list(term())) ::
+          list(table())
   def get_matching_tables(ref, pin_key, lk, _keys) when lk <= 0 do
     ver = pinned(ref, pin_key)
 
@@ -145,11 +147,18 @@ defmodule Goblin.MVCC do
 
     first =
       case :ets.prev(ref, start) do
-        {:table, ^lk, _, _, _} = idx -> idx
+        {:table, ^lk, max, _, _} = idx when max >= min_key -> rewind(ref, lk, min_key, idx)
         _ -> :ets.next(ref, start)
       end
 
     walk(ref, ver, lk, first, keys, [])
+  end
+
+  defp rewind(ref, lk, min_key, idx) do
+    case :ets.prev(ref, idx) do
+      {:table, ^lk, max, _, _} = prev when max >= min_key -> rewind(ref, lk, min_key, prev)
+      _ -> idx
+    end
   end
 
   defp walk(_ref, _version, _lk, _idx, [], acc), do: acc

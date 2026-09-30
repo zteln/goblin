@@ -7,7 +7,6 @@ defmodule Goblin.TxTest do
     %Tx{
       mode: opts[:mode] || :write,
       sequence: opts[:sequence] || 0,
-      tx_id: opts[:tx_id] || 0,
       tx_key: opts[:tx_key] || make_ref(),
       mvcc: opts[:mvcc],
       max_level_key: opts[:max_level_key] || -1
@@ -17,7 +16,7 @@ defmodule Goblin.TxTest do
   describe "put/4 (write mode)" do
     test "appends a {key, seq, value} triple and increments sequence" do
       tx =
-        new_tx(sequence: 0)
+        new_tx()
         |> Tx.put(:key, :val, [])
 
       assert tx.sequence == 1
@@ -26,7 +25,7 @@ defmodule Goblin.TxTest do
 
     test "tag option wraps the key" do
       tx =
-        new_tx(sequence: 0)
+        new_tx()
         |> Tx.put(:key, :val, tag: :users)
 
       assert tx.commits == [{{:"$goblin_tag", :users, :key}, 0, :val}]
@@ -36,7 +35,7 @@ defmodule Goblin.TxTest do
   describe "put_multi/3 (write mode)" do
     test "appends triples in insertion order (reversed since prepended)" do
       tx =
-        new_tx(sequence: 0)
+        new_tx()
         |> Tx.put_multi([{:a, 1}, {:b, 2}], [])
 
       assert tx.sequence == 2
@@ -47,7 +46,7 @@ defmodule Goblin.TxTest do
   describe "remove/3 (write mode)" do
     test "appends a tombstone triple" do
       tx =
-        new_tx(sequence: 0)
+        new_tx()
         |> Tx.remove(:key, [])
 
       assert tx.sequence == 1
@@ -56,7 +55,7 @@ defmodule Goblin.TxTest do
 
     test "tag option wraps the key on tombstone" do
       tx =
-        new_tx(sequence: 0)
+        new_tx()
         |> Tx.remove(:key, tag: :users)
 
       assert tx.commits == [{{:"$goblin_tag", :users, :key}, 0, :"$goblin_tombstone"}]
@@ -66,7 +65,7 @@ defmodule Goblin.TxTest do
   describe "remove_multi/3 (write mode)" do
     test "appends multiple tombstones" do
       tx =
-        new_tx(sequence: 0)
+        new_tx()
         |> Tx.remove_multi([:a, :b], [])
 
       assert tx.sequence == 2
@@ -115,7 +114,7 @@ defmodule Goblin.TxTest do
   describe "get/3, get_multi/3, has_key?/3" do
     setup do
       mvcc = Goblin.MVCC.new()
-      Goblin.MVCC.put_snapshot(mvcc, %{}, 0)
+      # Goblin.MVCC.put_snapshot(mvcc, %{}, 0)
       %{mvcc: mvcc}
     end
 
@@ -139,14 +138,14 @@ defmodule Goblin.TxTest do
   describe "scan/1/2" do
     setup do
       mvcc = Goblin.MVCC.new()
-      Goblin.MVCC.put_snapshot(mvcc, %{}, 0)
+      # Goblin.MVCC.put_snapshot(mvcc, %{}, 0)
       %{mvcc: mvcc}
     end
 
     test "returns lazy stream over keys", ctx do
       tx_key = make_ref()
       tx = new_tx(mvcc: ctx.mvcc, tx_key: tx_key)
-      Goblin.MVCC.add_reader(ctx.mvcc, tx_key)
+      Goblin.MVCC.pin(ctx.mvcc, tx_key)
       tx = Tx.put(tx, :key, :val)
       assert [key: :val] == Goblin.Tx.scan(tx) |> Enum.to_list()
     end

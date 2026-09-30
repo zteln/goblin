@@ -1,304 +1,288 @@
 defmodule Goblin.MVCCTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
+
   alias Goblin.MVCC
+  alias Goblin.MemTable
+  alias Goblin.DiskTable
 
   setup do
     %{mvcc: MVCC.new()}
   end
 
-  describe "put_snapshot/4" do
-    test "increments version for every snapshot", ctx do
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
-      assert {_, _, 0} = MVCC.add_reader(ctx.mvcc, make_ref())
+  describe "snapshot isolation" do
+    test "a pin sees the tables that were live when it was taken", ctx do
+      [a, b, c] = [mem_table(), mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a, b], [])
+      MVCC.put_version(ctx.mvcc, [c], [a])
 
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
-      assert {_, _, 1} = MVCC.add_reader(ctx.mvcc, make_ref())
+      key = pin(ctx.mvcc)
 
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
-      assert {_, _, 2} = MVCC.add_reader(ctx.mvcc, make_ref())
+      assert tables(ctx.mvcc, key) == MapSet.new([b, c])
     end
 
-    test "maximum level key defaults to -1", ctx do
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{}, 0)
-      assert {_, -1, _} = MVCC.add_reader(ctx.mvcc, make_ref())
+    test "tables added after a pin are invisible to it", ctx do
+      [a, b] = [mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a], [])
+      key = pin(ctx.mvcc)
+
+      MVCC.put_version(ctx.mvcc, [b], [])
+
+      assert tables(ctx.mvcc, key) == MapSet.new([a])
     end
 
-    test "maximum level key is derived from provided levels", ctx do
-      assert :ok == MVCC.put_snapshot(ctx.mvcc, %{5 => %{}}, 0)
-      assert {_, 5, _} = MVCC.add_reader(ctx.mvcc, make_ref())
-    end
-  end
+    test "tables retired after a pin stay visible to it", ctx do
+      [a, b] = [mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a], [])
+      key = pin(ctx.mvcc)
 
-  describe "get_tables/2/3" do
-    test "can get all tables in snapshot", ctx do
-      snapshot = %{
-        -1 => [%{id: :mem1}, %{id: :mem2}],
-        0 => [%{id: :disk0}],
-        1 => [%{id: :disk1, key_range: {:min, :max}}]
-      }
+      MVCC.put_version(ctx.mvcc, [b], [a])
 
-      MVCC.put_snapshot(ctx.mvcc, snapshot, 0)
-
-      assert snapshot |> Map.values() |> List.flatten() |> MapSet.new() ==
-               MVCC.get_tables(ctx.mvcc, 0) |> MapSet.new()
+      assert tables(ctx.mvcc, key) == MapSet.new([a])
     end
 
-    test "only gets tables for provided version", ctx do
-      snapshot1 = %{
-        -1 => [%{id: :mem1}, %{id: :mem2}],
-        0 => [%{id: :disk0}],
-        1 => [%{id: :disk1, key_range: {:min, :max}}]
-      }
+    test "pins taken at different times keep their own snapshots", ctx do
+      [a, b] = [mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a], [])
+      old = pin(ctx.mvcc)
+      MVCC.put_version(ctx.mvcc, [b], [a])
+      new = pin(ctx.mvcc)
 
-      snapshot2 = %{
-        -1 => [%{id: :mem2}, %{id: :mem3}],
-        1 => [%{id: :disk1, key_range: {:min, :max}}]
-      }
-
-      MVCC.put_snapshot(ctx.mvcc, snapshot1, 0)
-      MVCC.put_snapshot(ctx.mvcc, snapshot2, 0)
-
-      assert snapshot1
-             |> Map.values()
-             |> List.flatten()
-             |> MapSet.new() == MVCC.get_tables(ctx.mvcc, 0) |> MapSet.new()
-
-      assert snapshot2
-             |> Map.values()
-             |> List.flatten()
-             |> MapSet.new() == MVCC.get_tables(ctx.mvcc, 1) |> MapSet.new()
-    end
-
-    test "returns empty for unknown version", ctx do
-      assert [] == MVCC.get_tables(ctx.mvcc, 99)
+      assert tables(ctx.mvcc, old) == MapSet.new([a])
+      assert tables(ctx.mvcc, new) == MapSet.new([b])
     end
   end
 
-  describe "add_reader/2, release_reader/2, reader_alive?/3" do
-    test "pins to current snapshot", ctx do
-      reader_key = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-      assert {0, -1, v1} = MVCC.add_reader(ctx.mvcc, reader_key)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 1)
-      assert v1 == 0
-      assert [%{id: :mem1}] == MVCC.get_tables(ctx.mvcc, v1)
+  describe "pin/2 and unpin/2" do
+    test "pin returns the latest sequence and highest level key", ctx do
+      assert {0, -1} == MVCC.pin(ctx.mvcc, make_ref())
+
+      disk = disk_table(2, {1, 10})
+      MVCC.update_sequence(ctx.mvcc, 7)
+      MVCC.put_version(ctx.mvcc, [disk], [])
+      MVCC.put_version(ctx.mvcc, [mem_table()], [disk])
+
+      assert {7, 2} == MVCC.pin(ctx.mvcc, make_ref())
     end
 
-    test "can release non-existing reader", ctx do
-      assert :ok == MVCC.release_reader(ctx.mvcc, make_ref())
-    end
-
-    test "release of one reader does not affect another reader", ctx do
-      key1 = make_ref()
-      key2 = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-
-      MVCC.add_reader(ctx.mvcc, key1)
-      MVCC.add_reader(ctx.mvcc, key2)
-
-      assert :ok == MVCC.release_reader(ctx.mvcc, key1)
-
-      assert :ets.match(ctx.mvcc, {{:reader, :_, key1}}) == []
-      assert :ets.match(ctx.mvcc, {{:reader, :_, key2}}) != []
-    end
-
-    test "cannot add_reader before snapshot exists", ctx do
-      assert_raise RuntimeError, fn ->
-        MVCC.add_reader(ctx.mvcc, make_ref())
-      end
-    end
-
-    test "pending readers are cleaned up if the reader fails to be added", ctx do
+    test "reading through an inactive pin raises", ctx do
       key = make_ref()
-      assert_raise RuntimeError, fn -> MVCC.add_reader(ctx.mvcc, key) end
-      assert [] == :ets.match(ctx.mvcc, {{:reader, :_, key}})
+      assert_raise ArgumentError, fn -> MVCC.get_all_tables(ctx.mvcc, key) end
+
+      MVCC.pin(ctx.mvcc, key)
+      MVCC.unpin(ctx.mvcc, key)
+      assert_raise ArgumentError, fn -> MVCC.get_all_tables(ctx.mvcc, key) end
     end
 
-    test "returns boolean indicating if reader exists or not", ctx do
-      key = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, %{}, 0)
-      refute MVCC.reader_alive?(ctx.mvcc, 0, key)
-      MVCC.add_reader(ctx.mvcc, key)
-      assert MVCC.reader_alive?(ctx.mvcc, 0, key)
+    test "unpinning a pid releases only that process's pins", ctx do
+      mine = make_ref()
+      theirs = make_ref()
+      MVCC.pin(ctx.mvcc, mine)
+      Task.async(fn -> MVCC.pin(ctx.mvcc, theirs) end) |> Task.await()
+
+      MVCC.unpin(ctx.mvcc, self())
+
+      refute MVCC.pinned?(ctx.mvcc, mine)
+      assert MVCC.pinned?(ctx.mvcc, theirs)
     end
   end
 
   describe "sweep/1" do
-    test "returns [] for empty MVCC table", ctx do
+    test "keeps retired tables while a pin can see them", ctx do
+      [a, b] = [mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a], [])
+      key = pin(ctx.mvcc)
+      MVCC.put_version(ctx.mvcc, [b], [a])
+
       assert [] == MVCC.sweep(ctx.mvcc)
+
+      MVCC.unpin(ctx.mvcc, key)
+      assert [a] == MVCC.sweep(ctx.mvcc)
     end
 
-    test "returns [] for single snapshot", ctx do
-      MVCC.put_snapshot(ctx.mvcc, %{}, 0)
-      assert [] == MVCC.sweep(ctx.mvcc)
+    test "reclaims tables retired before the oldest pin", ctx do
+      [a, b] = [mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a], [])
+      MVCC.put_version(ctx.mvcc, [b], [a])
+      pin(ctx.mvcc)
+
+      assert [a] == MVCC.sweep(ctx.mvcc)
     end
 
-    test "returns older table in disjoint snapshots", ctx do
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 0)
-      assert [%{id: :mem1}] == MVCC.sweep(ctx.mvcc)
-    end
+    test "returns each table at most once", ctx do
+      [a, b] = [mem_table(), mem_table()]
+      MVCC.put_version(ctx.mvcc, [a], [])
+      MVCC.put_version(ctx.mvcc, [b], [a])
 
-    test "returns union of retired tables", ctx do
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}, %{id: :mem3}]}, 0)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem3}, %{id: :mem4}]}, 0)
-      assert [%{id: :mem1}, %{id: :mem2}] == MVCC.sweep(ctx.mvcc)
-    end
-
-    test "does not return table pinned by reader", ctx do
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}, %{id: :mem3}]}, 0)
-      MVCC.add_reader(ctx.mvcc, make_ref())
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem3}, %{id: :mem4}]}, 0)
-      assert [%{id: :mem1}] == MVCC.sweep(ctx.mvcc)
-    end
-
-    test "returns previously pinned tables", ctx do
-      key = make_ref()
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-      MVCC.add_reader(ctx.mvcc, key)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 0)
-      assert [] == MVCC.sweep(ctx.mvcc)
-      MVCC.release_reader(ctx.mvcc, key)
-      assert [%{id: :mem1}] == MVCC.sweep(ctx.mvcc)
-    end
-
-    test "does not sweep if a pending reader exists", ctx do
-      :ets.insert(ctx.mvcc, {{:reader, :pending, make_ref()}})
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem1}]}, 0)
-      MVCC.put_snapshot(ctx.mvcc, %{-1 => [%{id: :mem2}]}, 0)
+      assert [a] == MVCC.sweep(ctx.mvcc)
       assert [] == MVCC.sweep(ctx.mvcc)
     end
   end
 
-  @tag :property_tests
-  property "every installed version remains independently readable (version isolation)" do
-    check all(
-            pool <- pool_gen(),
-            snapshots <- list_of(subset_gen(length(pool)), min_length: 1, max_length: 8)
-          ) do
-      mvcc = MVCC.new()
+  describe "get_matching_tables/4" do
+    test "returns tables at the level whose key range contains a key", ctx do
+      a = disk_table(1, {1, 10})
+      b = disk_table(1, {20, 30})
+      c = disk_table(1, {40, 50})
+      MVCC.put_version(ctx.mvcc, [a, b, c, disk_table(2, {1, 50})], [])
+      key = pin(ctx.mvcc)
 
-      expected =
-        snapshots
-        |> Enum.with_index()
-        |> Enum.map(fn {idxs, v} ->
-          tables = Enum.map(idxs, &Enum.at(pool, &1))
-          {mts, dts} = Enum.split_with(tables, &match?(%Goblin.MemTable{}, &1))
-          levels = Enum.group_by(dts, & &1.level_key) |> Map.put(-1, mts)
-          :ok = MVCC.put_snapshot(mvcc, levels, v)
-          {v, tables}
+      assert matching(ctx.mvcc, key, 1, [5, 45]) == MapSet.new([a, c])
+      assert matching(ctx.mvcc, key, 1, [10, 20]) == MapSet.new([a, b])
+      assert matching(ctx.mvcc, key, 1, [60]) == MapSet.new()
+    end
+
+    test "sees a retired table that shares its max key with its replacement", ctx do
+      old = disk_table(1, {1, 10})
+      MVCC.put_version(ctx.mvcc, [old], [])
+      key = pin(ctx.mvcc)
+
+      MVCC.put_version(ctx.mvcc, [disk_table(1, {5, 10})], [old])
+
+      assert matching(ctx.mvcc, key, 1, [10]) == MapSet.new([old])
+    end
+
+    test "returns every table at levels -1 and 0 regardless of keys", ctx do
+      [m1, m2] = [mem_table(), mem_table()]
+      d1 = disk_table(0, {1, 10})
+      d2 = disk_table(0, {20, 30})
+      MVCC.put_version(ctx.mvcc, [m1, m2, d1, d2], [])
+      key = pin(ctx.mvcc)
+
+      assert matching(ctx.mvcc, key, -1, [100]) == MapSet.new([m1, m2])
+      assert matching(ctx.mvcc, key, 0, [100]) == MapSet.new([d1, d2])
+    end
+  end
+
+  @tag :property_tests
+  property "pins keep their snapshot and sweep only reclaims unreachable tables" do
+    check all(commands <- list_of(command(), max_length: 50)) do
+      mvcc = MVCC.new()
+      model = %{live: MapSet.new(), retired: MapSet.new(), pins: %{}, next: 0}
+
+      model =
+        Enum.reduce(commands, model, fn command, model ->
+          model = run(mvcc, command, model)
+
+          for {key, snapshot} <- model.pins do
+            assert tables(mvcc, key) == snapshot
+          end
+
+          model
         end)
 
-      for {v, want} <- expected do
-        assert want |> MapSet.new() == MVCC.get_tables(mvcc, v) |> MapSet.new()
-      end
+      for {key, _snapshot} <- model.pins, do: MVCC.unpin(mvcc, key)
+      assert MapSet.new(MVCC.sweep(mvcc)) == model.retired
     end
   end
 
   @tag :property_tests
-  property "sweep never reclaims any live or pinned snapshots" do
+  property "get_matching_tables/4 returns the tables whose range contains a key" do
     check all(
-            pool <- pool_gen(),
-            cmds <- list_of(command_gen(length(pool)), max_length: 30)
+            bounds <- uniq_list_of(integer(0..200), min_length: 2),
+            keys <- list_of(integer(0..200), min_length: 1)
           ) do
+      tables =
+        bounds
+        |> Enum.sort()
+        |> Enum.chunk_every(2, 2, :discard)
+        |> Enum.map(fn [min, max] -> disk_table(1, {min, max}) end)
+
+      keys = keys |> Enum.sort() |> Enum.uniq()
+
       mvcc = MVCC.new()
-      state = %{versions: %{}, current: -1, readers: %{}, seq: 0}
+      MVCC.put_version(mvcc, tables, [])
+      key = pin(mvcc)
 
-      Enum.reduce(cmds, state, fn cmd, acc -> step(mvcc, pool, cmd, acc) end)
+      expected =
+        Enum.filter(tables, fn %{key_range: {min, max}} ->
+          Enum.any?(keys, &(&1 in min..max))
+        end)
+
+      assert matching(mvcc, key, 1, keys) == MapSet.new(expected)
     end
   end
 
-  defp step(mvcc, pool, {:snapshot, idxs}, state) do
-    tables = Enum.map(idxs, &Enum.at(pool, &1))
-    {mts, dts} = Enum.split_with(tables, &match?(%Goblin.MemTable{}, &1))
-    levels = Enum.group_by(dts, & &1.level_key) |> Map.put(-1, mts)
-    v = state.current + 1
-    :ok = MVCC.put_snapshot(mvcc, levels, state.seq + 1)
-    assert tables |> MapSet.new() == MVCC.get_tables(mvcc, v) |> MapSet.new()
-
-    %{
-      state
-      | current: v,
-        seq: state.seq + 1,
-        versions: Map.put(state.versions, v, MapSet.new(tables))
-    }
+  defp run(mvcc, :add, model) do
+    table = %MemTable{ref: model.next}
+    MVCC.put_version(mvcc, [table], [])
+    %{model | live: MapSet.put(model.live, table), next: model.next + 1}
   end
 
-  defp step(_mvcc, _pool, :add_reader, %{current: -1} = state), do: state
+  defp run(mvcc, {:replace, i}, model) do
+    case pick(model.live, i) do
+      nil ->
+        model
 
-  defp step(mvcc, _pool, :add_reader, state) do
-    key = make_ref()
-    {_, _, v} = MVCC.add_reader(mvcc, key)
-    assert v == state.current
-    %{state | readers: Map.put(state.readers, key, v)}
+      old ->
+        new = %MemTable{ref: model.next}
+        MVCC.put_version(mvcc, [new], [old])
+
+        %{
+          model
+          | live: model.live |> MapSet.delete(old) |> MapSet.put(new),
+            retired: MapSet.put(model.retired, old),
+            next: model.next + 1
+        }
+    end
   end
 
-  defp step(_mvcc, _pool, :release_reader, %{readers: readers} = state)
-       when map_size(readers) == 0,
-       do: state
-
-  defp step(mvcc, _pool, :release_reader, state) do
-    {key, _} = Enum.min_by(state.readers, fn {_k, v} -> v end)
-    :ok = MVCC.release_reader(mvcc, key)
-    %{state | readers: Map.delete(state.readers, key)}
+  defp run(mvcc, :pin, model) do
+    key = pin(mvcc)
+    %{model | pins: Map.put(model.pins, key, model.live)}
   end
 
-  defp step(mvcc, _pool, :sweep, %{current: -1} = state) do
-    assert MVCC.sweep(mvcc) == []
-    state
+  defp run(mvcc, {:unpin, i}, model) do
+    case pick(Map.keys(model.pins), i) do
+      nil ->
+        model
+
+      key ->
+        MVCC.unpin(mvcc, key)
+        %{model | pins: Map.delete(model.pins, key)}
+    end
   end
 
-  defp step(mvcc, _pool, :sweep, state) do
+  defp run(mvcc, :sweep, model) do
     swept = MapSet.new(MVCC.sweep(mvcc))
-    protected_versions = MapSet.new([state.current | Map.values(state.readers)])
+    reachable = model.pins |> Map.values() |> Enum.reduce(model.live, &MapSet.union/2)
 
-    for v <- protected_versions do
-      live = MVCC.get_tables(mvcc, v) |> MapSet.new()
-      assert MapSet.disjoint?(swept, live)
-      assert live == state.versions[v]
-    end
+    assert MapSet.subset?(swept, model.retired)
+    assert MapSet.disjoint?(swept, reachable)
 
-    assert MVCC.sweep(mvcc) == []
-    state
+    %{model | retired: MapSet.difference(model.retired, swept)}
   end
 
-  defp command_gen(n) do
+  defp command do
     one_of([
-      tuple({constant(:snapshot), subset_gen(n)}),
-      constant(:add_reader),
-      constant(:release_reader),
+      constant(:add),
+      tuple({constant(:replace), non_negative_integer()}),
+      constant(:pin),
+      tuple({constant(:unpin), non_negative_integer()}),
       constant(:sweep)
     ])
   end
 
-  defp pool_gen do
-    gen all(
-          kinds <- list_of(member_of([:mem, :disk]), min_length: 1, max_length: 8),
-          min <- term(),
-          max <- term()
-        ) do
-      kinds
-      |> Enum.with_index()
-      |> Enum.map(fn
-        {:mem, i} ->
-          %Goblin.MemTable{id: "t#{i}"}
-
-        {:disk, i} ->
-          %Goblin.DiskTable{
-            id: "t#{i}",
-            level_key: rem(i, 3),
-            key_range: {min(min, max), max(min, max)}
-          }
-      end)
+  defp pick(enumerable, i) do
+    case Enum.count(enumerable) do
+      0 -> nil
+      count -> Enum.at(enumerable, rem(i, count))
     end
   end
 
-  defp subset_gen(pool_size) do
-    gen all(idxs <- list_of(integer(0..(pool_size - 1)), max_length: pool_size)) do
-      Enum.uniq(idxs)
-    end
+  defp pin(mvcc) do
+    key = make_ref()
+    MVCC.pin(mvcc, key)
+    key
   end
+
+  defp tables(mvcc, key), do: MapSet.new(MVCC.get_all_tables(mvcc, key))
+
+  defp matching(mvcc, key, level_key, keys),
+    do: MapSet.new(MVCC.get_matching_tables(mvcc, key, level_key, keys))
+
+  defp mem_table, do: %MemTable{ref: make_ref()}
+
+  defp disk_table(level_key, key_range),
+    do: %DiskTable{id: make_ref(), level_key: level_key, key_range: key_range}
 end

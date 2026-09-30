@@ -93,19 +93,10 @@ defmodule Goblin do
 
     case Server.start_transaction(db, tx_key) do
       :ok ->
-        {seq, max_lk} = MVCC.pin(mvcc, tx_key)
-
-        tx = %Tx{
-          mode: :write,
-          mvcc: mvcc,
-          tx_key: tx_key,
-          sequence: seq,
-          max_level_key: max_lk
-        }
-
         result =
           try do
-            callback.(tx)
+            Tx.new(mvcc, tx_key, :write)
+            |> callback.()
           rescue
             exception ->
               Server.cancel_transaction(db, tx_key)
@@ -703,13 +694,13 @@ defmodule Goblin do
     Tx.scan_stream(
       fn ->
         Process.link(db)
-        {seq, _max_lk} = MVCC.pin(mvcc, tx_key)
-        {seq, MVCC.get_all_tables(mvcc, tx_key)}
+        Tx.new(mvcc, {tx_key, self()})
       end,
-      Keyword.put(opts, :after, fn ->
-        MVCC.unpin(mvcc, self())
+      fn ->
+        MVCC.unpin(mvcc, {tx_key, self()})
         Process.unlink(db)
-      end)
+      end,
+      opts
     )
   end
 
@@ -796,7 +787,7 @@ defmodule Goblin do
   defdelegate child_spec(opts), to: Server
 
   defp server_info(db) do
-    pid = if is_pid(db), do: db, else: Process.whereis(db)
+    pid = pid_of(db)
 
     mvcc =
       (pid && :persistent_term.get({__MODULE__, pid}, nil)) ||
@@ -804,4 +795,7 @@ defmodule Goblin do
 
     {pid, mvcc}
   end
+
+  defp pid_of(pid) when is_pid(pid), do: pid
+  defp pid_of(name), do: Process.whereis(name)
 end
