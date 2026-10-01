@@ -89,43 +89,51 @@ defmodule Goblin do
         ) :: term()
   def transaction(db, callback) do
     {db, mvcc} = server_info(db)
-    tx_key = make_ref()
+    tx_ref = make_ref()
 
-    case Server.start_transaction(db, tx_key) do
+    case Server.start_transaction(db, tx_ref) do
       :ok ->
         result =
           try do
-            Tx.new(mvcc, tx_key, :write)
+            {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
+
+            %Tx{
+              mode: :write,
+              mvcc: mvcc,
+              ref: tx_ref,
+              sqn: sqn,
+              max_level_key: max_lk
+            }
             |> callback.()
           rescue
             exception ->
-              Server.cancel_transaction(db, tx_key)
+              Server.cancel_transaction(db, tx_ref)
               reraise(exception, __STACKTRACE__)
           catch
             :throw, val ->
-              Server.cancel_transaction(db, tx_key)
+              Server.cancel_transaction(db, tx_ref)
               throw(val)
 
             :exit, val ->
-              Server.cancel_transaction(db, tx_key)
+              Server.cancel_transaction(db, tx_ref)
               exit(val)
           after
-            MVCC.unpin(mvcc, tx_key)
+            MVCC.unpin(mvcc, tx_ref)
           end
 
         case result do
           {:commit, tx, reply} ->
-            case Server.commit_transaction(db, tx_key, tx) do
+            case Server.commit_transaction(db, tx_ref, tx) do
               :ok -> reply
               error -> raise "Unable to commit due to following error: #{inspect(error)}"
             end
 
           {:abort, reply} ->
-            Server.cancel_transaction(db, tx_key)
+            Server.cancel_transaction(db, tx_ref)
             reply
 
           _ ->
-            Server.cancel_transaction(db, tx_key)
+            Server.cancel_transaction(db, tx_ref)
             raise "Invalid return from `Goblin.transaction/2`"
         end
 
@@ -531,22 +539,21 @@ defmodule Goblin do
   """
   def read(db, callback) do
     {db, mvcc} = server_info(db)
-    tx_key = make_ref()
-    Process.link(db)
-    {seq, max_lk} = MVCC.pin(mvcc, tx_key)
-
-    tx = %Tx{
-      mode: :read,
-      mvcc: mvcc,
-      tx_key: tx_key,
-      sequence: seq,
-      max_level_key: max_lk
-    }
+    tx_ref = make_ref()
 
     try do
-      callback.(tx)
+      Process.link(db)
+      {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
+
+      %Tx{
+        ref: tx_ref,
+        mvcc: mvcc,
+        sqn: sqn,
+        max_level_key: max_lk
+      }
+      |> callback.()
     after
-      MVCC.unpin(mvcc, tx_key)
+      MVCC.unpin(mvcc, tx_ref)
       Process.unlink(db)
     end
   end
@@ -649,62 +656,6 @@ defmodule Goblin do
   end
 
   @doc """
-  Returns a stream of key-value pairs, optionally bounded by a range.
-  Captures snapshots at enumeration.
-
-  Entries are sorted by key in ascending order.
-  Both `min` and `max` are inclusive.
-
-  Raises `Goblin.IOError` if the underlying storage cannot be read.
-
-  ## Parameters
-
-  - `db` - The database server (PID or registered name)
-  - `opts` - Keyword list of options:
-    - `:min` - Minimum key, inclusive (optional)
-    - `:max` - Maximum key, inclusive (optional)
-    - `:tag` - Tag to filter by (optional)
-
-  ## Returns
-
-  - A stream of `{key, value}` tuples
-
-  ## Examples
-
-      Goblin.scan(db) |> Enum.to_list()
-      # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
-
-      Goblin.scan(db, min: :bob) |> Enum.to_list()
-      # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
-
-      Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
-      # => [{:alice, "Alice"}, {:bob, "Bob"}]
-
-      scan = Goblin.scan(db)
-      Enum.to_list(scan)
-      # => []
-      Goblin.put(db, :alice, "Alice")
-      Enum.to_list(scan)
-      # => [{:alice, "Alice"}]
-  """
-  def scan(db, opts \\ []) do
-    {db, mvcc} = server_info(db)
-    tx_key = make_ref()
-
-    Tx.scan_stream(
-      fn ->
-        Process.link(db)
-        Tx.new(mvcc, {tx_key, self()})
-      end,
-      fn ->
-        MVCC.unpin(mvcc, {tx_key, self()})
-        Process.unlink(db)
-      end,
-      opts
-    )
-  end
-
-  @doc """
   Exports a snapshot of the database as a `.tar.gz` archive.
 
   The archive can be unpacked and used as the `data_dir` for a new
@@ -790,7 +741,7 @@ defmodule Goblin do
     pid = pid_of(db)
 
     mvcc =
-      (pid && :persistent_term.get({__MODULE__, pid}, nil)) ||
+      (pid && :persistent_term.get({Goblin, pid}, nil)) ||
         raise ArgumentError, "Goblin database #{inspect(db)} is not running or still starting"
 
     {pid, mvcc}

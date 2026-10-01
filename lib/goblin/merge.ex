@@ -10,7 +10,7 @@ defmodule Goblin.Merge do
     Stream.resource(
       fn -> init.() |> build_heap() end,
       fn heap -> step(heap, min, max, filter_tombstones?) end,
-      fn heap -> close_all(heap, opts) end
+      &close_all/1
     )
   end
 
@@ -43,11 +43,9 @@ defmodule Goblin.Merge do
     end
   end
 
-  defp close_all(heap, opts) do
+  defp close_all(heap) do
     :gb_trees.values(heap)
     |> Enum.each(fn {cont, _} -> cont.({:halt, nil}) end)
-
-    opts[:after] && opts[:after].()
   end
 
   defp insert_next(heap, cont) do

@@ -64,7 +64,7 @@ defmodule Goblin.Levels do
     level_size_multiplier = opts[:level_size_multiplier]
 
     if Enum.sum_by(level, & &1.size) >= level_base_size * level_size_multiplier ** (lk - 1),
-      do: {lk, [Enum.min_by(level, &elem(&1.seq_range, 0))]}
+      do: {lk, [Enum.min_by(level, &elem(&1.sqn_range, 0))]}
   end
 
   defp bounding_range(dts) do

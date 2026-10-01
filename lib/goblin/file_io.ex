@@ -69,7 +69,7 @@ defmodule Goblin.FileIO do
          {:ok, size, crc} <- decode_header(header),
          :ok <- contains_size(byte_size(bin), @header_size + size),
          payload = :binary.part(bin, @header_size, size),
-         :ok <- validate_crc(payload, crc, Keyword.get(opts, :verify_crc?, true)) do
+         :ok <- validate_crc(payload, crc) do
       decode_payload(payload)
     else
       {:too_small, ^read_size} ->
@@ -86,13 +86,13 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec seq_read(t(), keyword()) :: {:ok, term()} | {:error, term()}
-  def seq_read(file, opts \\ []) do
+  @spec seq_read(t()) :: {:ok, term()} | {:error, term()}
+  def seq_read(file) do
     with {:ok, header} <- :file.read(file.iodev, @header_size),
          {:ok, size, crc} <- decode_header(header),
          {:ok, payload} <- :file.read(file.iodev, size),
          :ok <- validate_size(byte_size(payload), size),
-         :ok <- validate_crc(payload, crc, Keyword.get(opts, :verify_crc?, true)) do
+         :ok <- validate_crc(payload, crc) do
       decode_payload(payload)
     else
       :eof -> {:error, :eof}
@@ -109,7 +109,7 @@ defmodule Goblin.FileIO do
          {:ok, payload} <-
            :file.pread(file.iodev, size - (@header_size + payload_size), payload_size),
          :ok <- validate_size(byte_size(payload), payload_size),
-         :ok <- validate_crc(payload, crc, true) do
+         :ok <- validate_crc(payload, crc) do
       decode_payload(payload)
     else
       :eof -> {:error, :eof}
@@ -232,9 +232,7 @@ defmodule Goblin.FileIO do
   defp validate_size(size, size), do: :ok
   defp validate_size(_, _), do: {:error, :invalid_size}
 
-  defp validate_crc(_payload, _crc, false), do: :ok
-
-  defp validate_crc(payload, crc, _) do
+  defp validate_crc(payload, crc) do
     case :erlang.crc32(payload) == crc do
       true -> :ok
       false -> {:error, :invalid_crc}

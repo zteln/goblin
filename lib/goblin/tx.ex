@@ -23,40 +23,22 @@ defmodule Goblin.Tx do
   alias Goblin.Merge
 
   defstruct [
-    :mode,
-    :sequence,
-    :tx_key,
+    :sqn,
+    :ref,
     :mvcc,
     :max_level_key,
+    mode: :read,
     commits: []
   ]
 
   @type t :: %__MODULE__{
           mode: :write | :read,
-          sequence: non_neg_integer(),
-          tx_key: reference(),
+          sqn: non_neg_integer(),
+          ref: reference(),
           mvcc: :ets.table(),
           max_level_key: -1 | non_neg_integer(),
           commits: list({term(), non_neg_integer(), term()})
         }
-
-  @doc false
-  @spec new(MVCC.t(), reference(), :write | :read) :: t()
-  def new(mvcc, ref, mode \\ :read) do
-    {seq, max_lk} = MVCC.pin(mvcc, ref)
-
-    %__MODULE__{
-      mode: mode,
-      mvcc: mvcc,
-      tx_key: ref,
-      sequence: seq,
-      max_level_key: max_lk
-    }
-  end
-
-  @doc false
-  @spec release(t()) :: :ok
-  def release(tx), do: MVCC.unpin(tx.mvcc, tx.tx_key)
 
   @doc """
   Writes a key-value pair within a transaction.
@@ -86,8 +68,8 @@ defmodule Goblin.Tx do
   def put(tx, key, value, opts) do
     tag = Keyword.get(opts, :tag, :"$goblin_nil")
     key = tag_key(key, tag)
-    commit = {key, tx.sequence, value}
-    %{tx | sequence: tx.sequence + 1, commits: [commit | tx.commits]}
+    commit = {key, tx.sqn, value}
+    %{tx | sqn: tx.sqn + 1, commits: [commit | tx.commits]}
   end
 
   @doc """
@@ -119,8 +101,8 @@ defmodule Goblin.Tx do
 
     Enum.reduce(pairs, tx, fn {key, value}, acc ->
       key = tag_key(key, tag)
-      commit = {key, acc.sequence, value}
-      %{acc | sequence: acc.sequence + 1, commits: [commit | acc.commits]}
+      commit = {key, acc.sqn, value}
+      %{acc | sqn: acc.sqn + 1, commits: [commit | acc.commits]}
     end)
   end
 
@@ -151,8 +133,8 @@ defmodule Goblin.Tx do
   def remove(tx, key, opts) do
     tag = Keyword.get(opts, :tag, :"$goblin_nil")
     key = tag_key(key, tag)
-    commit = {key, tx.sequence, :"$goblin_tombstone"}
-    %{tx | sequence: tx.sequence + 1, commits: [commit | tx.commits]}
+    commit = {key, tx.sqn, :"$goblin_tombstone"}
+    %{tx | sqn: tx.sqn + 1, commits: [commit | tx.commits]}
   end
 
   @doc """
@@ -184,8 +166,8 @@ defmodule Goblin.Tx do
 
     Enum.reduce(keys, tx, fn key, acc ->
       key = tag_key(key, tag)
-      commit = {key, acc.sequence, :"$goblin_tombstone"}
-      %{acc | sequence: acc.sequence + 1, commits: [commit | acc.commits]}
+      commit = {key, acc.sqn, :"$goblin_tombstone"}
+      %{acc | sqn: acc.sqn + 1, commits: [commit | acc.commits]}
     end)
   end
 
@@ -254,31 +236,40 @@ defmodule Goblin.Tx do
       |> Enum.map(&tag_key(&1, tag))
       |> MapSet.new()
 
-    tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
+    tx_table = Enum.sort_by(tx.commits, fn {key, sqn, _val} -> {key, -sqn} end)
 
     {acc, _} =
       recurse_levels(tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
         sorted_keys = Enum.sort(keys)
 
         tables = fn
-          -2 -> tx_table
-          lk -> MVCC.get_matching_tables(tx.mvcc, tx.tx_key, lk, sorted_keys)
+          -2 ->
+            [tx_table] |> Enum.map(&table_search(&1, sorted_keys, tx.sqn))
+
+          -1 ->
+            MVCC.get_matching_tables(tx.mvcc, tx.ref, lk, sorted_keys)
+            |> Enum.map(&table_search(&1, sorted_keys, tx.sqn))
+
+          lk ->
+            MVCC.get_matching_tables(tx.mvcc, tx.ref, lk, sorted_keys)
+            |> Enum.flat_map(fn tab ->
+              case Enum.filter(sorted_keys, &DiskTable.has_key?(tab, &1)) do
+                [] -> []
+                hits -> [table_search(tab, hits, tx.sqn)]
+              end
+            end)
         end
 
         {acc, keys} =
           Merge.stream(
-            fn ->
-              tables.(lk)
-              |> Enum.filter(fn table -> Enum.any?(keys, &table_has_key?(table, &1)) end)
-              |> Enum.map(&table_search(&1, sorted_keys, tx.sequence))
-            end,
+            fn -> tables.(lk) end,
             filter_tombstones?: false
           )
           |> Enum.reduce({acc, keys}, fn
-            {key, _seq, :"$goblin_tombstone"}, {acc, keys} ->
+            {key, _sqn, :"$goblin_tombstone"}, {acc, keys} ->
               {acc, MapSet.delete(keys, key)}
 
-            {key, _seq, val}, {acc, keys} ->
+            {key, _sqn, val}, {acc, keys} ->
               {[{key, val} | acc], MapSet.delete(keys, key)}
           end)
 
@@ -319,24 +310,7 @@ defmodule Goblin.Tx do
   """
   @spec has_key?(t(), term(), keyword()) :: boolean()
   def has_key?(tx, key, opts \\ []) do
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
-    key = tag_key(key, tag)
-    tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
-
-    recurse_levels(tx.max_level_key, false, fn lk, _acc ->
-      tables =
-        case lk do
-          -1 -> [tx_table | MVCC.get_matching_tables(tx.mvcc, tx.tx_key, lk, [key])]
-          _ -> MVCC.get_matching_tables(tx.mvcc, tx.tx_key, lk, [key])
-        end
-
-      tables
-      |> Enum.filter(fn table -> table_has_key?(table, key) end)
-      |> case do
-        [_ | _] -> {:halt, true}
-        _ -> {:cont, false}
-      end
-    end)
+    get_multi(tx, [key], opts) != []
   end
 
   @doc """
@@ -368,20 +342,34 @@ defmodule Goblin.Tx do
   """
   @spec scan(t(), keyword()) :: Enumerable.t({term(), term()})
   def scan(tx, opts \\ []) do
-    scan_stream(
-      fn ->
-        if not MVCC.pinned?(tx.mvcc, tx.tx_key),
-          do:
-            raise(
-              "Goblin.Tx.scan/2 stream was enumerated outside its transaction; " <>
-                "consume it inside the read/transaction callback that created it"
-            )
+    if not MVCC.pinned?(tx.mvcc, tx.ref),
+      do:
+        raise(
+          "Goblin.Tx.scan/2 stream was enumerated outside its transaction; " <>
+            "consume it inside the read/transaction callback that created it"
+        )
 
-        tx
+    min = Keyword.get(opts, :min, :"$goblin_nil")
+    max = Keyword.get(opts, :max, :"$goblin_nil")
+    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    {min, max} = tag_bounds(min, max, tag)
+
+    Merge.stream(
+      fn ->
+        tx_table = Enum.sort_by(tx.commits, fn {key, sqn, _val} -> {key, -sqn} end)
+
+        [tx_table | MVCC.get_all_tables(tx.mvcc, tx.ref)]
+        |> Enum.map(&table_stream(&1, min, max, tx.sqn))
       end,
-      fn -> :ok end,
-      opts
+      min: min,
+      max: max
     )
+    |> Stream.flat_map(fn triple ->
+      case filter_triple_by_tag(triple, tag) do
+        nil -> []
+        pair -> [pair]
+      end
+    end)
   end
 
   @doc """
@@ -428,35 +416,6 @@ defmodule Goblin.Tx do
   @spec abort(t(), any()) :: {:abort, any()}
   def abort(_tx, reply \\ :error), do: {:abort, reply}
 
-  @doc false
-  # @spec scan_stream((-> {non_neg_integer(), list(term())}), keyword()) ::
-  #         Enumerable.t({term(), term()})
-  def scan_stream(start, finish, opts) do
-    min = Keyword.get(opts, :min, :"$goblin_nil")
-    max = Keyword.get(opts, :max, :"$goblin_nil")
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
-    {min, max} = tag_bounds(min, max, tag)
-
-    Merge.stream(
-      fn ->
-        tx = start.()
-        tx_table = Enum.sort_by(tx.commits, fn {key, seq, _val} -> {key, -seq} end)
-
-        [tx_table | MVCC.get_all_tables(tx.mvcc, tx.tx_key)]
-        |> Enum.map(&table_stream(&1, min, max, tx.sequence))
-      end,
-      after: finish,
-      min: min,
-      max: max
-    )
-    |> Stream.flat_map(fn triple ->
-      case filter_triple_by_tag(triple, tag) do
-        nil -> []
-        pair -> [pair]
-      end
-    end)
-  end
-
   defp recurse_levels(lk \\ -2, max_lk, acc, f)
   defp recurse_levels(lk, max_lk, acc, _f) when lk > max_lk, do: acc
 
@@ -467,53 +426,53 @@ defmodule Goblin.Tx do
     end
   end
 
-  defp table_has_key?(%MemTable{} = mt, key), do: MemTable.has_key?(mt, key)
-  defp table_has_key?(%DiskTable{} = dt, key), do: DiskTable.has_key?(dt, key)
+  defp table_search(%MemTable{} = mt, keys, sqn), do: MemTable.search(mt, keys, sqn)
+  defp table_search(%DiskTable{} = dt, keys, sqn), do: DiskTable.search(dt, keys, sqn)
 
-  defp table_has_key?(table, key) when is_list(table),
-    do: Enum.any?(table, fn {k, _, _} -> k == key end)
+  defp table_search(table, keys, sqn) when is_list(table),
+    do: Enum.filter(table, fn {k, s, _} -> s < sqn and k in keys end)
 
-  defp table_search(%MemTable{} = mt, keys, seq), do: MemTable.search(mt, keys, seq)
-  defp table_search(%DiskTable{} = dt, keys, seq), do: DiskTable.search(dt, keys, seq)
+  defp table_stream(%MemTable{} = mt, _min, _max, sqn), do: MemTable.stream(mt, sqn)
 
-  defp table_search(table, keys, seq) when is_list(table),
-    do: Enum.filter(table, fn {k, s, _} -> s < seq and k in keys end)
+  defp table_stream(%DiskTable{} = dt, min, max, sqn) do
+    {dt_min, dt_max} = dt.key_range
+    min = if min == :"$goblin_nil", do: dt_min, else: min
+    max = if max == :"$goblin_nil", do: dt_max, else: max
+    DiskTable.stream(dt, min, max, sqn)
+  end
 
-  defp table_stream(%MemTable{} = mt, _min, _max, seq), do: MemTable.stream(mt, seq)
-
-  defp table_stream(%DiskTable{} = dt, min, max, seq),
-    do: DiskTable.stream(dt, min, max, seq)
-
-  defp table_stream(table, min, max, seq) when is_list(table) do
+  defp table_stream(table, min, max, sqn) when is_list(table) do
     cond do
       min == :"$goblin_nil" and max == :"$goblin_nil" ->
-        Enum.filter(table, fn {_k, s, _v} -> s < seq end)
+        Enum.filter(table, fn {_k, s, _v} -> s < sqn end)
 
       max == :"$goblin_nil" ->
-        Enum.filter(table, fn {k, s, _v} -> min <= k and s < seq end)
+        Enum.filter(table, fn {k, s, _v} -> min <= k and s < sqn end)
 
       min == :"$goblin_nil" ->
-        Enum.filter(table, fn {k, s, _v} -> k <= max and s < seq end)
+        Enum.filter(table, fn {k, s, _v} -> k <= max and s < sqn end)
 
       true ->
-        Enum.filter(table, fn {k, s, _v} -> min <= k and k <= max and s < seq end)
+        Enum.filter(table, fn {k, s, _v} -> min <= k and k <= max and s < sqn end)
     end
   end
 
   defp tag_key(key, :"$goblin_nil"), do: key
-  defp tag_key(key, tag), do: {:"$goblin_tag", tag, key}
+  defp tag_key(key, tag), do: {:"$goblin_tag", tag, {key}}
 
-  defp untag_pair({{:"$goblin_tag", _tag, key}, val}), do: {key, val}
+  defp untag_pair({{:"$goblin_tag", _tag, {key}}, val}), do: {key, val}
   defp untag_pair(pair), do: pair
 
   defp tag_bounds(min, max, :"$goblin_nil"), do: {min, max}
-  defp tag_bounds(:"$goblin_nil", :"$goblin_nil", _tag), do: {:"$goblin_nil", :"$goblin_nil"}
-  defp tag_bounds(min, :"$goblin_nil", tag), do: {{:"$goblin_tag", tag, min}, :"$goblin_nil"}
-  defp tag_bounds(:"$goblin_nil", max, tag), do: {:"$goblin_nil", {:"$goblin_tag", tag, max}}
-  defp tag_bounds(min, max, tag), do: {{:"$goblin_tag", tag, min}, {:"$goblin_tag", tag, max}}
 
-  defp filter_triple_by_tag({{:"$goblin_tag", _tag, _key}, _seq, _val}, :"$goblin_nil"), do: nil
-  defp filter_triple_by_tag({{:"$goblin_tag", tag, key}, _seq, val}, tag), do: {key, val}
-  defp filter_triple_by_tag({key, _seq, val}, :"$goblin_nil"), do: {key, val}
+  defp tag_bounds(min, max, tag) do
+    lo = if min == :"$goblin_nil", do: {}, else: {min}
+    hi = if max == :"$goblin_nil", do: {nil, nil}, else: {max}
+    {{:"$goblin_tag", tag, lo}, {:"$goblin_tag", tag, hi}}
+  end
+
+  defp filter_triple_by_tag({{:"$goblin_tag", _tag, _key}, _sqn, _val}, :"$goblin_nil"), do: nil
+  defp filter_triple_by_tag({{:"$goblin_tag", tag, {key}}, _sqn, val}, tag), do: {key, val}
+  defp filter_triple_by_tag({key, _sqn, val}, :"$goblin_nil"), do: {key, val}
   defp filter_triple_by_tag(_triple, _tag), do: nil
 end

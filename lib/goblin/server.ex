@@ -31,10 +31,11 @@ defmodule Goblin.Server do
     :opts,
     :writer,
     :wal,
-    sequence: 0,
+    :compacting,
+    :flushing,
+    sqn: 0,
     levels: %{},
-    flushing: %{},
-    compacting: %{}
+    flush_queue: :queue.new()
   ]
 
   @type t :: :gen_statem.server_ref()
@@ -61,13 +62,13 @@ defmodule Goblin.Server do
   def stop(db, reason, timeout), do: :gen_statem.stop(db, reason, timeout)
 
   @spec start_transaction(t(), reference()) :: :ok | {:error, term()}
-  def start_transaction(db, tx_key), do: command(db, {:start_tx, tx_key})
+  def start_transaction(db, tx_ref), do: command(db, {:start_tx, tx_ref})
 
   @spec commit_transaction(t(), reference(), Tx.t()) :: :ok | {:error, term()}
-  def commit_transaction(db, tx_key, tx), do: command(db, {:commit_tx, tx_key, tx})
+  def commit_transaction(db, tx_ref, tx), do: command(db, {:commit_tx, tx_ref, tx})
 
   @spec cancel_transaction(t(), reference()) :: :ok | {:error, term()}
-  def cancel_transaction(db, tx_key), do: command(db, {:cancel_tx, tx_key})
+  def cancel_transaction(db, tx_ref), do: command(db, {:cancel_tx, tx_ref})
 
   @spec flushing?(t(), non_neg_integer()) :: boolean()
   def flushing?(db, timeout), do: command(db, :flushing?, timeout)
@@ -93,8 +94,8 @@ defmodule Goblin.Server do
   @impl :gen_statem
   def terminate(_reason, _state, db) do
     for pid <- MVCC.pinned_pids(db.mvcc), do: Process.unlink(pid)
-    for({_ref, {task, _mt, _wal}} <- db.flushing, do: Task.shutdown(task, :brutal_kill))
-    for({_ref, {task, _dts}} <- db.compacting, do: Task.shutdown(task, :brutal_kill))
+    with {_task_ref, task, _dts} <- db.compacting, do: Task.shutdown(task)
+    with {_task_ref, task, _mt, _wal} <- db.flushing, do: Task.shutdown(task)
     :persistent_term.erase({Goblin, self()})
     db.manifest && Manifest.close(db.manifest)
     db.wal && WAL.close(db.wal)
@@ -140,9 +141,9 @@ defmodule Goblin.Server do
   end
 
   @doc false
-  def idle({:call, {pid, _} = from}, {:start_tx, tx_key}, db) do
+  def idle({:call, {pid, _} = from}, {:start_tx, tx_ref}, db) do
     ref = Process.monitor(pid)
-    writer = {tx_key, ref, pid}
+    writer = {tx_ref, ref, pid}
     {:next_state, :occupied, %{db | writer: writer}, [{:reply, from, :ok}]}
   end
 
@@ -164,17 +165,17 @@ defmodule Goblin.Server do
     {:keep_state, db, [:postpone]}
   end
 
-  def occupied({:call, from}, {:commit_tx, tx_key, tx}, %{writer: {tx_key, ref, _}} = db) do
+  def occupied({:call, from}, {:commit_tx, tx_ref, tx}, %{writer: {tx_ref, ref, _}} = db) do
     Process.demonitor(ref, [:flush])
 
-    new_seq = tx.sequence
+    new_sqn = tx.sqn
 
     case WAL.append(db.wal, tx.commits) do
       :ok ->
         MemTable.append(db.mem_table, tx.commits)
-        MVCC.update_sequence(db.mvcc, new_seq)
+        MVCC.update_sequence(db.mvcc, new_sqn)
 
-        {:keep_state, %{db | sequence: new_seq, writer: nil},
+        {:keep_state, %{db | sqn: new_sqn, writer: nil},
          [{:reply, from, :ok}, {:next_event, :internal, :maybe_flush}]}
 
       {:error, reason} = error ->
@@ -182,14 +183,14 @@ defmodule Goblin.Server do
     end
   end
 
-  def occupied({:call, from}, {:cancel_tx, tx_key}, %{writer: {tx_key, ref, _}} = db) do
+  def occupied({:call, from}, {:cancel_tx, tx_ref}, %{writer: {tx_ref, ref, _}} = db) do
     Process.demonitor(ref, [:flush])
 
     {:next_state, :idle, %{db | writer: nil}, [{:reply, from, :ok}]}
   end
 
-  def occupied(:info, {:DOWN, ref, _, _, _}, %{writer: {tx_key, ref, _}} = db) do
-    MVCC.unpin(db.mvcc, tx_key)
+  def occupied(:info, {:DOWN, ref, _, _, _}, %{writer: {tx_ref, ref, _}} = db) do
+    MVCC.unpin(db.mvcc, tx_ref)
     {:next_state, :idle, %{db | writer: nil}}
   end
 
@@ -222,16 +223,15 @@ defmodule Goblin.Server do
   end
 
   defp handle_event({:call, from}, :flushing?, db) do
-    {:keep_state, db, [{:reply, from, db_flushing?(db)}]}
+    {:keep_state, db, [{:reply, from, not is_nil(db.flushing)}]}
   end
 
   defp handle_event({:call, from}, :compacting?, db) do
-    {:keep_state, db, [{:reply, from, db_compacting?(db)}]}
+    {:keep_state, db, [{:reply, from, not is_nil(db.compacting)}]}
   end
 
-  defp handle_event(:info, {ref, merge_result}, %{flushing: flushing} = db)
-       when is_map_key(flushing, ref) do
-    case finish_flush(db, ref, merge_result) do
+  defp handle_event(:info, {ref, {:ok, dts}}, %{flushing: {ref, _, _, _}} = db) do
+    case finish_flush(db, dts) do
       {:ok, db} ->
         {:keep_state, db,
          [{:next_event, :internal, :maybe_compact}, {:next_event, :internal, :sweep}]}
@@ -241,25 +241,30 @@ defmodule Goblin.Server do
     end
   end
 
-  defp handle_event(:info, {ref, merge_result}, %{compacting: compacting} = db)
-       when is_map_key(compacting, ref) do
-    case finish_compaction(db, ref, merge_result) do
-      {:ok, db} ->
-        {:keep_state, db,
-         [{:next_event, :internal, :maybe_compact}, {:next_event, :internal, :sweep}]}
-
-      {:error, reason} ->
-        {:stop, reason, db}
-    end
-  end
-
-  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{flushing: flushing} = db)
-       when is_map_key(flushing, ref) do
+  defp handle_event(:info, {ref, {:error, reason}}, %{flushing: {ref, _, _, _}} = db) do
     {:stop, reason, db}
   end
 
-  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{compacting: compacting} = db)
-       when is_map_key(compacting, ref) do
+  defp handle_event(:info, {ref, {:ok, dts}}, %{compacting: {ref, _, _}} = db) do
+    case finish_compaction(db, dts) do
+      {:ok, db} ->
+        {:keep_state, db,
+         [{:next_event, :internal, :maybe_compact}, {:next_event, :internal, :sweep}]}
+
+      {:error, reason} ->
+        {:stop, reason, db}
+    end
+  end
+
+  defp handle_event(:info, {ref, {:error, reason}}, %{compacting: {ref, _, _}} = db) do
+    {:stop, reason, db}
+  end
+
+  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{flushing: {ref, _, _, _}} = db) do
+    {:stop, reason, db}
+  end
+
+  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{compacting: {ref, _, _}} = db) do
     {:stop, reason, db}
   end
 
@@ -274,9 +279,6 @@ defmodule Goblin.Server do
     :gen_statem.call(db, cmd, timeout)
   end
 
-  defp db_flushing?(db), do: map_size(db.flushing) != 0
-  defp db_compacting?(db), do: map_size(db.compacting) != 0
-
   defp recover(db) do
     snapshot = Manifest.snapshot(db.manifest)
     data_files = Enum.filter(snapshot, &String.ends_with?(&1, [@wal_suffix, @goblin_suffix]))
@@ -289,17 +291,12 @@ defmodule Goblin.Server do
     with {:ok, db} <- load_wals(db, wals),
          {:ok, db} <- load_disk_tables(db, dts),
          {:ok, db} <- open_wal_and_mem_table(db) do
-      seq = db.sequence + 1
-
-      mts = [
-        db.mem_table
-        | Map.values(db.flushing) |> Enum.map(fn {_task, mt, _wal} -> mt end)
-      ]
-
+      sqn = db.sqn + 1
+      mts = [db.mem_table | for({mt, _wal} <- :queue.to_list(db.flush_queue), do: mt)]
       dts = db.levels |> Map.values() |> List.flatten()
       MVCC.put_version(db.mvcc, mts ++ dts, [])
-      MVCC.update_sequence(db.mvcc, seq)
-      {:ok, %{db | sequence: seq}}
+      MVCC.update_sequence(db.mvcc, sqn)
+      {:ok, dequeue_flush(%{db | sqn: sqn})}
     end
   end
 
@@ -307,26 +304,26 @@ defmodule Goblin.Server do
 
   defp load_wals(db, [wal | wals]) do
     with {:ok, wal} <- WAL.open(wal),
-         {:ok, db} <- load_and_flush_wal(db, wal) do
+         {:ok, db} <- load_wal(db, wal) do
       load_wals(db, wals)
     end
   end
 
-  defp load_and_flush_wal(db, wal) do
+  defp load_wal(db, wal) do
     mt = MemTable.new()
     commits = WAL.stream(wal)
-    seq = MemTable.append(mt, commits)
+    sqn = MemTable.append(mt, commits)
 
-    %{db | sequence: max(db.sequence, seq)}
-    |> flush(mt, wal)
+    %{db | sqn: max(db.sqn, sqn)}
+    |> enqueue_flush(mt, wal)
   end
 
   defp load_disk_tables(db, []), do: {:ok, db}
 
   defp load_disk_tables(db, [dt | dts]) do
-    with {:ok, %{seq_range: {_min, max_seq}} = dt} <- DiskTable.from_file(dt) do
+    with {:ok, %{sqn_range: {_min, max_sqn}} = dt} <- DiskTable.from_file(dt) do
       levels = Levels.put(db.levels, dt)
-      db = %{db | levels: levels, sequence: max(db.sequence, max_seq)}
+      db = %{db | levels: levels, sqn: max(db.sqn, max_sqn)}
       load_disk_tables(db, dts)
     end
   end
@@ -341,43 +338,37 @@ defmodule Goblin.Server do
     end
   end
 
-  defp finish_flush(db, ref, {:ok, new_dts}) do
-    {{_task, mt, wal}, flushing} = Map.pop(db.flushing, ref)
+  defp finish_flush(db, new_dts) do
+    {_task_ref, _task, mt, wal} = db.flushing
     new_dts_ids = Enum.map(new_dts, & &1.id)
 
     with {:ok, manifest} <- Manifest.update(db.manifest, new_dts_ids, [wal.id]),
          :ok <- WAL.delete(wal) do
       levels = Enum.reduce(new_dts, db.levels, &Levels.put(&2, &1))
       MVCC.put_version(db.mvcc, new_dts, [mt])
-      {:ok, %{db | manifest: manifest, levels: levels, flushing: flushing}}
+      {:ok, %{db | manifest: manifest, levels: levels, flushing: nil} |> dequeue_flush()}
     end
   end
 
-  defp finish_flush(_db, _ref, error), do: error
-
-  defp finish_compaction(db, ref, {:ok, new_dts}) do
-    {{_task, old_dts}, compacting} = Map.pop(db.compacting, ref)
+  defp finish_compaction(db, new_dts) do
+    {_task_ref, _task, old_dts} = db.compacting
     new_dts_ids = Enum.map(new_dts, & &1.id)
     old_dts_ids = Enum.map(old_dts, & &1.id)
 
     with {:ok, manifest} <- Manifest.update(db.manifest, new_dts_ids, old_dts_ids) do
       levels = Enum.reduce(new_dts, db.levels, &Levels.put(&2, &1))
       MVCC.put_version(db.mvcc, new_dts, old_dts)
-      {:ok, %{db | manifest: manifest, levels: levels, compacting: compacting}}
+      {:ok, %{db | manifest: manifest, levels: levels, compacting: nil}}
     end
   end
-
-  defp finish_compaction(_db, _ref, error), do: error
 
   defp maybe_flush(db) do
-    if MemTable.size(db.mem_table) >= db.opts[:mem_limit] do
-      coordinate_flush(db)
-    else
-      {:ok, db}
-    end
+    if MemTable.size(db.mem_table) >= db.opts[:mem_limit],
+      do: rotate(db),
+      else: {:ok, db}
   end
 
-  defp maybe_compact(%{compacting: compacting} = db) when compacting == %{} do
+  defp maybe_compact(%{compacting: nil} = db) do
     case Levels.next(db.levels, db.opts) do
       nil ->
         db
@@ -390,21 +381,32 @@ defmodule Goblin.Server do
 
   defp maybe_compact(db), do: db
 
-  defp coordinate_flush(db) do
-    with {:ok, db} <- flush(db, db.mem_table, db.wal),
+  defp rotate(db) do
+    with {:ok, db} <- enqueue_flush(db, db.mem_table, db.wal),
          {:ok, db} <- open_wal_and_mem_table(db) do
       MVCC.put_version(db.mvcc, [db.mem_table], [])
-      {:ok, db}
+      {:ok, dequeue_flush(db)}
     end
   end
 
+  defp enqueue_flush(db, mt, wal) do
+    with :ok <- WAL.close(wal) do
+      {:ok, %{db | flush_queue: :queue.in({mt, wal}, db.flush_queue)}}
+    end
+  end
+
+  defp dequeue_flush(%{flushing: nil} = db) do
+    case :queue.out(db.flush_queue) do
+      {:empty, _} -> db
+      {{:value, {mt, wal}}, flush_queue} -> flush(%{db | flush_queue: flush_queue}, mt, wal)
+    end
+  end
+
+  defp dequeue_flush(db), do: db
+
   defp flush(db, mt, wal) do
     task = merge_task(fn -> MemTable.stream(mt) end, build_opts(db, 0))
-
-    with :ok <- WAL.close(wal) do
-      flushing = Map.put(db.flushing, task.ref, {task, mt, wal})
-      {:ok, %{db | flushing: flushing}}
-    end
+    %{db | flushing: {task.ref, task, mt, wal}}
   end
 
   defp compact(db, lk, dts, filter_tombstones?) do
@@ -418,8 +420,7 @@ defmodule Goblin.Server do
         build_opts(db, lk)
       )
 
-    compacting = Map.put(db.compacting, task.ref, {task, dts})
-    %{db | compacting: compacting}
+    %{db | compacting: {task.ref, task, dts}}
   end
 
   defp merge_task(stream_fun, opts),

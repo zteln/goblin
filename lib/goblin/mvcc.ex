@@ -23,14 +23,14 @@ defmodule Goblin.MVCC do
   end
 
   @spec update_sequence(t(), non_neg_integer()) :: :ok
-  def update_sequence(ref, seq) do
-    :ets.update_element(ref, :meta, {3, seq})
+  def update_sequence(ref, sqn) do
+    :ets.update_element(ref, :meta, {3, sqn})
     :ok
   end
 
   @spec put_version(t(), list(table()), list(table())) :: :ok
   def put_version(ref, new, old) do
-    [{:meta, version, _seq, max_lk}] = :ets.lookup(ref, :meta)
+    [{:meta, version, _sqn, max_lk}] = :ets.lookup(ref, :meta)
     version = version + 1
     max_lk = Enum.reduce(new, max_lk, &max(&1.level_key, &2))
 
@@ -48,14 +48,14 @@ defmodule Goblin.MVCC do
     :ok
   end
 
-  @spec pin(t(), term()) :: {non_neg_integer(), level_key()}
+  @spec pin(t(), reference()) :: {non_neg_integer(), level_key()}
   def pin(ref, key) do
-    [{_, ver, seq, max_lk}] = :ets.lookup(ref, :meta)
+    [{_, ver, sqn, max_lk}] = :ets.lookup(ref, :meta)
     :ets.insert(ref, {{:pin, key}, ver, self()})
 
     case :ets.lookup_element(ref, :meta, 2) do
       ^ver ->
-        {seq, max_lk}
+        {sqn, max_lk}
 
       _ ->
         :ets.delete(ref, {:pin, key})
@@ -63,7 +63,7 @@ defmodule Goblin.MVCC do
     end
   end
 
-  @spec unpin(t(), term()) :: :ok
+  @spec unpin(t(), reference()) :: :ok
   def unpin(ref, pid) when is_pid(pid) do
     :ets.match_delete(ref, {{:pin, :_}, :_, pid})
     :ok
@@ -80,7 +80,7 @@ defmodule Goblin.MVCC do
     |> List.flatten()
   end
 
-  @spec pinned?(t(), term()) :: boolean()
+  @spec pinned?(t(), reference()) :: boolean()
   def pinned?(ref, key), do: :ets.member(ref, {:pin, key})
 
   @spec sweep(t()) :: list(table())

@@ -5,8 +5,8 @@ defmodule Goblin.DiskTable.DiskIndex do
   def new(), do: []
 
   @spec append(list(), term(), non_neg_integer(), non_neg_integer()) :: list()
-  def append(index, key, seq, offset) do
-    [{key, seq, offset} | index]
+  def append(index, key, sqn, offset) do
+    [{key, sqn, offset} | index]
   end
 
   @spec finalize(list()) :: tuple()

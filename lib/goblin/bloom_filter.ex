@@ -71,13 +71,18 @@ defmodule Goblin.BloomFilter do
 
   defp hashes(key, no_hashes, range) do
     h1 = :erlang.phash2({key, 1}, range)
-    h2 = :erlang.phash2({key, 2}, range)
-
-    for i <- 0..(no_hashes - 1) do
-      rem(h1 + i * h2, range)
-    end
+    h2 = Bitwise.bor(:erlang.phash2({key, 2}, range), 1)
+    for i <- 0..(no_hashes - 1), do: rem(h1 + i * h2, range)
   end
 
-  defp no_bits(size, fpp), do: floor(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
+  defp no_bits(size, fpp) do
+    target = ceil(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
+    next_pow2(max(target, 8))
+  end
+
+  defp next_pow2(n, pow \\ 2)
+  defp next_pow2(n, pow) when pow >= n, do: pow
+  defp next_pow2(n, pow), do: next_pow2(n, pow * 2)
+
   defp no_hashes(size, no_bits), do: round(no_bits / size * :math.log(2))
 end
