@@ -24,8 +24,9 @@ defmodule Goblin.WAL do
 
   @spec append(t(), list(term())) :: :ok | {:error, term()}
   def append(wal, commits) do
-    with {:ok, _size} <- FileIO.append(wal.io, commits) do
-      FileIO.sync(wal.io)
+    with {:ok, size} <- FileIO.append(wal.io, commits),
+         :ok <- FileIO.sync(wal.io) do
+      {:ok, size}
     end
   end
 
