@@ -57,9 +57,6 @@ defmodule Goblin.MemTable do
     )
   end
 
-  @spec size(t()) :: non_neg_integer()
-  def size(mt), do: :ets.info(mt.ref, :memory) * :erlang.system_info(:wordsize)
-
   defp get(mt, key, sqn) do
     case :ets.lookup(mt.ref, {key, -sqn}) do
       [] -> nil
