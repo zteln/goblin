@@ -33,6 +33,7 @@ defmodule Goblin.Server do
     :wal,
     :compacting,
     :flushing,
+    mem: 0,
     sqn: 0,
     levels: %{},
     flush_queue: :queue.new()
@@ -171,11 +172,11 @@ defmodule Goblin.Server do
     new_sqn = tx.sqn
 
     case WAL.append(db.wal, tx.commits) do
-      :ok ->
+      {:ok, size} ->
         MemTable.append(db.mem_table, tx.commits)
         MVCC.update_sequence(db.mvcc, new_sqn)
 
-        {:keep_state, %{db | sqn: new_sqn, writer: nil},
+        {:keep_state, %{db | sqn: new_sqn, mem: db.mem + size, writer: nil},
          [{:reply, from, :ok}, {:next_event, :internal, :maybe_flush}]}
 
       {:error, reason} = error ->
@@ -363,7 +364,7 @@ defmodule Goblin.Server do
   end
 
   defp maybe_flush(db) do
-    if MemTable.size(db.mem_table) >= db.opts[:mem_limit],
+    if db.mem >= db.opts[:mem_limit],
       do: rotate(db),
       else: {:ok, db}
   end
@@ -391,7 +392,7 @@ defmodule Goblin.Server do
 
   defp enqueue_flush(db, mt, wal) do
     with :ok <- WAL.close(wal) do
-      {:ok, %{db | flush_queue: :queue.in({mt, wal}, db.flush_queue)}}
+      {:ok, %{db | mem: 0, flush_queue: :queue.in({mt, wal}, db.flush_queue)}}
     end
   end
 
