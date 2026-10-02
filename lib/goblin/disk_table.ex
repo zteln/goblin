@@ -89,16 +89,16 @@ defmodule Goblin.DiskTable do
 
   @spec from_file(Path.t()) :: {:ok, t()} | {:error, term()}
   def from_file(path) do
-    io = FileIO.open!(path)
-
-    try do
-      case FileIO.read_footer(io) do
-        {:ok, %__MODULE__{} = dt} -> {:ok, dt}
-        {:ok, _} -> {:error, :invalid_disk_table}
-        error -> error
+    with {:ok, io} <- FileIO.open(path) do
+      try do
+        case FileIO.read_footer(io) do
+          {:ok, %__MODULE__{} = dt} -> {:ok, dt}
+          {:ok, _} -> {:error, :invalid_disk_table}
+          error -> error
+        end
+      after
+        FileIO.close(io)
       end
-    after
-      FileIO.close(io)
     end
   end
 
@@ -178,7 +178,7 @@ defmodule Goblin.DiskTable do
   end
 
   defp maybe_init(%{file: nil, disk_table: nil} = acc, new_dt) do
-    with {:ok, file} <- FileIO.open(acc.filer.(), write?: true) do
+    with {:ok, file} <- FileIO.open(acc.filer.(), write?: true, new?: true) do
       {:ok,
        %{
          acc

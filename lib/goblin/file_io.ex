@@ -1,5 +1,6 @@
 defmodule Goblin.FileIO do
   @moduledoc false
+  # TODO: rename to Goblin.Persistence
 
   alias Goblin.IOError
 
@@ -34,8 +35,9 @@ defmodule Goblin.FileIO do
   @spec open(Path.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def open(path, opts \\ []) do
     modes =
-      case opts[:write?] do
-        true -> [:append | @default_modes]
+      case {opts[:write?], opts[:new?]} do
+        {true, true} -> [:append, :exclusive | @default_modes]
+        {true, _} -> [:append | @default_modes]
         _ -> @default_modes
       end
 

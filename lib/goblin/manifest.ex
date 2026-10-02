@@ -31,7 +31,9 @@ defmodule Goblin.Manifest do
     alog_path = apath(data_dir)
     blog_path = bpath(data_dir)
 
-    with {:ok, alog} <- FileIO.open(alog_path, write?: true),
+    with :ok <- ensure_unique_access(alog_path),
+         :ok <- ensure_unique_access(blog_path),
+         {:ok, alog} <- FileIO.open(alog_path, write?: true),
          {:ok, blog} <- FileIO.open(blog_path, write?: true) do
       manifest = %__MODULE__{
         data_dir: data_dir,
@@ -130,6 +132,13 @@ defmodule Goblin.Manifest do
 
       error ->
         error
+    end
+  end
+
+  defp ensure_unique_access(path) do
+    case :global.set_lock({{__MODULE__, path}, self()}, [node()], 0) do
+      true -> :ok
+      false -> {:error, :manifest_in_use_already}
     end
   end
 

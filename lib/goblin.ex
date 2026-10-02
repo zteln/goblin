@@ -88,59 +88,54 @@ defmodule Goblin do
           (Tx.t() -> {:commit, Tx.t(), term()} | {:abort, term()})
         ) :: term()
   def transaction(db, callback) do
-    {db, mvcc} = server_info(db)
     tx_ref = make_ref()
 
-    case Server.start_transaction(db, tx_ref) do
-      :ok ->
-        result =
-          try do
-            {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
-
-            %Tx{
-              mode: :write,
-              mvcc: mvcc,
-              ref: tx_ref,
-              sqn: sqn,
-              max_level_key: max_lk
-            }
-            |> callback.()
-          rescue
-            exception ->
-              Server.cancel_transaction(db, tx_ref)
-              reraise(exception, __STACKTRACE__)
-          catch
-            :throw, val ->
-              Server.cancel_transaction(db, tx_ref)
-              throw(val)
-
-            :exit, val ->
-              Server.cancel_transaction(db, tx_ref)
-              exit(val)
-          after
-            MVCC.unpin(mvcc, tx_ref)
-          end
-
-        case result do
-          {:commit, tx, reply} ->
-            case Server.commit_transaction(db, tx_ref, tx) do
-              :ok -> reply
-              error -> raise "Unable to commit due to following error: #{inspect(error)}"
-            end
-
-          {:abort, reply} ->
-            Server.cancel_transaction(db, tx_ref)
-            reply
-
-          _ ->
-            Server.cancel_transaction(db, tx_ref)
-            raise "Invalid return from `Goblin.transaction/2`"
-        end
-
-      {:error, :nested_transaction} ->
-        raise "Cannot start a transaction from within a transaction"
+    with {:ok, db, mvcc} <- server_info(db),
+         :ok <- Server.start_transaction(db, tx_ref) do
+      run(db, mvcc, tx_ref, callback)
+      |> finish(db, tx_ref)
     end
   end
+
+  defp run(db, mvcc, tx_ref, callback) do
+    {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
+
+    %Tx{
+      mode: :write,
+      mvcc: mvcc,
+      ref: tx_ref,
+      sqn: sqn,
+      max_level_key: max_lk
+    }
+    |> callback.()
+  rescue
+    exception ->
+      Server.cancel_transaction(db, tx_ref)
+      reraise(exception, __STACKTRACE__)
+  catch
+    :throw, val ->
+      Server.cancel_transaction(db, tx_ref)
+      throw(val)
+
+    :exit, val ->
+      Server.cancel_transaction(db, tx_ref)
+      exit(val)
+  after
+    MVCC.unpin(mvcc, tx_ref)
+  end
+
+  defp finish({:commit, %Tx{commits: []}}, db, tx_ref), do: Server.cancel_transaction(db, tx_ref)
+
+  defp finish({:commit, tx}, db, tx_ref), do: Server.commit_transaction(db, tx_ref, tx)
+
+  defp finish({:commit, tx, reply}, db, tx_ref),
+    do: with(:ok <- finish({:commit, tx}, db, tx_ref), do: {:ok, reply})
+
+  defp finish({:abort, reply}, db, tx_ref),
+    do: with(:ok <- Server.cancel_transaction(db, tx_ref), do: {:error, reply})
+
+  defp finish(_invalid, db, tx_ref),
+    do: with(:ok <- Server.cancel_transaction(db, tx_ref), do: {:error, :invalid_return})
 
   @doc """
   Writes a key-value pair to the database.
@@ -234,8 +229,7 @@ defmodule Goblin do
         ) ::
           :ok
   def update(db, key, updater, opts \\ []) do
-    {:ok, _} = update_multi(db, [key], updater, opts)
-    :ok
+    with {:ok, _} <- update_multi(db, [key], updater, opts), do: :ok
   end
 
   @doc """
@@ -314,7 +308,7 @@ defmodule Goblin do
 
       tx
       |> Tx.put_multi(new, opts)
-      |> Tx.commit({:ok, length(new)})
+      |> Tx.commit(length(new))
     end)
   end
 
@@ -450,7 +444,7 @@ defmodule Goblin do
 
         _ ->
           tx
-          |> Tx.abort(false)
+          |> Tx.commit(false)
       end
     end)
   end
@@ -535,26 +529,26 @@ defmodule Goblin do
         bob = Goblin.Tx.get(tx, :bob)
         {alice, bob}
       end)
-      # => {"Alice", "Bob"}
+      # => {:ok, {"Alice", "Bob"}}
   """
   def read(db, callback) do
-    {db, mvcc} = server_info(db)
     tx_ref = make_ref()
 
-    try do
-      Process.link(db)
-      {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
+    with {:ok, _db, mvcc} <- server_info(db) do
+      try do
+        {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
 
-      %Tx{
-        ref: tx_ref,
-        mvcc: mvcc,
-        sqn: sqn,
-        max_level_key: max_lk
-      }
-      |> callback.()
-    after
-      MVCC.unpin(mvcc, tx_ref)
-      Process.unlink(db)
+        {:ok,
+         %Tx{
+           ref: tx_ref,
+           mvcc: mvcc,
+           sqn: sqn,
+           max_level_key: max_lk
+         }
+         |> callback.()}
+      after
+        MVCC.unpin(mvcc, tx_ref)
+      end
     end
   end
 
@@ -693,7 +687,6 @@ defmodule Goblin do
   """
   @spec compacting?(Server.t(), keyword()) :: boolean()
   def compacting?(db, timeout \\ 5_000), do: Server.compacting?(db, timeout)
-  # defdelegate compacting?(db, timeout \\ 5_000), to: Server
 
   @doc """
   Starts the database.
@@ -740,11 +733,10 @@ defmodule Goblin do
   defp server_info(db) do
     pid = pid_of(db)
 
-    mvcc =
-      (pid && :persistent_term.get({Goblin, pid}, nil)) ||
-        raise ArgumentError, "Goblin database #{inspect(db)} is not running or still starting"
-
-    {pid, mvcc}
+    case :persistent_term.get({__MODULE__, pid}, nil) do
+      nil -> {:error, :no_server}
+      mvcc -> {:ok, db, mvcc}
+    end
   end
 
   defp pid_of(pid) when is_pid(pid), do: pid

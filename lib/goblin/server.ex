@@ -94,7 +94,6 @@ defmodule Goblin.Server do
 
   @impl :gen_statem
   def terminate(_reason, _state, db) do
-    for pid <- MVCC.pinned_pids(db.mvcc), do: Process.unlink(pid)
     with {_task_ref, task, _dts} <- db.compacting, do: Task.shutdown(task)
     with {_task_ref, task, _mt, _wal} <- db.flushing, do: Task.shutdown(task)
     :persistent_term.erase({Goblin, self()})
@@ -106,15 +105,11 @@ defmodule Goblin.Server do
   @impl :gen_statem
   def init(args) do
     Process.flag(:trap_exit, true)
-
     data_dir = args[:data_dir]
-    file_counter = :atomics.new(1, signed: false)
-
-    File.exists?(data_dir) || File.mkdir_p!(data_dir)
 
     opts =
       args
-      |> Keyword.put_new(:fpp, @default_fpp)
+      |> Keyword.put_new(:bf_fpp, @default_fpp)
       |> Keyword.put_new(:mem_limit, @default_mem_limit)
       |> Keyword.put_new(:flush_level_file_limit, @default_flush_level_file_limit)
       |> Keyword.put_new(:level_base_size, @default_level_base_size)
@@ -129,12 +124,13 @@ defmodule Goblin.Server do
 
     db = %__MODULE__{
       data_dir: data_dir,
-      file_counter: file_counter,
+      file_counter: :atomics.new(1, signed: false),
       mvcc: MVCC.new(),
       opts: opts
     }
 
-    with {:ok, manifest} <- Manifest.open(data_dir),
+    with :ok <- File.mkdir_p(data_dir),
+         {:ok, manifest} <- Manifest.open(data_dir),
          {:ok, db} <- recover(%{db | manifest: manifest}) do
       :persistent_term.put({Goblin, self()}, db.mvcc)
       {:ok, :idle, db, [{:next_event, :internal, :maybe_compact}]}
@@ -269,11 +265,6 @@ defmodule Goblin.Server do
     {:stop, reason, db}
   end
 
-  defp handle_event(:info, {:EXIT, pid, _reason}, db) do
-    MVCC.unpin(db.mvcc, pid)
-    {:keep_state, db}
-  end
-
   defp handle_event(_, _, db), do: {:keep_state, db}
 
   defp command(db, cmd, timeout \\ :infinity) do
@@ -283,13 +274,12 @@ defmodule Goblin.Server do
   defp recover(db) do
     snapshot = Manifest.snapshot(db.manifest)
     data_files = Enum.filter(snapshot, &String.ends_with?(&1, [@wal_suffix, @goblin_suffix]))
-    delete_unreferenced(db.data_dir, snapshot)
-
     {wals, dts} = Enum.split_with(data_files, &String.ends_with?(&1, @wal_suffix))
     max_count = data_files |> Enum.map(&get_count_from_file/1) |> Enum.max(fn -> 0 end)
     :atomics.put(db.file_counter, 1, max_count + 1)
 
-    with {:ok, db} <- load_wals(db, wals),
+    with :ok <- delete_inactive(db.data_dir, snapshot),
+         {:ok, db} <- load_wals(db, wals),
          {:ok, db} <- load_disk_tables(db, dts),
          {:ok, db} <- open_wal_and_mem_table(db) do
       sqn = db.sqn + 1
@@ -312,11 +302,16 @@ defmodule Goblin.Server do
 
   defp load_wal(db, wal) do
     mt = MemTable.new()
-    commits = WAL.stream(wal)
-    sqn = MemTable.append(mt, commits)
+    logs = WAL.stream(wal)
 
-    %{db | sqn: max(db.sqn, sqn)}
-    |> enqueue_flush(mt, wal)
+    with {:ok, sqn} <-
+           Enum.reduce_while(logs, {:ok, -1}, fn
+             {:ok, commits}, {:ok, sqn} -> {:cont, {:ok, max(sqn, MemTable.append(mt, commits))}}
+             error, _acc -> {:halt, error}
+           end) do
+      %{db | sqn: max(db.sqn, sqn)}
+      |> enqueue_flush(mt, wal)
+    end
   end
 
   defp load_disk_tables(db, []), do: {:ok, db}
@@ -333,7 +328,7 @@ defmodule Goblin.Server do
     wal_path = gen_file(db.data_dir, db.file_counter, @wal_suffix)
     mt = MemTable.new()
 
-    with {:ok, wal} <- WAL.open(wal_path),
+    with {:ok, wal} <- WAL.open(wal_path, true),
          {:ok, manifest} <- Manifest.update(db.manifest, [wal_path], []) do
       {:ok, %{db | wal: wal, mem_table: mt, manifest: manifest}}
     end
@@ -440,7 +435,7 @@ defmodule Goblin.Server do
       level_key: lk,
       compress?: lk > 1,
       max_size: db.opts[:max_sst_size],
-      fpp: db.opts[:fpp],
+      fpp: db.opts[:bf_fpp],
       filer: fn -> gen_file(data_dir, file_counter) end
     ]
   end
@@ -464,18 +459,21 @@ defmodule Goblin.Server do
       |> Integer.to_string(16)
       |> String.pad_leading(20, "0")
 
-    path = Path.join(dir, "#{prefix}.#{suffix}")
-    if File.exists?(path), do: File.rm!(path)
-    path
+    Path.join(dir, "#{prefix}.#{suffix}")
   end
 
-  defp delete_unreferenced(dir, refs) do
-    File.ls!(dir)
-    |> Enum.filter(&String.ends_with?(&1, [@wal_suffix, @goblin_suffix]))
-    |> Enum.map(&Path.join(dir, &1))
-    |> Enum.reject(&(&1 in refs))
-    |> Enum.each(&File.rm!/1)
+  defp delete_inactive(dir, active) do
+    with {:ok, all} <- File.ls(dir) do
+      all
+      |> Enum.filter(&String.ends_with?(&1, [@wal_suffix, @goblin_suffix]))
+      |> Enum.map(&Path.join(dir, &1))
+      |> Enum.reject(&(&1 in active))
+      |> delete()
+    end
   end
+
+  defp delete([]), do: :ok
+  defp delete([path | paths]), do: with(:ok <- File.rm(path), do: delete(paths))
 
   defp get_count_from_file(path) do
     [count_s, _suffix] =

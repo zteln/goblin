@@ -10,8 +10,8 @@ defmodule Goblin.WAL do
         }
 
   @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
-  def open(path) do
-    with {:ok, io} <- FileIO.open(path, write?: true) do
+  def open(path, new? \\ false) do
+    with {:ok, io} <- FileIO.open(path, write?: true, new?: new?) do
       {:ok, %__MODULE__{id: path, io: io}}
     end
   end
@@ -30,20 +30,23 @@ defmodule Goblin.WAL do
     end
   end
 
-  @spec stream(t()) :: Enumerable.t()
+  @spec stream(t()) :: Enumerable.t({:ok, term()} | {:error, term()})
   def stream(wal) do
     wal.io
     |> FileIO.stream()
     |> Stream.transform(nil, fn
+      :halt, _acc ->
+        {:halt, nil}
+
       {:ok, commits}, acc ->
-        {commits, acc}
+        {[{:ok, commits}], acc}
 
       {:corrupt, pos}, acc ->
         FileIO.truncate(wal.io, pos)
         {:halt, acc}
 
-      {:error, _reason}, acc ->
-        {:halt, acc}
+      {:error, _reason} = error, _acc ->
+        {[error], :halt}
     end)
   end
 end

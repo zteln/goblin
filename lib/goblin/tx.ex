@@ -342,13 +342,6 @@ defmodule Goblin.Tx do
   """
   @spec scan(t(), keyword()) :: Enumerable.t({term(), term()})
   def scan(tx, opts \\ []) do
-    if not MVCC.pinned?(tx.mvcc, tx.ref),
-      do:
-        raise(
-          "Goblin.Tx.scan/2 stream was enumerated outside its transaction; " <>
-            "consume it inside the read/transaction callback that created it"
-        )
-
     min = Keyword.get(opts, :min, :"$goblin_nil")
     max = Keyword.get(opts, :max, :"$goblin_nil")
     tag = Keyword.get(opts, :tag, :"$goblin_nil")
@@ -356,6 +349,13 @@ defmodule Goblin.Tx do
 
     Merge.stream(
       fn ->
+        if not MVCC.pinned?(tx.mvcc, tx.ref),
+          do:
+            raise(
+              "Goblin.Tx.scan/2 stream was enumerated outside its transaction; " <>
+                "consume it inside the read/transaction callback that created it"
+            )
+
         tx_table = Enum.sort_by(tx.commits, fn {key, sqn, _val} -> {key, -sqn} end)
 
         [tx_table | MVCC.get_all_tables(tx.mvcc, tx.ref)]
@@ -391,9 +391,8 @@ defmodule Goblin.Tx do
       |> Goblin.Tx.commit()
   """
   @spec commit(t(), any()) :: {:commit, t(), any()}
-  def commit(tx, reply \\ :ok) do
-    {:commit, tx, reply}
-  end
+  def commit(tx), do: {:commit, tx}
+  def commit(tx, reply), do: {:commit, tx, reply}
 
   @doc """
   Pipeline-friendly helper function to abort the transaction.
@@ -401,7 +400,7 @@ defmodule Goblin.Tx do
   ## Parameters
 
   - `tx` - The transaction to abort
-  - `reply` - The reply after aborting (default: `:error`)
+  - `reply` - The reply after aborting (default: `:aborted`)
 
   ## Returns
 
@@ -414,7 +413,7 @@ defmodule Goblin.Tx do
       |> Goblin.Tx.abort()
   """
   @spec abort(t(), any()) :: {:abort, any()}
-  def abort(_tx, reply \\ :error), do: {:abort, reply}
+  def abort(_tx, reply \\ :aborted), do: {:abort, reply}
 
   defp recurse_levels(lk \\ -2, max_lk, acc, f)
   defp recurse_levels(lk, max_lk, acc, _f) when lk > max_lk, do: acc

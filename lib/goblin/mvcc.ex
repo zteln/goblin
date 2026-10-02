@@ -64,20 +64,9 @@ defmodule Goblin.MVCC do
   end
 
   @spec unpin(t(), reference()) :: :ok
-  def unpin(ref, pid) when is_pid(pid) do
-    :ets.match_delete(ref, {{:pin, :_}, :_, pid})
-    :ok
-  end
-
   def unpin(ref, key) do
     :ets.delete(ref, {:pin, key})
     :ok
-  end
-
-  @spec pinned_pids(t()) :: list(pid())
-  def pinned_pids(ref) do
-    :ets.match(ref, {{:pin, :_}, :_, :"$1"})
-    |> List.flatten()
   end
 
   @spec pinned?(t(), reference()) :: boolean()
@@ -88,8 +77,15 @@ defmodule Goblin.MVCC do
     current = :ets.lookup_element(ref, :meta, 2)
 
     min_pinned =
-      :ets.select(ref, [{{{:pin, :_}, :"$1", :_}, [], [:"$1"]}])
-      |> Enum.min(fn -> current end)
+      :ets.select(ref, [{{{:pin, :_}, :_, :_}, [], [:"$_"]}])
+      |> Enum.reduce(current, fn {key, ver, pid}, acc ->
+        if Process.alive?(pid) do
+          min(ver, acc)
+        else
+          :ets.delete(ref, key)
+          acc
+        end
+      end)
 
     :ets.select(ref, [
       {
