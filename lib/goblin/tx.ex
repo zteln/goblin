@@ -225,61 +225,19 @@ defmodule Goblin.Tx do
   @spec get_multi(t(), list(term()), keyword()) :: list({term(), term()})
   def get_multi(tx, keys, opts \\ []) do
     tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    keys = keys |> Enum.map(&tag_key(&1, tag)) |> :lists.usort()
 
-    keys =
-      keys
-      |> Enum.sort(:desc)
-      |> Enum.reduce([], fn
-        key1, [key2 | _] = acc when key1 == key2 -> acc
-        key, acc -> [key | acc]
-      end)
-      |> Enum.map(&tag_key(&1, tag))
-      |> MapSet.new()
+    {found, _missing} =
+      Enum.reduce_while(-2..tx.max_level_key//1, {[], keys}, fn
+        _lk, {found, []} ->
+          {:halt, {found, []}}
 
-    tx_table = Enum.sort_by(tx.commits, fn {key, sqn, _val} -> {key, -sqn} end)
-
-    {acc, _} =
-      recurse_levels(tx.max_level_key, {[], keys}, fn lk, {acc, keys} ->
-        sorted_keys = Enum.sort(keys)
-
-        tables = fn
-          -2 ->
-            [tx_table] |> Enum.map(&table_search(&1, sorted_keys, tx.sqn))
-
-          -1 ->
-            MVCC.get_matching_tables(tx.mvcc, tx.ref, lk, sorted_keys)
-            |> Enum.map(&table_search(&1, sorted_keys, tx.sqn))
-
-          lk ->
-            MVCC.get_matching_tables(tx.mvcc, tx.ref, lk, sorted_keys)
-            |> Enum.flat_map(fn tab ->
-              case Enum.filter(sorted_keys, &DiskTable.has_key?(tab, &1)) do
-                [] -> []
-                hits -> [table_search(tab, hits, tx.sqn)]
-              end
-            end)
-        end
-
-        {acc, keys} =
-          Merge.stream(
-            fn -> tables.(lk) end,
-            filter_tombstones?: false
-          )
-          |> Enum.reduce({acc, keys}, fn
-            {key, _sqn, :"$goblin_tombstone"}, {acc, keys} ->
-              {acc, MapSet.delete(keys, key)}
-
-            {key, _sqn, val}, {acc, keys} ->
-              {[{key, val} | acc], MapSet.delete(keys, key)}
-          end)
-
-        case MapSet.size(keys) do
-          0 -> {:halt, {acc, keys}}
-          _ -> {:cont, {acc, keys}}
-        end
+        lk, {found, keys} ->
+          hits = search_level(tx, lk, keys)
+          {:cont, {hits ++ found, :ordsets.subtract(keys, Enum.map(hits, &elem(&1, 0)))}}
       end)
 
-    Enum.map(acc, &untag_pair/1)
+    for {key, _sqn, val} <- found, val != :"$goblin_tombstone", do: untag_pair({key, val})
   end
 
   @doc """
@@ -391,8 +349,7 @@ defmodule Goblin.Tx do
       |> Goblin.Tx.commit()
   """
   @spec commit(t(), any()) :: {:commit, t(), any()}
-  def commit(tx), do: {:commit, tx}
-  def commit(tx, reply), do: {:commit, tx, reply}
+  def commit(tx, reply \\ :ok), do: {:commit, tx, reply}
 
   @doc """
   Pipeline-friendly helper function to abort the transaction.
@@ -400,7 +357,7 @@ defmodule Goblin.Tx do
   ## Parameters
 
   - `tx` - The transaction to abort
-  - `reply` - The reply after aborting (default: `:aborted`)
+  - `reply` - The reply after aborting (default: `:error`)
 
   ## Returns
 
@@ -413,23 +370,32 @@ defmodule Goblin.Tx do
       |> Goblin.Tx.abort()
   """
   @spec abort(t(), any()) :: {:abort, any()}
-  def abort(_tx, reply \\ :aborted), do: {:abort, reply}
+  def abort(_tx, reply \\ :error), do: {:abort, reply}
 
-  defp recurse_levels(lk \\ -2, max_lk, acc, f)
-  defp recurse_levels(lk, max_lk, acc, _f) when lk > max_lk, do: acc
+  defp search_level(tx, -2, keys) do
+    for key <- keys, hit = List.keyfind(tx.commits, key, 0), do: hit
+  end
 
-  defp recurse_levels(lk, max_lk, acc, f) do
-    case f.(lk, acc) do
-      {:cont, acc} -> recurse_levels(lk + 1, max_lk, acc, f)
-      {:halt, acc} -> acc
-    end
+  defp search_level(tx, lk, keys) do
+    Merge.stream(
+      fn ->
+        tx.mvcc
+        |> MVCC.get_matching_tables(tx.ref, lk, keys)
+        |> Enum.map(&table_search(&1, keys, tx.sqn))
+      end,
+      filter_tombstones?: false
+    )
+    |> Enum.to_list()
   end
 
   defp table_search(%MemTable{} = mt, keys, sqn), do: MemTable.search(mt, keys, sqn)
-  defp table_search(%DiskTable{} = dt, keys, sqn), do: DiskTable.search(dt, keys, sqn)
 
-  defp table_search(table, keys, sqn) when is_list(table),
-    do: Enum.filter(table, fn {k, s, _} -> s < sqn and k in keys end)
+  defp table_search(%DiskTable{} = dt, keys, sqn) do
+    case Enum.filter(keys, &DiskTable.has_key?(dt, &1)) do
+      [] -> []
+      hits -> DiskTable.search(dt, hits, sqn)
+    end
+  end
 
   defp table_stream(%MemTable{} = mt, _min, _max, sqn), do: MemTable.stream(mt, sqn)
 

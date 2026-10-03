@@ -64,8 +64,7 @@ defmodule Goblin do
 
   ## Returns
 
-  - `reply` - The reply from `{:commit, tx, reply}` when committed
-  - `{:error, :aborted}` - When the transaction is aborted
+  - `reply` - The reply from either `{:commit, tx, reply}` or `{:abort, reply}` when committed or aborted
 
   ## Examples
 
@@ -88,12 +87,21 @@ defmodule Goblin do
           (Tx.t() -> {:commit, Tx.t(), term()} | {:abort, term()})
         ) :: term()
   def transaction(db, callback) do
+    {db, mvcc} = server_info(db)
     tx_ref = make_ref()
+    :ok = start(db, tx_ref)
 
-    with {:ok, db, mvcc} <- server_info(db),
-         :ok <- Server.start_transaction(db, tx_ref) do
-      run(db, mvcc, tx_ref, callback)
-      |> finish(db, tx_ref)
+    run(db, mvcc, tx_ref, callback)
+    |> finish(db, tx_ref)
+  end
+
+  defp start(db, tx_ref) do
+    case Server.start_transaction(db, tx_ref) do
+      :ok ->
+        :ok
+
+      {:error, :nested_transaction} ->
+        raise ArgumentError, "Cannot start a transaction from within a transaction"
     end
   end
 
@@ -124,18 +132,27 @@ defmodule Goblin do
     MVCC.unpin(mvcc, tx_ref)
   end
 
-  defp finish({:commit, %Tx{commits: []}}, db, tx_ref), do: Server.cancel_transaction(db, tx_ref)
+  defp finish({:commit, %Tx{commits: []}, reply}, db, tx_ref) do
+    Server.cancel_transaction(db, tx_ref)
+    reply
+  end
 
-  defp finish({:commit, tx}, db, tx_ref), do: Server.commit_transaction(db, tx_ref, tx)
+  defp finish({:commit, tx, reply}, db, tx_ref) do
+    case Server.commit_transaction(db, tx_ref, tx) do
+      :ok -> reply
+      error -> raise "Unable to commit due to following error: #{inspect(error)}"
+    end
+  end
 
-  defp finish({:commit, tx, reply}, db, tx_ref),
-    do: with(:ok <- finish({:commit, tx}, db, tx_ref), do: {:ok, reply})
+  defp finish({:abort, reply}, db, tx_ref) do
+    Server.cancel_transaction(db, tx_ref)
+    reply
+  end
 
-  defp finish({:abort, reply}, db, tx_ref),
-    do: with(:ok <- Server.cancel_transaction(db, tx_ref), do: {:error, reply})
-
-  defp finish(_invalid, db, tx_ref),
-    do: with(:ok <- Server.cancel_transaction(db, tx_ref), do: {:error, :invalid_return})
+  defp finish(_invalid, db, tx_ref) do
+    Server.cancel_transaction(db, tx_ref)
+    raise ArgumentError, "Invalid return from Goblin.transaction/2"
+  end
 
   @doc """
   Writes a key-value pair to the database.
@@ -308,7 +325,7 @@ defmodule Goblin do
 
       tx
       |> Tx.put_multi(new, opts)
-      |> Tx.commit(length(new))
+      |> Tx.commit({:ok, length(new)})
     end)
   end
 
@@ -529,26 +546,24 @@ defmodule Goblin do
         bob = Goblin.Tx.get(tx, :bob)
         {alice, bob}
       end)
-      # => {:ok, {"Alice", "Bob"}}
+      # => {"Alice", "Bob"}
   """
   def read(db, callback) do
+    {_db, mvcc} = server_info(db)
     tx_ref = make_ref()
 
-    with {:ok, _db, mvcc} <- server_info(db) do
-      try do
-        {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
+    try do
+      {sqn, max_lk} = MVCC.pin(mvcc, tx_ref)
 
-        {:ok,
-         %Tx{
-           ref: tx_ref,
-           mvcc: mvcc,
-           sqn: sqn,
-           max_level_key: max_lk
-         }
-         |> callback.()}
-      after
-        MVCC.unpin(mvcc, tx_ref)
-      end
+      %Tx{
+        ref: tx_ref,
+        mvcc: mvcc,
+        sqn: sqn,
+        max_level_key: max_lk
+      }
+      |> callback.()
+    after
+      MVCC.unpin(mvcc, tx_ref)
     end
   end
 
@@ -733,10 +748,11 @@ defmodule Goblin do
   defp server_info(db) do
     pid = pid_of(db)
 
-    case :persistent_term.get({__MODULE__, pid}, nil) do
-      nil -> {:error, :no_server}
-      mvcc -> {:ok, db, mvcc}
-    end
+    mvcc =
+      (pid && :persistent_term.get({Goblin, pid}, nil)) ||
+        raise ArgumentError, "Goblin database #{inspect(db)} is not running or still starting"
+
+    {pid, mvcc}
   end
 
   defp pid_of(pid) when is_pid(pid), do: pid
