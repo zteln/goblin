@@ -117,10 +117,6 @@ defmodule Goblin.Persistence do
 
         {file, pos} ->
           case seq_read(file) do
-            {:ok, terms} when is_list(terms) ->
-              {:ok, pos} = :file.position(file.iodev, :cur)
-              {[{:ok, terms}], {file, pos}}
-
             {:ok, term} ->
               {:ok, pos} = :file.position(file.iodev, :cur)
               {[{:ok, term}], {file, pos}}

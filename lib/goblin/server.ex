@@ -226,33 +226,33 @@ defmodule Goblin.Server do
     {:keep_state, db, [{:reply, from, not is_nil(db.compacting)}]}
   end
 
-  defp handle_event(:info, {ref, {:ok, dts}}, %{flushing: {ref, _, _, _}} = db) do
+  defp handle_event(:info, {ref, {:ok, dts}}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
     case finish_flush(db, dts) do
       {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
       {:error, reason} -> {:stop, reason, db}
     end
   end
 
-  defp handle_event(:info, {ref, {:error, reason}}, %{flushing: {ref, _, _, _}} = db) do
+  defp handle_event(:info, {ref, {:error, reason}}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
     {:stop, reason, db}
   end
 
-  defp handle_event(:info, {ref, {:ok, dts}}, %{compacting: {ref, _, _}} = db) do
+  defp handle_event(:info, {ref, {:ok, dts}}, %{compacting: {%Task{ref: ref}, _}} = db) do
     case finish_compaction(db, dts) do
       {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
       {:error, reason} -> {:stop, reason, db}
     end
   end
 
-  defp handle_event(:info, {ref, {:error, reason}}, %{compacting: {ref, _, _}} = db) do
+  defp handle_event(:info, {ref, {:error, reason}}, %{compacting: {%Task{ref: ref}, _}} = db) do
     {:stop, reason, db}
   end
 
-  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{flushing: {ref, _, _, _}} = db) do
+  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
     {:stop, reason, db}
   end
 
-  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{compacting: {ref, _, _}} = db) do
+  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{compacting: {%Task{ref: ref}, _}} = db) do
     {:stop, reason, db}
   end
 
@@ -326,7 +326,7 @@ defmodule Goblin.Server do
   end
 
   defp finish_flush(db, new_dts) do
-    {_task_ref, _task, mt, wal} = db.flushing
+    {_task, mt, wal} = db.flushing
     new_dts_ids = Enum.map(new_dts, & &1.id)
 
     with {:ok, manifest} <- Manifest.update(db.manifest, new_dts_ids, [wal.id]),
@@ -338,7 +338,7 @@ defmodule Goblin.Server do
   end
 
   defp finish_compaction(db, new_dts) do
-    {_task_ref, _task, old_dts} = db.compacting
+    {_task, old_dts} = db.compacting
     new_dts_ids = Enum.map(new_dts, & &1.id)
     old_dts_ids = Enum.map(old_dts, & &1.id)
 
@@ -393,7 +393,7 @@ defmodule Goblin.Server do
 
   defp flush(db, mt, wal) do
     task = merge_task(fn -> MemTable.stream(mt) end, build_opts(db, 0, :infinity))
-    %{db | flushing: {task.ref, task, mt, wal}}
+    %{db | flushing: {task, mt, wal}}
   end
 
   defp compact(db, lk, dts, filter_tombstones?) do
@@ -407,7 +407,7 @@ defmodule Goblin.Server do
         build_opts(db, lk)
       )
 
-    %{db | compacting: {task.ref, task, dts}}
+    %{db | compacting: {task, dts}}
   end
 
   defp merge_task(stream_fun, opts),

@@ -1,5 +1,6 @@
 defmodule Goblin.Levels do
   @moduledoc false
+  # TODO: get tables from MVCC
 
   @type t :: map()
 

@@ -299,8 +299,11 @@ defmodule Goblin.Tx do
 
         tx_table = Enum.sort_by(tx.commits, fn {key, sqn, _val} -> {key, -sqn} end)
 
-        [tx_table | MVCC.get_all_tables(tx.mvcc, tx.ref)]
-        |> Enum.map(&table_stream(&1, min, max, tx.sqn))
+        tables =
+          MVCC.get_all_tables(tx.mvcc, tx.ref)
+          |> Enum.map(&table_stream(&1, min, max, tx.sqn))
+
+        [tx_table | tables]
       end,
       min: min,
       max: max
@@ -388,22 +391,6 @@ defmodule Goblin.Tx do
     min = if min == :"$goblin_nil", do: dt_min, else: min
     max = if max == :"$goblin_nil", do: dt_max, else: max
     DiskTable.stream(dt, min, max, sqn)
-  end
-
-  defp table_stream(table, min, max, sqn) when is_list(table) do
-    cond do
-      min == :"$goblin_nil" and max == :"$goblin_nil" ->
-        Enum.filter(table, fn {_k, s, _v} -> s < sqn end)
-
-      max == :"$goblin_nil" ->
-        Enum.filter(table, fn {k, s, _v} -> min <= k and s < sqn end)
-
-      min == :"$goblin_nil" ->
-        Enum.filter(table, fn {k, s, _v} -> k <= max and s < sqn end)
-
-      true ->
-        Enum.filter(table, fn {k, s, _v} -> min <= k and k <= max and s < sqn end)
-    end
   end
 
   defp tag_key(key, :"$goblin_nil"), do: key

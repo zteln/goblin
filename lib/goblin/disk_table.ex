@@ -34,57 +34,38 @@ defmodule Goblin.DiskTable do
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}
   def build(stream, opts) do
-    dt = %__MODULE__{level_key: opts[:level_key], index: MemIndex.new()}
+    lk = opts[:level_key]
 
-    stream
-    |> Stream.transform(
-      fn ->
-        %{
-          file: nil,
-          boundary: 0,
-          keys: {0, []},
-          disk_table: nil,
-          index: DiskIndex.new(),
-          compress?: opts[:compress?],
-          filer: opts[:filer],
-          max_size: opts[:max_size],
-          fpp: opts[:fpp]
-        }
-      end,
-      fn
-        _, {:halt, acc} ->
-          {:halt, acc}
+    acc = %{
+      file: nil,
+      boundary: 0,
+      keys: {0, []},
+      disk_table: nil,
+      tables: [],
+      index: DiskIndex.new(),
+      compress?: opts[:compress?],
+      filer: opts[:filer],
+      max_size: opts[:max_size],
+      fpp: opts[:fpp]
+    }
 
-        {key, _, _} = triple, acc ->
-          with {:ok, acc} <- maybe_init(acc, dt),
-               {:ok, acc} <- maybe_append_index(acc, key),
-               {:ok, acc} <- append_data(acc, triple),
-               {:ok, acc, out} <- maybe_finalize(acc) do
-            {out, acc}
-          else
-            error -> {[error], {:halt, acc}}
-          end
-      end,
-      fn
-        %{file: %Persistence{}} = acc ->
-          case finalize(acc) do
-            {:ok, _acc, out} -> {out, nil}
-            error -> {[error], {:halt, acc}}
-          end
+    Enum.reduce_while(stream, {:ok, acc}, fn triple, {:ok, acc} ->
+      {key, _, _} = triple
 
-        _ ->
-          {[], nil}
-      end,
-      fn
-        %{file: %Persistence{} = file} -> Persistence.close(file)
-        {:halt, %{file: %Persistence{} = file}} -> Persistence.close(file)
-        _ -> :ok
+      with {:ok, acc} <- maybe_init(acc, lk),
+           {:ok, acc} <- maybe_append_index(acc, key),
+           {:ok, acc} <- append_data(acc, triple),
+           {:ok, acc} <- maybe_finalize(acc) do
+        {:cont, {:ok, acc}}
+      else
+        error -> {:halt, error}
       end
-    )
-    |> Enum.reduce_while({:ok, []}, fn
-      {:ok, dt}, {:ok, dts} -> {:cont, {:ok, [dt | dts]}}
-      error, _acc -> {:halt, error}
     end)
+    |> case do
+      {:ok, %{file: nil} = acc} -> {:ok, acc.tables}
+      {:ok, acc} -> with {:ok, acc} <- finalize(acc), do: {:ok, acc.tables}
+      error -> error
+    end
   end
 
   @spec from_file(Path.t()) :: {:ok, t()} | {:error, term()}
@@ -177,13 +158,15 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp maybe_init(%{file: nil, disk_table: nil} = acc, new_dt) do
+  defp maybe_init(%{file: nil, disk_table: nil} = acc, lk) do
     with {:ok, file} <- Persistence.open(acc.filer.(), write?: true, new?: true) do
+      dt = %__MODULE__{id: file.path, level_key: lk, index: MemIndex.new()}
+
       {:ok,
        %{
          acc
          | file: file,
-           disk_table: %{new_dt | id: file.path},
+           disk_table: dt,
            boundary: 0,
            index: DiskIndex.new(),
            keys: {0, []}
@@ -191,7 +174,7 @@ defmodule Goblin.DiskTable do
     end
   end
 
-  defp maybe_init(acc, _new_dt), do: {:ok, acc}
+  defp maybe_init(acc, _lk), do: {:ok, acc}
 
   defp maybe_append_index(
          %{disk_table: %{size: size}, boundary: boundary, index: [{last, _, _} | _]} = acc,
@@ -206,14 +189,14 @@ defmodule Goblin.DiskTable do
   defp maybe_finalize(%{disk_table: %{size: size}, max_size: max_size} = acc)
        when size >= max_size, do: finalize(acc)
 
-  defp maybe_finalize(acc), do: {:ok, acc, []}
+  defp maybe_finalize(acc), do: {:ok, acc}
 
   defp finalize(acc) do
     acc = finalize_bloom_filter(acc)
 
     with {:ok, %{disk_table: dt} = acc} <- append_and_finalize_index(acc),
          {:ok, acc} <- append_footer(acc) do
-      {:ok, acc, [{:ok, dt}]}
+      {:ok, %{acc | tables: [dt | acc.tables]}}
     end
   end
 
