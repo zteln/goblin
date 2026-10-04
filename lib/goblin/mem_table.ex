@@ -35,11 +35,20 @@ defmodule Goblin.MemTable do
     end)
   end
 
+  @spec stream(t()) :: Enumerable.t({term(), non_neg_integer(), term()})
   @spec stream(t(), non_neg_integer() | :infinity) ::
           Enumerable.t({term(), non_neg_integer(), term()})
-  def stream(mt, max_sqn \\ :infinity) do
+  @spec stream(t(), term(), non_neg_integer() | :infinity) ::
+          Enumerable.t({term(), non_neg_integer(), term()})
+  def stream(mt), do: do_stream(mt, fn -> iterate(mt) end, :infinity)
+  def stream(mt, max_sqn), do: do_stream(mt, fn -> iterate(mt) end, max_sqn)
+
+  def stream(mt, min_key, max_sqn),
+    do: do_stream(mt, fn -> iterate(mt, {min_key, max_sqn}) end, max_sqn)
+
+  defp do_stream(mt, start, max_sqn) do
     Stream.resource(
-      fn -> iterate(mt) end,
+      start,
       fn
         :end_of_iteration ->
           {:halt, nil}
@@ -85,12 +94,6 @@ defmodule Goblin.MemTable do
     handle_iteration(mt, idx)
   end
 
-  defp iterate(mt, idx) do
-    idx = :ets.next(mt.ref, idx)
-    handle_iteration(mt, idx)
-  end
-
   defp handle_iteration(_mt, :"$end_of_table"), do: :end_of_iteration
   defp handle_iteration(_mt, {key, sqn}), do: {key, abs(sqn)}
-  defp handle_iteration(mt, idx), do: iterate(mt, idx)
 end

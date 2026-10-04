@@ -1,7 +1,7 @@
 defmodule Goblin.Manifest do
   @moduledoc false
 
-  alias Goblin.FileIO
+  alias Goblin.Persistence
 
   @alog_file "manifest.a"
   @blog_file "manifest.b"
@@ -18,8 +18,8 @@ defmodule Goblin.Manifest do
   @type snapshot :: list(Path.t())
 
   @type t :: %__MODULE__{
-          a: FileIO.t(),
-          b: FileIO.t(),
+          a: Persistence.t(),
+          b: Persistence.t(),
           data_dir: Path.t(),
           active: :a | :b,
           version: non_neg_integer(),
@@ -33,8 +33,9 @@ defmodule Goblin.Manifest do
 
     with :ok <- ensure_unique_access(alog_path),
          :ok <- ensure_unique_access(blog_path),
-         {:ok, alog} <- FileIO.open(alog_path, write?: true),
-         {:ok, blog} <- FileIO.open(blog_path, write?: true) do
+         {:ok, alog} <- Persistence.open(alog_path, write?: true),
+         {:ok, blog} <- Persistence.open(blog_path, write?: true),
+         :ok <- Persistence.dirsync(data_dir) do
       manifest = %__MODULE__{
         data_dir: data_dir,
         a: alog,
@@ -47,8 +48,8 @@ defmodule Goblin.Manifest do
 
   @spec close(t()) :: :ok | {:error, term()}
   def close(manifest) do
-    with :ok <- FileIO.close(manifest.a) do
-      FileIO.close(manifest.b)
+    with :ok <- Persistence.close(manifest.a) do
+      Persistence.close(manifest.b)
     end
   end
 
@@ -58,8 +59,7 @@ defmodule Goblin.Manifest do
     |> Enum.map(&Path.join(manifest.data_dir, &1))
   end
 
-  @spec update(t(), list({atom(), Path.t()}), list({atom(), Path.t()})) ::
-          {:ok, t()} | {:error, term()}
+  @spec update(t(), list(Path.t()), list(Path.t())) :: {:ok, t()} | {:error, term()}
   def update(manifest, add, del) do
     add = Enum.map(add, &Path.basename/1)
     del = Enum.map(del, &Path.basename/1)
@@ -69,7 +69,10 @@ defmodule Goblin.Manifest do
       |> Enum.reject(&(&1 in del))
 
     manifest = %{manifest | snapshot: snapshot}
-    write_snapshot(manifest)
+
+    with :ok <- Persistence.dirsync(manifest.data_dir) do
+      write_snapshot(manifest)
+    end
   end
 
   defp write_snapshot(manifest) do
@@ -77,9 +80,9 @@ defmodule Goblin.Manifest do
     log = Map.get(manifest, log_key)
     version = manifest.version + 1
 
-    with :ok <- FileIO.truncate(log, 0),
-         {:ok, _} <- FileIO.append(log, {version, manifest.snapshot}),
-         :ok <- FileIO.sync(log) do
+    with :ok <- Persistence.truncate(log, 0),
+         {:ok, _} <- Persistence.append(log, {version, manifest.snapshot}),
+         :ok <- Persistence.sync(log) do
       {:ok, %{manifest | active: log_key, version: version}}
     end
   end
@@ -113,7 +116,7 @@ defmodule Goblin.Manifest do
   end
 
   defp recover_snapshot(log) do
-    case FileIO.offset_read(log, 0) do
+    case Persistence.offset_read(log, 0) do
       {:ok, {version, snapshot}} ->
         {:ok, version, snapshot}
 
@@ -122,7 +125,6 @@ defmodule Goblin.Manifest do
 
       {:error, reason}
       when reason in [
-             :failed_to_read,
              :invalid_crc,
              :invalid_size,
              :invalid_header,

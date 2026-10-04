@@ -2,7 +2,7 @@ defmodule Goblin.DiskTable do
   @moduledoc false
 
   alias Goblin.BloomFilter
-  alias Goblin.FileIO
+  alias Goblin.Persistence
   alias Goblin.IOError
   alias Goblin.DiskTable.{MemIndex, DiskIndex}
 
@@ -29,7 +29,7 @@ defmodule Goblin.DiskTable do
         }
 
   @spec delete(t()) :: :ok | {:error, term()}
-  def delete(dt), do: FileIO.remove(dt.id)
+  def delete(dt), do: Persistence.remove(dt.id)
 
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}
@@ -66,7 +66,7 @@ defmodule Goblin.DiskTable do
           end
       end,
       fn
-        %{file: %FileIO{}} = acc ->
+        %{file: %Persistence{}} = acc ->
           case finalize(acc) do
             {:ok, _acc, out} -> {out, nil}
             error -> {[error], {:halt, acc}}
@@ -76,8 +76,8 @@ defmodule Goblin.DiskTable do
           {[], nil}
       end,
       fn
-        %{file: %FileIO{} = file} -> FileIO.close(file)
-        {:halt, %{file: %FileIO{} = file}} -> FileIO.close(file)
+        %{file: %Persistence{} = file} -> Persistence.close(file)
+        {:halt, %{file: %Persistence{} = file}} -> Persistence.close(file)
         _ -> :ok
       end
     )
@@ -89,15 +89,15 @@ defmodule Goblin.DiskTable do
 
   @spec from_file(Path.t()) :: {:ok, t()} | {:error, term()}
   def from_file(path) do
-    with {:ok, io} <- FileIO.open(path) do
+    with {:ok, io} <- Persistence.open(path) do
       try do
-        case FileIO.read_footer(io) do
+        case Persistence.read_footer(io) do
           {:ok, %__MODULE__{} = dt} -> {:ok, dt}
           {:ok, _} -> {:error, :invalid_disk_table}
           error -> error
         end
       after
-        FileIO.close(io)
+        Persistence.close(io)
       end
     end
   end
@@ -112,7 +112,7 @@ defmodule Goblin.DiskTable do
   def search(dt, keys, sqn) do
     Stream.transform(
       keys,
-      fn -> FileIO.open!(dt.id) end,
+      fn -> Persistence.open!(dt.id) end,
       fn key, io ->
         case lookup(io, dt.index, key, sqn) do
           {:ok, triple} -> {[triple], io}
@@ -121,7 +121,7 @@ defmodule Goblin.DiskTable do
           {:error, reason} -> raise IOError, operation: :search, path: dt.id, reason: reason
         end
       end,
-      fn io -> FileIO.close(io) end
+      fn io -> Persistence.close(io) end
     )
   end
 
@@ -144,7 +144,7 @@ defmodule Goblin.DiskTable do
       fn ->
         disk_index_offset = MemIndex.lookup_offset(dt.index, min)
 
-        with {:ok, io} <- FileIO.open(dt.id),
+        with {:ok, io} <- Persistence.open(dt.id),
              :ok <- set_position_to_min(io, min, disk_index_offset) do
           io
         else
@@ -152,7 +152,7 @@ defmodule Goblin.DiskTable do
         end
       end,
       fn io ->
-        case FileIO.seq_read(io) do
+        case Persistence.seq_read(io) do
           {:ok, {k, _, _}} when k > max -> {:halt, io}
           {:ok, {_, s, _} = triple} when s < sqn -> {[triple], io}
           {:ok, %__MODULE__{}} -> {:halt, io}
@@ -161,24 +161,24 @@ defmodule Goblin.DiskTable do
           {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
         end
       end,
-      fn io -> FileIO.close(io) end
+      fn io -> Persistence.close(io) end
     )
   end
 
   defp set_position_to_min(io, min, offset) do
-    with {:ok, {:index, disk_index}} <- FileIO.offset_read(io, offset) do
+    with {:ok, {:index, disk_index}} <- Persistence.offset_read(io, offset) do
       min_offset =
         case DiskIndex.lookup(disk_index, fn {key, _, _} -> key < min end) do
           {_, _, offset} -> offset
           nil -> offset
         end
 
-      FileIO.set_position(io, min_offset)
+      Persistence.set_position(io, min_offset)
     end
   end
 
   defp maybe_init(%{file: nil, disk_table: nil} = acc, new_dt) do
-    with {:ok, file} <- FileIO.open(acc.filer.(), write?: true, new?: true) do
+    with {:ok, file} <- Persistence.open(acc.filer.(), write?: true, new?: true) do
       {:ok,
        %{
          acc
@@ -219,9 +219,9 @@ defmodule Goblin.DiskTable do
 
   defp append_footer(acc) do
     with {:ok, _} <-
-           FileIO.append(acc.file, acc.disk_table, compress?: acc.compress?, footer?: true),
-         :ok <- FileIO.sync(acc.file),
-         :ok <- FileIO.close(acc.file) do
+           Persistence.append(acc.file, acc.disk_table, compress?: acc.compress?, footer?: true),
+         :ok <- Persistence.sync(acc.file),
+         :ok <- Persistence.close(acc.file) do
       {:ok, %{acc | file: nil, disk_table: nil}}
     end
   end
@@ -238,7 +238,7 @@ defmodule Goblin.DiskTable do
     {start, disk_index} = DiskIndex.finalize(acc.index)
 
     with {:ok, inc_size} <-
-           FileIO.append(acc.file, {:index, disk_index}, compress?: acc.compress?) do
+           Persistence.append(acc.file, {:index, disk_index}, compress?: acc.compress?) do
       dt = %{dt | size: dt.size + inc_size, index: MemIndex.append(dt.index, start, dt.size)}
       {:ok, %{acc | disk_table: dt, index: DiskIndex.new(), boundary: dt.size}}
     end
@@ -253,7 +253,7 @@ defmodule Goblin.DiskTable do
         {no_keys, keys} -> {no_keys + 1, [key | keys]}
       end
 
-    with {:ok, size} <- FileIO.append(acc.file, triple, compress?: acc.compress?) do
+    with {:ok, size} <- Persistence.append(acc.file, triple, compress?: acc.compress?) do
       disk_index = DiskIndex.append(acc.index, key, sqn, acc.disk_table.size)
       dt = update_table(acc.disk_table, triple, size)
       {:ok, %{acc | disk_table: dt, index: disk_index, keys: keys}}
@@ -293,15 +293,14 @@ defmodule Goblin.DiskTable do
   defp lookup(io, index, key, sqn) do
     disk_index_pos = MemIndex.lookup_offset(index, key)
 
-    with {:ok, {:index, disk_index}} <-
-           FileIO.offset_read(io, disk_index_pos),
+    with {:ok, {:index, disk_index}} <- Persistence.offset_read(io, disk_index_pos),
          {:ok, key_offset} <- key_offset_lookup(disk_index, key, sqn) do
       key_lookup(io, key, key_offset)
     end
   end
 
   defp key_lookup(io, key, offset) do
-    case FileIO.offset_read(io, offset) do
+    case Persistence.offset_read(io, offset) do
       {:ok, {k, _, _} = triple} when k == key -> {:ok, triple}
       {:ok, _} -> {:error, :not_found}
       error -> error

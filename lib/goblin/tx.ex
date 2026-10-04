@@ -65,12 +65,7 @@ defmodule Goblin.Tx do
   def put(%{mode: :read}, _key, _value, _opts),
     do: raise(ArgumentError, "Operation not allowed during read")
 
-  def put(tx, key, value, opts) do
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
-    key = tag_key(key, tag)
-    commit = {key, tx.sqn, value}
-    %{tx | sqn: tx.sqn + 1, commits: [commit | tx.commits]}
-  end
+  def put(tx, key, value, opts), do: put_multi(tx, [{key, value}], opts)
 
   @doc """
   Writes multiple key-value pairs within a transaction.
@@ -130,12 +125,7 @@ defmodule Goblin.Tx do
   def remove(%{mode: :read}, _key, _opts),
     do: raise(ArgumentError, "Operation not allowed during read")
 
-  def remove(tx, key, opts) do
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
-    key = tag_key(key, tag)
-    commit = {key, tx.sqn, :"$goblin_tombstone"}
-    %{tx | sqn: tx.sqn + 1, commits: [commit | tx.commits]}
-  end
+  def remove(tx, key, opts), do: remove_multi(tx, [key], opts)
 
   @doc """
   Removes multiple keys within a transaction.
@@ -161,15 +151,8 @@ defmodule Goblin.Tx do
   def remove_multi(%{mode: :read}, _keys, _opts),
     do: raise(ArgumentError, "Operation not allowed during read")
 
-  def remove_multi(tx, keys, opts) do
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
-
-    Enum.reduce(keys, tx, fn key, acc ->
-      key = tag_key(key, tag)
-      commit = {key, acc.sqn, :"$goblin_tombstone"}
-      %{acc | sqn: acc.sqn + 1, commits: [commit | acc.commits]}
-    end)
-  end
+  def remove_multi(tx, keys, opts),
+    do: put_multi(tx, Enum.map(keys, &{&1, :"$goblin_tombstone"}), opts)
 
   @doc """
   Retrieves a value within a transaction.
@@ -397,7 +380,8 @@ defmodule Goblin.Tx do
     end
   end
 
-  defp table_stream(%MemTable{} = mt, _min, _max, sqn), do: MemTable.stream(mt, sqn)
+  defp table_stream(%MemTable{} = mt, :"$goblin_nil", _max, sqn), do: MemTable.stream(mt, sqn)
+  defp table_stream(%MemTable{} = mt, min, _max, sqn), do: MemTable.stream(mt, min, sqn)
 
   defp table_stream(%DiskTable{} = dt, min, max, sqn) do
     {dt_min, dt_max} = dt.key_range

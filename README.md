@@ -37,7 +37,6 @@ Goblin requires Erlang/OTP 26 or later.
 Options:
 - `:name` - Registered name for the database (optional, defaults to `Goblin`)
 - `:data_dir` - Directory path for database files (required)
-- `:mem_limit` - Bytes to buffer in memory before flushing to disk (default: 64 MB)
 - `:bf_fpp` - Bloom filter false positive probability (default: 0.01)
 
 ### Basic operations

@@ -156,7 +156,7 @@ defmodule Goblin.DiskTableTest do
       {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
 
       # Corrupt the first data block's payload (past the 20-byte header) so its
-      # stored CRC no longer matches -> FileIO.pread returns {:error, :invalid_crc}.
+      # stored CRC no longer matches -> Persistence.pread returns {:error, :invalid_crc}.
       {:ok, f} = :file.open(dt.id, [:read, :write, :raw, :binary])
       :ok = :file.pwrite(f, 30, <<255, 255, 255, 255>>)
       :ok = :file.close(f)
@@ -241,7 +241,7 @@ defmodule Goblin.DiskTableTest do
       {:ok, [dt]} = DiskTable.build([{0, 0, :foo}], ctx.opts)
 
       # Corrupt the first data block's payload (past the 20-byte header) so its
-      # stored CRC no longer matches -> FileIO.read returns {:error, :invalid_crc}.
+      # stored CRC no longer matches -> Persistence.read returns {:error, :invalid_crc}.
       {:ok, f} = :file.open(dt.id, [:read, :write, :raw, :binary])
       :ok = :file.pwrite(f, 30, <<255, 255, 255, 255>>)
       :ok = :file.close(f)

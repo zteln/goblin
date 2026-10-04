@@ -164,7 +164,6 @@ defmodule Goblin do
   - `value` - Any Elixir term to be associated with `key`
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the key under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -178,7 +177,7 @@ defmodule Goblin do
       Goblin.put(db, :alice, "Alice", tag: :admins)
       # => :ok
   """
-  @spec put(:gen_statem.server_ref(), term(), keyword()) :: :ok
+  @spec put(:gen_statem.server_ref(), term(), term(), keyword()) :: :ok
   def put(db, key, val, opts \\ []) do
     put_multi(db, [{key, val}], opts)
   end
@@ -192,7 +191,6 @@ defmodule Goblin do
   - `pairs` - A list of `{key, value}` tuples
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -227,7 +225,6 @@ defmodule Goblin do
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
     - `:default` - Default value if key does not already exist
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -267,7 +264,6 @@ defmodule Goblin do
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
     - `:default` - Default value for non-existing keys
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -293,13 +289,7 @@ defmodule Goblin do
         ) ::
           {:ok, non_neg_integer()}
   def update_multi(db, keys, updater, opts \\ []) do
-    keys =
-      keys
-      |> Enum.sort(:desc)
-      |> Enum.reduce([], fn
-        key1, [key2 | _] = acc when key1 == key2 -> acc
-        key, acc -> [key | acc]
-      end)
+    keys = :lists.usort(keys)
 
     transaction(db, fn tx ->
       found = Tx.get_multi(tx, keys, opts)
@@ -343,7 +333,6 @@ defmodule Goblin do
   - `updater` - A function that updates the value
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -384,7 +373,6 @@ defmodule Goblin do
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
     - `:default` - Default value for non-existing keys
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -438,7 +426,6 @@ defmodule Goblin do
   - `new` - The value to swap to
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -475,7 +462,6 @@ defmodule Goblin do
   - `key` - The key to remove
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag the key is namespaced under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -502,7 +488,6 @@ defmodule Goblin do
   - `keys` - A list of keys to remove
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag the keys are namespaced under
-    - `:timeout` - Timeout (in milliseconds) for the calls (default: `:infinity`)
 
   ## Returns
 
@@ -637,10 +622,6 @@ defmodule Goblin do
   @doc """
   Checks whether a key is a member of the database or not.
 
-  > #### False positives {: .note}
-  >
-  > If the key has been flushed to disk, then membership is checked via the disk table's Bloom filters, i.e. it can yield a false positive in some cases.
-
   ## Parameters
     
   - `db` - The database server (PID or registered name)
@@ -712,7 +693,6 @@ defmodule Goblin do
 
   - `:name` - Registered name for the database (optional, defaults to `Goblin`)
   - `:data_dir` - Directory path for database files (required)
-  - `:mem_limit` - Bytes to buffer in memory before flushing to disk (default: 64 MB)
   - `:bf_fpp` - Bloom filter false positive probability (default: 0.01)
 
   ## Returns

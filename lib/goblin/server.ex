@@ -16,8 +16,9 @@ defmodule Goblin.Server do
   @goblin_suffix "goblin"
   @wal_suffix "wal"
 
+  @sweep_interval 1_000
+
   @default_flush_level_file_limit 4
-  @default_mem_limit 64 * 1024 * 1024
   @default_level_base_size 256 * 1024 * 1024
   @default_level_size_multiplier 10
   @default_fpp 0.01
@@ -110,12 +111,11 @@ defmodule Goblin.Server do
     opts =
       args
       |> Keyword.put_new(:bf_fpp, @default_fpp)
-      |> Keyword.put_new(:mem_limit, @default_mem_limit)
       |> Keyword.put_new(:flush_level_file_limit, @default_flush_level_file_limit)
       |> Keyword.put_new(:level_base_size, @default_level_base_size)
       |> Keyword.put_new(:level_size_multiplier, @default_level_size_multiplier)
       |> Keyword.put_new(
-        :max_sst_size,
+        :max_size,
         div(
           args[:level_base_size] || @default_level_base_size,
           args[:level_size_multiplier] || @default_level_size_multiplier
@@ -133,7 +133,9 @@ defmodule Goblin.Server do
          {:ok, manifest} <- Manifest.open(data_dir),
          {:ok, db} <- recover(%{db | manifest: manifest}) do
       :persistent_term.put({Goblin, self()}, db.mvcc)
-      {:ok, :idle, db, [{:next_event, :internal, :maybe_compact}]}
+
+      {:ok, :idle, db,
+       [{:next_event, :internal, :maybe_compact}, {{:timeout, :sweep}, @sweep_interval, :sweep}]}
     end
   end
 
@@ -192,17 +194,15 @@ defmodule Goblin.Server do
 
   def occupied(type, event, db), do: handle_event(type, event, db)
 
-  defp handle_event(:internal, :sweep, db) do
-    to_delete = MVCC.sweep(db.mvcc)
-
-    case delete_obsolete(to_delete) do
-      :ok -> {:keep_state, db}
-      {:error, reason} -> {:stop, reason, db}
-    end
-  end
-
   defp handle_event(:internal, :maybe_compact, db) do
     {:keep_state, maybe_compact(db)}
+  end
+
+  defp handle_event({:timeout, :sweep}, :sweep, db) do
+    case delete_obsolete(MVCC.sweep(db.mvcc)) do
+      :ok -> {:keep_state, db, [{{:timeout, :sweep}, @sweep_interval, :sweep}]}
+      {:error, reason} -> {:stop, reason, db}
+    end
   end
 
   defp handle_event({:call, from}, {:commit_tx, _, _}, db) do
@@ -228,12 +228,8 @@ defmodule Goblin.Server do
 
   defp handle_event(:info, {ref, {:ok, dts}}, %{flushing: {ref, _, _, _}} = db) do
     case finish_flush(db, dts) do
-      {:ok, db} ->
-        {:keep_state, db,
-         [{:next_event, :internal, :maybe_compact}, {:next_event, :internal, :sweep}]}
-
-      {:error, reason} ->
-        {:stop, reason, db}
+      {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
+      {:error, reason} -> {:stop, reason, db}
     end
   end
 
@@ -243,12 +239,8 @@ defmodule Goblin.Server do
 
   defp handle_event(:info, {ref, {:ok, dts}}, %{compacting: {ref, _, _}} = db) do
     case finish_compaction(db, dts) do
-      {:ok, db} ->
-        {:keep_state, db,
-         [{:next_event, :internal, :maybe_compact}, {:next_event, :internal, :sweep}]}
-
-      {:error, reason} ->
-        {:stop, reason, db}
+      {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
+      {:error, reason} -> {:stop, reason, db}
     end
   end
 
@@ -358,7 +350,7 @@ defmodule Goblin.Server do
   end
 
   defp maybe_flush(db) do
-    if db.mem >= db.opts[:mem_limit],
+    if db.mem >= db.opts[:max_size],
       do: rotate(db),
       else: {:ok, db}
   end
@@ -400,7 +392,7 @@ defmodule Goblin.Server do
   defp dequeue_flush(db), do: db
 
   defp flush(db, mt, wal) do
-    task = merge_task(fn -> MemTable.stream(mt) end, build_opts(db, 0))
+    task = merge_task(fn -> MemTable.stream(mt) end, build_opts(db, 0, :infinity))
     %{db | flushing: {task.ref, task, mt, wal}}
   end
 
@@ -427,13 +419,13 @@ defmodule Goblin.Server do
     e in Goblin.IOError -> {:error, e}
   end
 
-  defp build_opts(db, lk) do
+  defp build_opts(db, lk, max_size \\ nil) do
     %{data_dir: data_dir, file_counter: file_counter} = db
 
     [
       level_key: lk,
       compress?: lk > 1,
-      max_size: db.opts[:max_sst_size],
+      max_size: max_size || db.opts[:max_size],
       fpp: db.opts[:bf_fpp],
       filer: fn -> gen_file(data_dir, file_counter) end
     ]

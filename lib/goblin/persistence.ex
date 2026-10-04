@@ -1,6 +1,5 @@
-defmodule Goblin.FileIO do
+defmodule Goblin.Persistence do
   @moduledoc false
-  # TODO: rename to Goblin.Persistence
 
   alias Goblin.IOError
 
@@ -61,24 +60,20 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec offset_read(t(), non_neg_integer(), keyword()) :: {:ok, term()} | {:error, term()}
-  def offset_read(file, offset, opts \\ []) do
-    read_size = opts[:read_size] || @page_size
+  @spec offset_read(t(), non_neg_integer()) :: {:ok, term()} | {:error, term()}
+  def offset_read(file, offset) do
+    case :file.pread(file.iodev, offset, @page_size) do
+      {:ok, <<header::binary-size(@header_size), rest::binary>>} ->
+        read_record(
+          {:ok, header},
+          fn
+            size when byte_size(rest) >= size -> {:ok, binary_part(rest, 0, size)}
+            size -> :file.pread(file.iodev, offset + @header_size, size)
+          end
+        )
 
-    with {:ok, bin} <- :file.pread(file.iodev, offset, read_size),
-         :ok <- contains_size(byte_size(bin), @header_size),
-         header = :binary.part(bin, 0, @header_size),
-         {:ok, size, crc} <- decode_header(header),
-         :ok <- contains_size(byte_size(bin), @header_size + size),
-         payload = :binary.part(bin, @header_size, size),
-         :ok <- validate_crc(payload, crc) do
-      decode_payload(payload)
-    else
-      {:too_small, ^read_size} ->
-        {:error, :failed_to_read}
-
-      {:too_small, size} ->
-        offset_read(file, offset, Keyword.put(opts, :read_size, size))
+      {:ok, _short} ->
+        {:error, :invalid_header}
 
       :eof ->
         {:error, :eof}
@@ -90,33 +85,20 @@ defmodule Goblin.FileIO do
 
   @spec seq_read(t()) :: {:ok, term()} | {:error, term()}
   def seq_read(file) do
-    with {:ok, header} <- :file.read(file.iodev, @header_size),
-         {:ok, size, crc} <- decode_header(header),
-         {:ok, payload} <- :file.read(file.iodev, size),
-         :ok <- validate_size(byte_size(payload), size),
-         :ok <- validate_crc(payload, crc) do
-      decode_payload(payload)
-    else
-      :eof -> {:error, :eof}
-      error -> error
-    end
+    read_record(
+      :file.read(file.iodev, @header_size),
+      fn size -> :file.read(file.iodev, size) end
+    )
   end
 
   @spec read_footer(t()) :: {:ok, term()} | {:error, term()}
   def read_footer(file) do
-    size = :filelib.file_size(file.path)
+    header_pos = :filelib.file_size(file.path) - @header_size
 
-    with {:ok, header} <- :file.pread(file.iodev, size - @header_size, @header_size),
-         {:ok, payload_size, crc} <- decode_header(header),
-         {:ok, payload} <-
-           :file.pread(file.iodev, size - (@header_size + payload_size), payload_size),
-         :ok <- validate_size(byte_size(payload), payload_size),
-         :ok <- validate_crc(payload, crc) do
-      decode_payload(payload)
-    else
-      :eof -> {:error, :eof}
-      error -> error
-    end
+    read_record(
+      :file.pread(file.iodev, header_pos, @header_size),
+      fn size -> :file.pread(file.iodev, header_pos - size, size) end
+    )
   end
 
   @spec stream(t()) ::
@@ -169,6 +151,17 @@ defmodule Goblin.FileIO do
   @spec sync(t()) :: :ok | {:error, term()}
   def sync(file), do: :file.datasync(file.iodev)
 
+  @spec dirsync(Path.t()) :: :ok | {:error, term()}
+  def dirsync(dir) do
+    with {:ok, dir} <- :file.open(dir, [:read, :raw, :directory]) do
+      try do
+        :file.sync(dir)
+      after
+        :file.close(dir)
+      end
+    end
+  end
+
   @spec truncate(t(), non_neg_integer()) :: :ok | {:error, term()}
   def truncate(file, pos) do
     with :ok <- set_position(file, pos) do
@@ -183,9 +176,6 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec rename(Path.t(), Path.t()) :: :ok | {:error, term()}
-  def rename(from, to), do: File.rename(from, to)
-
   @spec remove(Path.t()) :: :ok | {:error, term()}
   def remove(path) do
     case File.rm(path) do
@@ -195,8 +185,22 @@ defmodule Goblin.FileIO do
     end
   end
 
-  @spec size_of(Path.t()) :: non_neg_integer()
-  def size_of(path), do: :filelib.file_size(path)
+  defp read_record(header_result, read_payload) do
+    with {:ok, header} <- header_result,
+         {:ok, size, crc} <- decode_header(header),
+         {:ok, payload} <- read_payload(read_payload, size),
+         :ok <- validate_size(byte_size(payload), size),
+         :ok <- validate_crc(payload, crc) do
+      decode_payload(payload)
+    else
+      :eof -> {:error, :eof}
+      error -> error
+    end
+  end
+
+  defp read_payload(read, size) do
+    with :eof <- read.(size), do: {:error, :invalid_size}
+  end
 
   defp encode_to_iolist(terms, compress?, footer?) do
     opts = if compress?, do: [:compressed], else: []
@@ -227,9 +231,6 @@ defmodule Goblin.FileIO do
        do: {:ok, payload_size, crc}
 
   defp decode_header(_), do: {:error, :invalid_header}
-
-  defp contains_size(size1, size2) when size1 >= size2, do: :ok
-  defp contains_size(_, size), do: {:too_small, size}
 
   defp validate_size(size, size), do: :ok
   defp validate_size(_, _), do: {:error, :invalid_size}
