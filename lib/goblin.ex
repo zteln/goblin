@@ -137,7 +137,7 @@ defmodule Goblin do
     reply
   end
 
-  defp finish({:commit, tx, reply}, db, tx_ref) do
+  defp finish({:commit, %Tx{} = tx, reply}, db, tx_ref) do
     case Server.commit_transaction(db, tx_ref, tx) do
       :ok -> reply
       error -> raise "Unable to commit due to following error: #{inspect(error)}"

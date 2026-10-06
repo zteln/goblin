@@ -30,20 +30,18 @@ defmodule Goblin.WAL do
     end
   end
 
-  @spec stream(t()) :: Enumerable.t({:ok, term()} | {:error, term()})
-  def stream(wal) do
-    wal.io
-    |> Persistence.stream()
-    |> Stream.transform(nil, fn
-      {:ok, commits}, acc ->
-        {[{:ok, commits}], acc}
+  @spec replay(t(), term(), (term(), term() -> term())) :: {:ok, term()} | {:error, term()}
+  def replay(wal, acc, fun) do
+    with :ok <- Persistence.set_position(wal.io, 0),
+         do: do_replay(wal, acc, fun)
+  end
 
-      {:corrupt, pos}, acc ->
-        Persistence.truncate(wal.io, pos)
-        {:halt, acc}
-
-      {:error, _reason} = error, _acc ->
-        {[error], :halt}
-    end)
+  defp do_replay(wal, acc, fun) do
+    case Persistence.seq_read(wal.io) do
+      {:ok, commits} -> do_replay(wal, fun.(commits, acc), fun)
+      {:error, :eof} -> {:ok, acc}
+      {:error, {:corrupt, pos}} -> with :ok <- Persistence.truncate(wal.io, pos), do: {:ok, acc}
+      error -> error
+    end
   end
 end

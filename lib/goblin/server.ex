@@ -95,8 +95,8 @@ defmodule Goblin.Server do
 
   @impl :gen_statem
   def terminate(_reason, _state, db) do
-    with {_task_ref, task, _dts} <- db.compacting, do: Task.shutdown(task)
-    with {_task_ref, task, _mt, _wal} <- db.flushing, do: Task.shutdown(task)
+    with {task, _dts} <- db.compacting, do: Task.shutdown(task)
+    with {task, _mt, _wal} <- db.flushing, do: Task.shutdown(task)
     :persistent_term.erase({Goblin, self()})
     db.manifest && Manifest.close(db.manifest)
     db.wal && WAL.close(db.wal)
@@ -226,6 +226,10 @@ defmodule Goblin.Server do
     {:keep_state, db, [{:reply, from, not is_nil(db.compacting)}]}
   end
 
+  defp handle_event({:call, from}, _, db) do
+    {:keep_state, db, [{:reply, from, {:error, :invalid_call}}]}
+  end
+
   defp handle_event(:info, {ref, {:ok, dts}}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
     case finish_flush(db, dts) do
       {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
@@ -270,48 +274,43 @@ defmodule Goblin.Server do
     :atomics.put(db.file_counter, 1, max_count + 1)
 
     with :ok <- delete_inactive(db.data_dir, snapshot),
-         {:ok, db} <- load_wals(db, wals),
-         {:ok, db} <- load_disk_tables(db, dts),
+         {:ok, db, mts} <- load_wals(db, wals),
+         {:ok, db, dts} <- load_disk_tables(db, dts),
          {:ok, db} <- open_wal_and_mem_table(db) do
       sqn = db.sqn + 1
-      mts = [db.mem_table | for({mt, _wal} <- :queue.to_list(db.flush_queue), do: mt)]
-      dts = db.levels |> Map.values() |> List.flatten()
+      mts = [db.mem_table | mts]
       MVCC.put_version(db.mvcc, mts ++ dts, [])
       MVCC.update_sequence(db.mvcc, sqn)
       {:ok, dequeue_flush(%{db | sqn: sqn})}
     end
   end
 
-  defp load_wals(db, []), do: {:ok, db}
+  defp load_wals(db, wals, mts \\ [])
+  defp load_wals(db, [], mts), do: {:ok, db, mts}
 
-  defp load_wals(db, [wal | wals]) do
+  defp load_wals(db, [wal | wals], mts) do
     with {:ok, wal} <- WAL.open(wal),
-         {:ok, db} <- load_wal(db, wal) do
-      load_wals(db, wals)
+         {:ok, db, mt} <- load_wal(db, wal) do
+      load_wals(db, wals, [mt | mts])
     end
   end
 
   defp load_wal(db, wal) do
     mt = MemTable.new()
-    logs = WAL.stream(wal)
 
-    with {:ok, sqn} <-
-           Enum.reduce_while(logs, {:ok, -1}, fn
-             {:ok, commits}, {:ok, sqn} -> {:cont, {:ok, max(sqn, MemTable.append(mt, commits))}}
-             error, _acc -> {:halt, error}
-           end) do
-      %{db | sqn: max(db.sqn, sqn)}
-      |> enqueue_flush(mt, wal)
+    with {:ok, sqn} <- WAL.replay(wal, -1, &max(&2, MemTable.append(mt, &1))),
+         {:ok, db} <- enqueue_flush(%{db | sqn: max(db.sqn, sqn)}, mt, wal) do
+      {:ok, db, mt}
     end
   end
 
-  defp load_disk_tables(db, []), do: {:ok, db}
+  defp load_disk_tables(db, dts, acc \\ [])
+  defp load_disk_tables(db, [], acc), do: {:ok, db, acc}
 
-  defp load_disk_tables(db, [dt | dts]) do
+  defp load_disk_tables(db, [dt | dts], acc) do
     with {:ok, %{sqn_range: {_min, max_sqn}} = dt} <- DiskTable.from_file(dt) do
-      levels = Levels.put(db.levels, dt)
-      db = %{db | levels: levels, sqn: max(db.sqn, max_sqn)}
-      load_disk_tables(db, dts)
+      db = %{db | sqn: max(db.sqn, max_sqn)}
+      load_disk_tables(db, dts, [dt | acc])
     end
   end
 
@@ -356,7 +355,12 @@ defmodule Goblin.Server do
   end
 
   defp maybe_compact(%{compacting: nil} = db) do
-    case Levels.next(db.levels, db.opts) do
+    ref = make_ref()
+    MVCC.pin(db.mvcc, ref)
+    tables = MVCC.get_all_tables(db.mvcc, ref)
+    MVCC.unpin(db.mvcc, ref)
+
+    case Levels.next(tables, db.opts) do
       nil ->
         db
 

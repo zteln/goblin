@@ -5,6 +5,7 @@ defmodule Goblin.Persistence do
 
   @page_size 4096
   @header_size byte_size(<<0::integer-32, 0::integer-32>>)
+  @corrupt_reasons [:invalid_size, :invalid_header, :invalid_crc, :invalid_term]
 
   @default_modes [
     :raw,
@@ -85,10 +86,16 @@ defmodule Goblin.Persistence do
 
   @spec seq_read(t()) :: {:ok, term()} | {:error, term()}
   def seq_read(file) do
-    read_record(
-      :file.read(file.iodev, @header_size),
-      fn size -> :file.read(file.iodev, size) end
-    )
+    with {:ok, pos} <- :file.position(file.iodev, :cur) do
+      case read_record(
+             :file.read(file.iodev, @header_size),
+             fn size -> :file.read(file.iodev, size) end
+           ) do
+        {:ok, record} -> {:ok, record}
+        {:error, reason} when reason in @corrupt_reasons -> {:error, {:corrupt, pos}}
+        error -> error
+      end
+    end
   end
 
   @spec read_footer(t()) :: {:ok, term()} | {:error, term()}
@@ -98,46 +105,6 @@ defmodule Goblin.Persistence do
     read_record(
       :file.pread(file.iodev, header_pos, @header_size),
       fn size -> :file.pread(file.iodev, header_pos - size, size) end
-    )
-  end
-
-  @spec stream(t()) ::
-          Enumerable.t({:ok, any()} | {:corrupt, non_neg_integer()} | {:error, term()})
-  def stream(file) do
-    Stream.resource(
-      fn ->
-        case set_position(file, 0) do
-          :ok -> {file, 0}
-          _ -> :halt
-        end
-      end,
-      fn
-        :halt ->
-          {:halt, nil}
-
-        {file, pos} ->
-          case seq_read(file) do
-            {:ok, term} ->
-              {:ok, pos} = :file.position(file.iodev, :cur)
-              {[{:ok, term}], {file, pos}}
-
-            {:error, :eof} ->
-              {:halt, :eof}
-
-            {:error, :invalid_size} ->
-              {[{:corrupt, pos}], :halt}
-
-            {:error, :invalid_header} ->
-              {[{:corrupt, pos}], :halt}
-
-            {:error, :invalid_crc} ->
-              {[{:corrupt, pos}], :halt}
-
-            {:error, _reason} = error ->
-              {[error], :halt}
-          end
-      end,
-      fn _ -> :ok end
     )
   end
 

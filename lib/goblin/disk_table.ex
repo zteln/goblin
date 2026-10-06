@@ -73,7 +73,7 @@ defmodule Goblin.DiskTable do
     with {:ok, io} <- Persistence.open(path) do
       try do
         case Persistence.read_footer(io) do
-          {:ok, %__MODULE__{} = dt} -> {:ok, dt}
+          {:ok, %__MODULE__{} = dt} -> {:ok, %{dt | id: path}}
           {:ok, _} -> {:error, :invalid_disk_table}
           error -> error
         end
