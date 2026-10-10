@@ -116,29 +116,18 @@ defmodule Goblin.Manifest do
   end
 
   defp recover_snapshot(log) do
-    case Persistence.offset_read(log, 0) do
-      {:ok, {version, snapshot}} ->
-        {:ok, version, snapshot}
-
-      {:error, :eof} ->
-        {:ok, 0, []}
-
-      {:error, reason}
-      when reason in [
-             :invalid_crc,
-             :invalid_size,
-             :invalid_header,
-             :invalid_term
-           ] ->
-        :corrupt
-
-      error ->
-        error
+    with :ok <- Persistence.set_position(log, 0),
+         {:ok, {version, snapshot}} <- Persistence.seq_read(log) do
+      {:ok, version, snapshot}
+    else
+      {:error, :eof} -> {:ok, 0, []}
+      {:error, {:corrupt, _}} -> :corrupt
+      error -> error
     end
   end
 
   defp ensure_unique_access(path) do
-    case :global.set_lock({{__MODULE__, path}, self()}, [node()], 0) do
+    case :global.set_lock({{__MODULE__, Path.expand(path)}, self()}, [node()], 0) do
       true -> :ok
       false -> {:error, :manifest_in_use_already}
     end

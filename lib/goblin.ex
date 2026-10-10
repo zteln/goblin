@@ -116,18 +116,10 @@ defmodule Goblin do
       max_level_key: max_lk
     }
     |> callback.()
-  rescue
-    exception ->
-      Server.cancel_transaction(db, tx_ref)
-      reraise(exception, __STACKTRACE__)
   catch
-    :throw, val ->
+    kind, val ->
       Server.cancel_transaction(db, tx_ref)
-      throw(val)
-
-    :exit, val ->
-      Server.cancel_transaction(db, tx_ref)
-      exit(val)
+      :erlang.raise(kind, val, __STACKTRACE__)
   after
     MVCC.unpin(mvcc, tx_ref)
   end
@@ -177,7 +169,7 @@ defmodule Goblin do
       Goblin.put(db, :alice, "Alice", tag: :admins)
       # => :ok
   """
-  @spec put(:gen_statem.server_ref(), term(), term(), keyword()) :: :ok
+  @spec put(Server.t(), term(), term(), keyword()) :: :ok
   def put(db, key, val, opts \\ []) do
     put_multi(db, [{key, val}], opts)
   end
@@ -201,7 +193,7 @@ defmodule Goblin do
       Goblin.put_multi(db, [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}])
       # => :ok
   """
-  @spec put_multi(:gen_statem.server_ref(), Enumerable.t({term(), term()}), keyword()) ::
+  @spec put_multi(Server.t(), Enumerable.t({term(), term()}), keyword()) ::
           :ok
   def put_multi(db, pairs, opts \\ []) do
     transaction(db, fn tx ->
@@ -214,7 +206,7 @@ defmodule Goblin do
   @doc """
   Updates a key.
 
-  Updates the value corresponding to `key` either via the provided function or via `default`. 
+  Updates the value corresponding to `key` either via the provided function or via `on_empty`. 
   See `update_multi` for more information.
 
   ## Parameters
@@ -224,7 +216,7 @@ defmodule Goblin do
   - `updater` - A function that updates the value
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
-    - `:default` - Default value if key does not already exist
+    - `:on_empty` - Value to insert if key does not already exist
 
   ## Returns
 
@@ -232,11 +224,11 @@ defmodule Goblin do
 
   ## Examples
 
-      Goblin.update(db, :counter, &(&1 + 1), default: 1)
+      Goblin.update(db, :counter, &(&1 + 1), on_empty: 1)
       # => :ok
   """
   @spec update(
-          :gen_statem.server_ref(),
+          Server.t(),
           term(),
           (term() -> term()) | (term(), term() -> term()),
           keyword()
@@ -253,8 +245,8 @@ defmodule Goblin do
   The update function can be of either arity 1 or 2.
   With arity 1, the function receives only the previous value.
   With arity 2, the function receives both the key and the previous value. 
-  For any non-existing keys, they are inserted with the `:default` option.
-  If `:default` is not provided, then non-existing keys are not inserted.
+  For any non-existing keys, they are inserted with the `:on_empty` option.
+  If `:on_empty` is not provided, then non-existing keys are not inserted.
 
   ## Parameters
 
@@ -263,7 +255,7 @@ defmodule Goblin do
   - `updater` - A function that updates the value
   - `opts` - A keyword list with the following options (default: `[]`):
     - `:tag` - Tag to namespace the keys under
-    - `:default` - Default value for non-existing keys
+    - `:on_empty` - Default value for non-existing keys
 
   ## Returns
 
@@ -282,7 +274,7 @@ defmodule Goblin do
       # => {:ok, 3}
   """
   @spec update_multi(
-          :gen_statem.server_ref(),
+          Server.t(),
           list(term()),
           (term() -> term()) | (term(), term() -> term()),
           keyword()
@@ -302,7 +294,7 @@ defmodule Goblin do
         end)
 
       inserted =
-        case Keyword.fetch(opts, :default) do
+        case Keyword.fetch(opts, :on_empty) do
           {:ok, default} ->
             found_keys = MapSet.new(found, &elem(&1, 0))
             for k <- keys, k not in found_keys, do: {k, default}
@@ -345,7 +337,7 @@ defmodule Goblin do
       end)
       # => "ALICE"
   """
-  @spec get_and_update(:gen_statem.server_ref(), term(), (term() -> {term(), term()}), keyword()) ::
+  @spec get_and_update(Server.t(), term(), (term() -> {term(), term()}), keyword()) ::
           term()
   def get_and_update(db, key, updater, opts \\ []) do
     transaction(db, fn tx ->
@@ -387,7 +379,7 @@ defmodule Goblin do
       # => [:alice, :bob, :charlie]
   """
   @spec get_and_update_multi(
-          :gen_statem.server_ref(),
+          Server.t(),
           list(term()),
           (map() -> {term(), map()}),
           keyword()
@@ -437,7 +429,7 @@ defmodule Goblin do
       Goblin.cas(db, :alice, "alice", "ALICE")
       # => true
   """
-  @spec cas(:gen_statem.server_ref(), term(), term(), term(), keyword()) :: boolean()
+  @spec cas(Server.t(), term(), term(), term(), keyword()) :: boolean()
   def cas(db, key, old, new, opts \\ []) do
     transaction(db, fn tx ->
       case Tx.get(tx, key, opts) do
@@ -509,7 +501,8 @@ defmodule Goblin do
   @doc """
   Performs a read-only transaction.
 
-  A snapshot is taken to provide a consistent mvcc of the database.
+  All reads within the callback see the same snapshot of the database,
+  unaffected by writes committed while the callback runs.
   Multiple readers run concurrently without blocking each other.
   Attempting to write within a read transaction raises.
 
@@ -675,13 +668,13 @@ defmodule Goblin do
   @doc """
   Returns whether a memory-to-disk flush is currently running.
   """
-  @spec flushing?(Server.t()) :: boolean()
+  @spec flushing?(Server.t(), :infinity | non_neg_integer()) :: boolean()
   def flushing?(db, timeout \\ 5_000), do: Server.flushing?(db, timeout)
 
   @doc """
   Returns whether any background compaction is currently in progress.
   """
-  @spec compacting?(Server.t(), keyword()) :: boolean()
+  @spec compacting?(Server.t(), :infinity | non_neg_integer()) :: boolean()
   def compacting?(db, timeout \\ 5_000), do: Server.compacting?(db, timeout)
 
   @doc """
@@ -719,7 +712,7 @@ defmodule Goblin do
   @doc """
   Stops the database.
   """
-  @spec stop(:gen_statem.server_ref(), term(), timeout()) :: :ok
+  @spec stop(Server.t(), term(), timeout()) :: :ok
   defdelegate stop(db, reason \\ :normal, timeout \\ :infinity), to: Server
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()

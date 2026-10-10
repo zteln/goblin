@@ -3,14 +3,12 @@ defmodule Goblin.BloomFilter do
 
   defstruct [
     :bits,
-    :size,
     :no_bits,
     :no_hashes
   ]
 
   @type t :: %__MODULE__{
           bits: <<>>,
-          size: non_neg_integer(),
           no_bits: non_neg_integer(),
           no_hashes: non_neg_integer()
         }
@@ -28,7 +26,6 @@ defmodule Goblin.BloomFilter do
 
     %__MODULE__{
       bits: bits,
-      size: no_keys,
       no_bits: no_bits,
       no_hashes: no_hashes
     }
@@ -75,6 +72,6 @@ defmodule Goblin.BloomFilter do
     for i <- 0..(no_hashes - 1), do: rem(h1 + i * h2, range)
   end
 
-  defp no_bits(size, fpp), do: ceil(-size * :math.log(fpp) / :math.pow(:math.log(2), 2))
-  defp no_hashes(size, no_bits), do: round(no_bits / size * :math.log(2))
+  defp no_bits(size, fpp), do: max(8, ceil(-size * :math.log(fpp) / :math.pow(:math.log(2), 2)))
+  defp no_hashes(size, no_bits), do: max(1, round(no_bits / max(1, size) * :math.log(2)))
 end

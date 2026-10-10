@@ -103,94 +103,29 @@ defmodule Goblin.MVCC do
   end
 
   @spec get_all_tables(t(), reference()) :: list(table())
-  def get_all_tables(ref, pin_key) do
-    ver = pinned(ref, pin_key)
-
-    ref
-    |> :ets.select([
-      {
-        {{:table, :_, :_, :_, :_}, :"$1", :"$2", :"$3"},
-        [
-          {:andalso, {:"=<", :"$1", ver}, {:orelse, {:==, :"$2", nil}, {:>, :"$2", ver}}}
-        ],
-        [:"$3"]
-      }
-    ])
-    |> List.flatten()
-  end
+  def get_all_tables(ref, pin_key), do: get_matching_tables(ref, pin_key, :_, [])
 
   @spec get_matching_tables(t(), reference(), level_key(), list(term())) ::
           list(table())
-  def get_matching_tables(ref, pin_key, lk, _keys) when lk <= 0 do
+  def get_matching_tables(ref, pin_key, lk, keys) do
     ver = pinned(ref, pin_key)
+
+    range_guards =
+      if is_integer(lk) and lk > 0,
+        do: [{:>=, :"$1", {:const, List.first(keys)}}, {:"=<", :"$2", {:const, List.last(keys)}}],
+        else: []
 
     ref
     |> :ets.select([
       {
-        {{:table, lk, :_, :_, :_}, :"$1", :"$2", :"$3"},
+        {{:table, lk, :"$1", :"$2", :_}, :"$3", :"$4", :"$5"},
         [
-          {:andalso, {:"=<", :"$1", ver}, {:orelse, {:==, :"$2", nil}, {:>, :"$2", ver}}}
+          {:andalso, {:"=<", :"$3", ver}, {:orelse, {:==, :"$4", nil}, {:>, :"$4", ver}}}
+          | range_guards
         ],
-        [:"$3"]
+        [:"$5"]
       }
     ])
-    |> List.flatten()
-  end
-
-  def get_matching_tables(ref, pin_key, lk, [min_key | _] = keys) do
-    ver = pinned(ref, pin_key)
-    start = {:table, lk, min_key, min_key, ""}
-
-    first =
-      case :ets.prev(ref, start) do
-        {:table, ^lk, max, _, _} = idx when max >= min_key -> rewind(ref, lk, min_key, idx)
-        _ -> :ets.next(ref, start)
-      end
-
-    walk(ref, ver, lk, first, keys, [])
-  end
-
-  defp rewind(ref, lk, min_key, idx) do
-    case :ets.prev(ref, idx) do
-      {:table, ^lk, max, _, _} = prev when max >= min_key -> rewind(ref, lk, min_key, prev)
-      _ -> idx
-    end
-  end
-
-  defp walk(_ref, _version, _lk, _idx, [], acc), do: acc
-
-  defp walk(ref, version, lk, {:table, lk, max, min, _} = idx, keys, acc) do
-    case visible(ref, version, idx) do
-      nil ->
-        walk(ref, version, lk, :ets.next(ref, idx), keys, acc)
-
-      tab ->
-        case Enum.drop_while(keys, &(&1 < min)) do
-          [] ->
-            acc
-
-          [k | _] = keys when k <= max ->
-            keys = Enum.drop_while(keys, &(&1 <= max))
-            walk(ref, version, lk, :ets.next(ref, idx), keys, [tab | acc])
-
-          keys ->
-            walk(ref, version, lk, :ets.next(ref, idx), keys, acc)
-        end
-    end
-  end
-
-  defp walk(_ref, _version, _lk, _idx, _keys, acc), do: acc
-
-  defp visible(ref, version, idx) do
-    born = :ets.lookup_element(ref, idx, 2, nil)
-    dies = :ets.lookup_element(ref, idx, 3, nil)
-
-    with born when is_integer(born) and born <= version <- born,
-         dies when is_nil(dies) or dies > version <- dies do
-      :ets.lookup_element(ref, idx, 4, nil)
-    else
-      _ -> nil
-    end
   end
 
   defp pinned(ref, pin_key) do

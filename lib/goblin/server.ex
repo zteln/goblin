@@ -3,7 +3,7 @@ defmodule Goblin.Server do
 
   alias Goblin.DiskTable
   alias Goblin.Export
-  alias Goblin.Levels
+  alias Goblin.Compaction
   alias Goblin.Merge
   alias Goblin.MVCC
   alias Goblin.Manifest
@@ -32,15 +32,12 @@ defmodule Goblin.Server do
     :opts,
     :writer,
     :wal,
-    :compacting,
-    :flushing,
     mem: 0,
-    sqn: 0,
-    levels: %{},
+    jobs: %{},
     flush_queue: :queue.new()
   ]
 
-  @type t :: :gen_statem.server_ref()
+  @type t :: pid() | atom()
 
   @spec start_link(keyword()) :: :gen_statem.start_ret()
   def start_link(opts) do
@@ -73,10 +70,10 @@ defmodule Goblin.Server do
   def cancel_transaction(db, tx_ref), do: command(db, {:cancel_tx, tx_ref})
 
   @spec flushing?(t(), non_neg_integer()) :: boolean()
-  def flushing?(db, timeout), do: command(db, :flushing?, timeout)
+  def flushing?(db, timeout), do: command(db, {:check_job, :flush}, timeout)
 
   @spec compacting?(t(), non_neg_integer()) :: boolean()
-  def compacting?(db, timeout), do: command(db, :compacting?, timeout)
+  def compacting?(db, timeout), do: command(db, {:check_job, :compact}, timeout)
 
   @spec export(t(), Path.t()) :: {:ok, Path.t()} | {:error, term()}
   def export(db, export_dir), do: command(db, {:export, export_dir})
@@ -95,8 +92,7 @@ defmodule Goblin.Server do
 
   @impl :gen_statem
   def terminate(_reason, _state, db) do
-    with {task, _dts} <- db.compacting, do: Task.shutdown(task)
-    with {task, _mt, _wal} <- db.flushing, do: Task.shutdown(task)
+    for {_, {_, task, _, _}} <- db.jobs, do: Task.shutdown(task)
     :persistent_term.erase({Goblin, self()})
     db.manifest && Manifest.close(db.manifest)
     db.wal && WAL.close(db.wal)
@@ -129,7 +125,8 @@ defmodule Goblin.Server do
       opts: opts
     }
 
-    with :ok <- File.mkdir_p(data_dir),
+    with :ok <- validate_fpp(opts[:bf_fpp]),
+         :ok <- File.mkdir_p(data_dir),
          {:ok, manifest} <- Manifest.open(data_dir),
          {:ok, db} <- recover(%{db | manifest: manifest}) do
       :persistent_term.put({Goblin, self()}, db.mvcc)
@@ -164,7 +161,11 @@ defmodule Goblin.Server do
     {:keep_state, db, [:postpone]}
   end
 
-  def occupied({:call, from}, {:commit_tx, tx_ref, tx}, %{writer: {tx_ref, ref, _}} = db) do
+  def occupied(
+        {:call, from},
+        {:commit_tx, tx_ref, %Tx{ref: tx_ref} = tx},
+        %{writer: {tx_ref, ref, _}} = db
+      ) do
     Process.demonitor(ref, [:flush])
 
     new_sqn = tx.sqn
@@ -174,12 +175,17 @@ defmodule Goblin.Server do
         MemTable.append(db.mem_table, tx.commits)
         MVCC.update_sequence(db.mvcc, new_sqn)
 
-        {:keep_state, %{db | sqn: new_sqn, mem: db.mem + size, writer: nil},
+        {:keep_state, %{db | mem: db.mem + size, writer: nil},
          [{:reply, from, :ok}, {:next_event, :internal, :maybe_flush}]}
 
       {:error, reason} = error ->
         {:stop_and_reply, reason, db, [{:reply, from, error}]}
     end
+  end
+
+  def occupied({:call, from}, {:commit_tx, tx_ref, _}, %{writer: {tx_ref, _, _}} = db) do
+    Process.demonitor(ref, [:flush])
+    {:next_state, :idle, %{db | writer: nil}, [{:reply, from, {:error, :invalid_tx}}]}
   end
 
   def occupied({:call, from}, {:cancel_tx, tx_ref}, %{writer: {tx_ref, ref, _}} = db) do
@@ -218,47 +224,28 @@ defmodule Goblin.Server do
     {:keep_state, db, [{:reply, from, reply}]}
   end
 
-  defp handle_event({:call, from}, :flushing?, db) do
-    {:keep_state, db, [{:reply, from, not is_nil(db.flushing)}]}
-  end
-
-  defp handle_event({:call, from}, :compacting?, db) do
-    {:keep_state, db, [{:reply, from, not is_nil(db.compacting)}]}
+  defp handle_event({:call, from}, {:check_job, kind}, db) do
+    {:keep_state, db, [{:reply, from, running?(db, kind)}]}
   end
 
   defp handle_event({:call, from}, _, db) do
     {:keep_state, db, [{:reply, from, {:error, :invalid_call}}]}
   end
 
-  defp handle_event(:info, {ref, {:ok, dts}}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
-    case finish_flush(db, dts) do
+  defp handle_event(:info, {ref, {:ok, dts}}, %{jobs: jobs} = db) when is_map_key(jobs, ref) do
+    {job, jobs} = Map.pop(jobs, ref)
+
+    case install(%{db | jobs: jobs}, job, dts) do
       {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
       {:error, reason} -> {:stop, reason, db}
     end
   end
 
-  defp handle_event(:info, {ref, {:error, reason}}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
-    {:stop, reason, db}
-  end
+  defp handle_event(:info, {ref, {:error, reason}}, %{jobs: jobs} = db)
+       when is_map_key(jobs, ref), do: {:stop, reason, db}
 
-  defp handle_event(:info, {ref, {:ok, dts}}, %{compacting: {%Task{ref: ref}, _}} = db) do
-    case finish_compaction(db, dts) do
-      {:ok, db} -> {:keep_state, db, [{:next_event, :internal, :maybe_compact}]}
-      {:error, reason} -> {:stop, reason, db}
-    end
-  end
-
-  defp handle_event(:info, {ref, {:error, reason}}, %{compacting: {%Task{ref: ref}, _}} = db) do
-    {:stop, reason, db}
-  end
-
-  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{flushing: {%Task{ref: ref}, _, _}} = db) do
-    {:stop, reason, db}
-  end
-
-  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{compacting: {%Task{ref: ref}, _}} = db) do
-    {:stop, reason, db}
-  end
+  defp handle_event(:info, {:DOWN, ref, _, _, reason}, %{jobs: jobs} = db)
+       when is_map_key(jobs, ref), do: {:stop, reason, db}
 
   defp handle_event(_, _, db), do: {:keep_state, db}
 
@@ -274,24 +261,23 @@ defmodule Goblin.Server do
     :atomics.put(db.file_counter, 1, max_count + 1)
 
     with :ok <- delete_inactive(db.data_dir, snapshot),
-         {:ok, db, mts} <- load_wals(db, wals),
-         {:ok, db, dts} <- load_disk_tables(db, dts),
+         {:ok, db, sqn1, mts} <- load_wals(db, wals),
+         {:ok, sqn2, dts} <- load_disk_tables(dts),
          {:ok, db} <- open_wal_and_mem_table(db) do
-      sqn = db.sqn + 1
       mts = [db.mem_table | mts]
       MVCC.put_version(db.mvcc, mts ++ dts, [])
-      MVCC.update_sequence(db.mvcc, sqn)
-      {:ok, dequeue_flush(%{db | sqn: sqn})}
+      MVCC.update_sequence(db.mvcc, max(sqn1, sqn2) + 1)
+      {:ok, dequeue_flush(db)}
     end
   end
 
-  defp load_wals(db, wals, mts \\ [])
-  defp load_wals(db, [], mts), do: {:ok, db, mts}
+  defp load_wals(db, wals, sqn \\ -1, mts \\ [])
+  defp load_wals(db, [], sqn, mts), do: {:ok, db, sqn, mts}
 
-  defp load_wals(db, [wal | wals], mts) do
+  defp load_wals(db, [wal | wals], sqn1, mts) do
     with {:ok, wal} <- WAL.open(wal),
-         {:ok, db, mt} <- load_wal(db, wal) do
-      load_wals(db, wals, [mt | mts])
+         {:ok, db, sqn2, mt} <- load_wal(db, wal) do
+      load_wals(db, wals, max(sqn1, sqn2), [mt | mts])
     end
   end
 
@@ -299,18 +285,17 @@ defmodule Goblin.Server do
     mt = MemTable.new()
 
     with {:ok, sqn} <- WAL.replay(wal, -1, &max(&2, MemTable.append(mt, &1))),
-         {:ok, db} <- enqueue_flush(%{db | sqn: max(db.sqn, sqn)}, mt, wal) do
-      {:ok, db, mt}
+         {:ok, db} <- enqueue_flush(db, mt, wal) do
+      {:ok, db, sqn, mt}
     end
   end
 
-  defp load_disk_tables(db, dts, acc \\ [])
-  defp load_disk_tables(db, [], acc), do: {:ok, db, acc}
+  defp load_disk_tables(dts, sqn \\ -1, acc \\ [])
+  defp load_disk_tables([], sqn, acc), do: {:ok, sqn, acc}
 
-  defp load_disk_tables(db, [dt | dts], acc) do
+  defp load_disk_tables([dt | dts], sqn1, acc) do
     with {:ok, %{sqn_range: {_min, max_sqn}} = dt} <- DiskTable.from_file(dt) do
-      db = %{db | sqn: max(db.sqn, max_sqn)}
-      load_disk_tables(db, dts, [dt | acc])
+      load_disk_tables(dts, max(sqn1, max_sqn), [dt | acc])
     end
   end
 
@@ -324,27 +309,15 @@ defmodule Goblin.Server do
     end
   end
 
-  defp finish_flush(db, new_dts) do
-    {_task, mt, wal} = db.flushing
-    new_dts_ids = Enum.map(new_dts, & &1.id)
+  defp install(db, {_kind, _task, old_tabs, wal}, new_dts) do
+    new_ids = Enum.map(new_dts, & &1.id)
+    old_ids = for %DiskTable{id: id} <- old_tabs, do: id
+    removed = if wal, do: [wal.id | old_ids], else: old_ids
 
-    with {:ok, manifest} <- Manifest.update(db.manifest, new_dts_ids, [wal.id]),
-         :ok <- WAL.delete(wal) do
-      levels = Enum.reduce(new_dts, db.levels, &Levels.put(&2, &1))
-      MVCC.put_version(db.mvcc, new_dts, [mt])
-      {:ok, %{db | manifest: manifest, levels: levels, flushing: nil} |> dequeue_flush()}
-    end
-  end
-
-  defp finish_compaction(db, new_dts) do
-    {_task, old_dts} = db.compacting
-    new_dts_ids = Enum.map(new_dts, & &1.id)
-    old_dts_ids = Enum.map(old_dts, & &1.id)
-
-    with {:ok, manifest} <- Manifest.update(db.manifest, new_dts_ids, old_dts_ids) do
-      levels = Enum.reduce(new_dts, db.levels, &Levels.put(&2, &1))
-      MVCC.put_version(db.mvcc, new_dts, old_dts)
-      {:ok, %{db | manifest: manifest, levels: levels, compacting: nil}}
+    with {:ok, manifest} <- Manifest.update(db.manifest, new_ids, removed),
+         :ok <- if(wal, do: WAL.delete(wal), else: :ok) do
+      MVCC.put_version(db.mvcc, new_dts, old_tabs)
+      {:ok, dequeue_flush(%{db | manifest: manifest})}
     end
   end
 
@@ -354,23 +327,34 @@ defmodule Goblin.Server do
       else: {:ok, db}
   end
 
-  defp maybe_compact(%{compacting: nil} = db) do
-    ref = make_ref()
-    MVCC.pin(db.mvcc, ref)
-    tables = MVCC.get_all_tables(db.mvcc, ref)
-    MVCC.unpin(db.mvcc, ref)
+  defp maybe_compact(db) do
+    if running?(db, :compact), do: db, else: compact_next(db)
+  end
 
-    case Levels.next(tables, db.opts) do
+  defp compact_next(db) do
+    pin_key = make_ref()
+    MVCC.pin(db.mvcc, pin_key)
+    tables = MVCC.get_all_tables(db.mvcc, pin_key)
+    MVCC.unpin(db.mvcc, pin_key)
+
+    case Compaction.next(tables, db.opts) do
       nil ->
         db
 
-      {:merge, lk, dts, filter_tombstones?, levels} ->
-        %{db | levels: levels}
-        |> compact(lk, dts, filter_tombstones?)
+      {:merge, lk, dts, filter_tombstones?} ->
+        start_job(
+          db,
+          :compact,
+          fn ->
+            Merge.stream(fn -> Enum.map(dts, &DiskTable.stream/1) end,
+              filter_tombstones?: filter_tombstones?
+            )
+          end,
+          build_opts(db, lk),
+          dts
+        )
     end
   end
-
-  defp maybe_compact(db), do: db
 
   defp rotate(db) do
     with {:ok, db} <- enqueue_flush(db, db.mem_table, db.wal),
@@ -386,36 +370,32 @@ defmodule Goblin.Server do
     end
   end
 
-  defp dequeue_flush(%{flushing: nil} = db) do
+  defp dequeue_flush(db) do
+    if running?(db, :flush), do: db, else: flush_next(db)
+  end
+
+  defp flush_next(db) do
     case :queue.out(db.flush_queue) do
       {:empty, _} -> db
       {{:value, {mt, wal}}, flush_queue} -> flush(%{db | flush_queue: flush_queue}, mt, wal)
     end
   end
 
-  defp dequeue_flush(db), do: db
-
   defp flush(db, mt, wal) do
-    task = merge_task(fn -> MemTable.stream(mt) end, build_opts(db, 0, :infinity))
-    %{db | flushing: {task, mt, wal}}
+    start_job(
+      db,
+      :flush,
+      fn -> MemTable.stream(mt) end,
+      build_opts(db, 0, :infinity),
+      [mt],
+      wal
+    )
   end
 
-  defp compact(db, lk, dts, filter_tombstones?) do
-    task =
-      merge_task(
-        fn ->
-          Merge.stream(fn -> Enum.map(dts, &DiskTable.stream/1) end,
-            filter_tombstones?: filter_tombstones?
-          )
-        end,
-        build_opts(db, lk)
-      )
-
-    %{db | compacting: {task, dts}}
+  defp start_job(db, kind, stream_fun, opts, old_tabs, wal \\ nil) do
+    task = Task.async(fn -> build_tables(stream_fun.(), opts) end)
+    %{db | jobs: Map.put(db.jobs, task.ref, {kind, task, old_tabs, wal})}
   end
-
-  defp merge_task(stream_fun, opts),
-    do: Task.async(fn -> build_tables(stream_fun.(), opts) end)
 
   defp build_tables(stream, opts) do
     DiskTable.build(stream, opts)
@@ -433,6 +413,10 @@ defmodule Goblin.Server do
       fpp: db.opts[:bf_fpp],
       filer: fn -> gen_file(data_dir, file_counter) end
     ]
+  end
+
+  defp running?(db, kind) do
+    Enum.any?(db.jobs, fn {_ref, {k, _, _, _}} -> k == kind end)
   end
 
   defp delete_obsolete([]), do: :ok
@@ -478,6 +462,9 @@ defmodule Goblin.Server do
 
     String.to_integer(count_s, 16)
   end
+
+  defp validate_fpp(fpp) when is_number(fpp) and 0 < fpp and fpp < 1, do: :ok
+  defp validate_fpp(_), do: {:error, :invalid_fpp}
 
   defp split_opts(opts) do
     {gen_statem_opts, db_opts} =

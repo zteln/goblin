@@ -21,6 +21,7 @@ defmodule Goblin.Tx do
   alias Goblin.MemTable
   alias Goblin.DiskTable
   alias Goblin.Merge
+  import Goblin.Sentinel
 
   defstruct [
     :sqn,
@@ -92,7 +93,7 @@ defmodule Goblin.Tx do
     do: raise(ArgumentError, "Operation not allowed during read")
 
   def put_multi(tx, pairs, opts) do
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    tag = Keyword.get(opts, :tag, unset())
 
     Enum.reduce(pairs, tx, fn {key, value}, acc ->
       key = tag_key(key, tag)
@@ -152,7 +153,7 @@ defmodule Goblin.Tx do
     do: raise(ArgumentError, "Operation not allowed during read")
 
   def remove_multi(tx, keys, opts),
-    do: put_multi(tx, Enum.map(keys, &{&1, :"$goblin_tombstone"}), opts)
+    do: put_multi(tx, Enum.map(keys, &{&1, tombstone()}), opts)
 
   @doc """
   Retrieves a value within a transaction.
@@ -207,7 +208,7 @@ defmodule Goblin.Tx do
   """
   @spec get_multi(t(), list(term()), keyword()) :: list({term(), term()})
   def get_multi(tx, keys, opts \\ []) do
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    tag = Keyword.get(opts, :tag, unset())
     keys = keys |> Enum.map(&tag_key(&1, tag)) |> :lists.usort()
 
     {found, _missing} =
@@ -220,15 +221,11 @@ defmodule Goblin.Tx do
           {:cont, {hits ++ found, :ordsets.subtract(keys, Enum.map(hits, &elem(&1, 0)))}}
       end)
 
-    for {key, _sqn, val} <- found, val != :"$goblin_tombstone", do: untag_pair({key, val})
+    for {key, _sqn, val} <- found, not is_tombstone(val), do: untag_pair({key, val})
   end
 
   @doc """
   Checks whether a key exists or not within a transaction.
-
-  > #### False positives {: .note}
-  >
-  > If the key has been flushed to disk, then membership is checked via the disk table's Bloom filters, i.e. it can yield a false positive in some cases.
 
   ## Parameters
     
@@ -283,9 +280,9 @@ defmodule Goblin.Tx do
   """
   @spec scan(t(), keyword()) :: Enumerable.t({term(), term()})
   def scan(tx, opts \\ []) do
-    min = Keyword.get(opts, :min, :"$goblin_nil")
-    max = Keyword.get(opts, :max, :"$goblin_nil")
-    tag = Keyword.get(opts, :tag, :"$goblin_nil")
+    min = Keyword.get(opts, :min, unset())
+    max = Keyword.get(opts, :max, unset())
+    tag = Keyword.get(opts, :tag, unset())
     {min, max} = tag_bounds(min, max, tag)
 
     Merge.stream(
@@ -383,32 +380,32 @@ defmodule Goblin.Tx do
     end
   end
 
-  defp table_stream(%MemTable{} = mt, :"$goblin_nil", _max, sqn), do: MemTable.stream(mt, sqn)
+  defp table_stream(%MemTable{} = mt, unset(), _max, sqn), do: MemTable.stream(mt, sqn)
   defp table_stream(%MemTable{} = mt, min, _max, sqn), do: MemTable.stream(mt, min, sqn)
 
   defp table_stream(%DiskTable{} = dt, min, max, sqn) do
     {dt_min, dt_max} = dt.key_range
-    min = if min == :"$goblin_nil", do: dt_min, else: min
-    max = if max == :"$goblin_nil", do: dt_max, else: max
+    min = if not is_set(min), do: dt_min, else: min
+    max = if not is_set(max), do: dt_max, else: max
     DiskTable.stream(dt, min, max, sqn)
   end
 
-  defp tag_key(key, :"$goblin_nil"), do: key
-  defp tag_key(key, tag), do: {:"$goblin_tag", tag, {key}}
+  defp tag_key(key, unset()), do: key
+  defp tag_key(key, tag), do: {tagged(), tag, {key}}
 
-  defp untag_pair({{:"$goblin_tag", _tag, {key}}, val}), do: {key, val}
+  defp untag_pair({{tagged(), _tag, {key}}, val}), do: {key, val}
   defp untag_pair(pair), do: pair
 
-  defp tag_bounds(min, max, :"$goblin_nil"), do: {min, max}
+  defp tag_bounds(min, max, unset()), do: {min, max}
 
   defp tag_bounds(min, max, tag) do
-    lo = if min == :"$goblin_nil", do: {}, else: {min}
-    hi = if max == :"$goblin_nil", do: {nil, nil}, else: {max}
-    {{:"$goblin_tag", tag, lo}, {:"$goblin_tag", tag, hi}}
+    lo = if not is_set(min), do: {}, else: {min}
+    hi = if not is_set(max), do: {nil, nil}, else: {max}
+    {{tagged(), tag, lo}, {tagged(), tag, hi}}
   end
 
-  defp filter_triple_by_tag({{:"$goblin_tag", _tag, _key}, _sqn, _val}, :"$goblin_nil"), do: nil
-  defp filter_triple_by_tag({{:"$goblin_tag", tag, {key}}, _sqn, val}, tag), do: {key, val}
-  defp filter_triple_by_tag({key, _sqn, val}, :"$goblin_nil"), do: {key, val}
+  defp filter_triple_by_tag({{tagged(), _tag, _key}, _sqn, _val}, unset()), do: nil
+  defp filter_triple_by_tag({{tagged(), tag, {key}}, _sqn, val}, tag), do: {key, val}
+  defp filter_triple_by_tag({key, _sqn, val}, unset()), do: {key, val}
   defp filter_triple_by_tag(_triple, _tag), do: nil
 end

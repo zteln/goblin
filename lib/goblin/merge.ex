@@ -1,15 +1,16 @@
 defmodule Goblin.Merge do
   @moduledoc false
+  import Goblin.Sentinel
 
   @spec stream((-> list(Enumerable.t())), keyword()) :: Enumerable.t()
   def stream(init, opts \\ []) do
-    min = Keyword.get(opts, :min, :"$goblin_nil")
-    max = Keyword.get(opts, :max, :"$goblin_nil")
-    filter_tombstones? = Keyword.get(opts, :filter_tombstones?, true)
+    min = Keyword.get(opts, :min, unset())
+    max = Keyword.get(opts, :max, unset())
+    filter? = Keyword.get(opts, :filter_tombstones?, true)
 
     Stream.resource(
-      fn -> init.() |> build_heap() end,
-      fn heap -> step(heap, min, max, filter_tombstones?) end,
+      fn -> {build_heap(init.()), unset()} end,
+      fn acc -> step(acc, min, max, filter?) end,
       &close_all/1
     )
   end
@@ -24,90 +25,35 @@ defmodule Goblin.Merge do
     end)
   end
 
-  defp step(heap, min, max, filter_tombstones?) do
-    case take_smallest(heap) do
-      :empty ->
-        {:halt, heap}
-
-      {{key, _, _}, heap} when max != :"$goblin_nil" and key > max ->
-        {:halt, heap}
-
-      {{key, _, _}, heap} when min != :"$goblin_nil" and key < min ->
-        {[], heap}
-
-      {{_, _, :"$goblin_tombstone"}, heap} when filter_tombstones? ->
-        {[], heap}
-
-      {triple, heap} ->
-        {[triple], heap}
-    end
-  end
-
-  defp close_all(heap) do
-    :gb_trees.values(heap)
-    |> Enum.each(fn {cont, _} -> cont.({:halt, nil}) end)
-  end
-
-  defp insert_next(heap, cont) do
-    case advance(cont) do
-      {:ok, {k, s, _v} = triple, next_cont} ->
-        :gb_trees.insert({k, -s, make_ref()}, {next_cont, triple}, heap)
-
-      :done ->
-        heap
-    end
-  end
-
-  defp advance(cont) do
-    case cont.({:cont, nil}) do
-      {:suspended, triple, next_cont} -> {:ok, triple, next_cont}
-      _ -> :done
-    end
-  end
-
-  defp take_smallest(heap) do
+  defp step({heap, last}, min, max, filter?) do
     if :gb_trees.is_empty(heap) do
-      :empty
+      {:halt, {heap, last}}
     else
-      {{key, _, _}, {cont, triple}, heap} = :gb_trees.take_smallest(heap)
+      {{k, _}, {cont, {_, _, v} = triple}, heap} = :gb_trees.take_smallest(heap)
+      heap = insert_next(heap, cont)
 
-      heap =
-        heap
-        |> drain_key(key)
-        |> advance_past_key(cont, key)
-
-      {triple, heap}
-    end
-  end
-
-  defp drain_key(heap, key) do
-    if :gb_trees.is_empty(heap) do
-      heap
-    else
-      {{k, _, _}, _} = :gb_trees.smallest(heap)
-
-      if k == key do
-        {_, {cont, _}, heap} = :gb_trees.take_smallest(heap)
-
-        heap
-        |> advance_past_key(cont, key)
-        |> drain_key(key)
-      else
-        heap
+      cond do
+        is_set(max) and k > max -> {:halt, {heap, last}}
+        k == last -> {[], {heap, last}}
+        is_set(min) and k < min -> {[], {heap, k}}
+        filter? and is_tombstone(v) -> {[], {heap, k}}
+        true -> {[triple], {heap, k}}
       end
     end
   end
 
-  defp advance_past_key(heap, cont, key) do
-    case advance(cont) do
-      :done ->
+  defp insert_next(heap, cont) do
+    case cont.({:cont, nil}) do
+      {:suspended, {k, s, _v} = triple, next_cont} ->
+        :gb_trees.insert({k, -s}, {next_cont, triple}, heap)
+
+      _ ->
         heap
-
-      {:ok, {k, _, _}, next_cont} when k == key ->
-        advance_past_key(heap, next_cont, key)
-
-      {:ok, {k, s, _} = triple, next_cont} ->
-        :gb_trees.insert({k, -s, make_ref()}, {next_cont, triple}, heap)
     end
+  end
+
+  defp close_all({heap, _last}) do
+    :gb_trees.values(heap)
+    |> Enum.each(fn {cont, _} -> cont.({:halt, nil}) end)
   end
 end

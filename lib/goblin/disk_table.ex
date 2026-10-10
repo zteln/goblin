@@ -6,7 +6,8 @@ defmodule Goblin.DiskTable do
   alias Goblin.IOError
   alias Goblin.DiskTable.{MemIndex, DiskIndex}
 
-  @index_interval 4096
+  @block_interval 4096
+  @version 0
 
   defstruct [
     :id,
@@ -34,36 +35,22 @@ defmodule Goblin.DiskTable do
   @spec build(Enumerable.t({term(), non_neg_integer(), term()}), keyword()) ::
           {:ok, list(t())} | {:error, term()}
   def build(stream, opts) do
-    lk = opts[:level_key]
-
-    acc = %{
-      file: nil,
-      boundary: 0,
-      keys: {0, []},
-      disk_table: nil,
-      tables: [],
-      index: DiskIndex.new(),
-      compress?: opts[:compress?],
-      filer: opts[:filer],
-      max_size: opts[:max_size],
-      fpp: opts[:fpp]
-    }
+    acc = %{table: nil, tables: []}
 
     Enum.reduce_while(stream, {:ok, acc}, fn triple, {:ok, acc} ->
       {key, _, _} = triple
 
-      with {:ok, acc} <- maybe_init(acc, lk),
-           {:ok, acc} <- maybe_append_index(acc, key),
-           {:ok, acc} <- append_data(acc, triple),
-           {:ok, acc} <- maybe_finalize(acc) do
+      with {:ok, acc} <- maybe_finalize(acc, key, opts),
+           {:ok, acc} <- maybe_open(acc, opts),
+           {:ok, acc} <- maybe_append_block(acc, key, opts),
+           {:ok, acc} <- append_data(acc, triple, opts) do
         {:cont, {:ok, acc}}
       else
         error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, %{file: nil} = acc} -> {:ok, acc.tables}
-      {:ok, acc} -> with {:ok, acc} <- finalize(acc), do: {:ok, acc.tables}
+      {:ok, acc} -> with {:ok, acc} <- finalize(acc, opts), do: {:ok, acc.tables}
       error -> error
     end
   end
@@ -73,7 +60,7 @@ defmodule Goblin.DiskTable do
     with {:ok, io} <- Persistence.open(path) do
       try do
         case Persistence.read_footer(io) do
-          {:ok, %__MODULE__{} = dt} -> {:ok, %{dt | id: path}}
+          {:ok, {:footer, {@version, dt}}} -> {:ok, struct(__MODULE__, %{dt | id: path})}
           {:ok, _} -> {:error, :invalid_disk_table}
           error -> error
         end
@@ -98,7 +85,6 @@ defmodule Goblin.DiskTable do
         case lookup(io, dt.index, key, sqn) do
           {:ok, triple} -> {[triple], io}
           {:error, :not_found} -> {[], io}
-          {:error, :eof} -> {:halt, io}
           {:error, reason} -> raise IOError, operation: :search, path: dt.id, reason: reason
         end
       end,
@@ -134,9 +120,9 @@ defmodule Goblin.DiskTable do
       end,
       fn io ->
         case Persistence.seq_read(io) do
+          {:ok, {:footer, _}} -> {:halt, io}
           {:ok, {k, _, _}} when k > max -> {:halt, io}
           {:ok, {_, s, _} = triple} when s < sqn -> {[triple], io}
-          {:ok, %__MODULE__{}} -> {:halt, io}
           {:ok, _} -> {[], io}
           {:error, :eof} -> {:halt, io}
           {:error, reason} -> raise IOError, operation: :stream, path: dt.id, reason: reason
@@ -155,91 +141,110 @@ defmodule Goblin.DiskTable do
         end
 
       Persistence.set_position(io, min_offset)
+    else
+      {:ok, _} -> {:error, :invalid_index}
+      error -> error
     end
   end
 
-  defp maybe_init(%{file: nil, disk_table: nil} = acc, lk) do
-    with {:ok, file} <- Persistence.open(acc.filer.(), write?: true, new?: true) do
-      dt = %__MODULE__{id: file.path, level_key: lk, index: MemIndex.new()}
-
-      {:ok,
-       %{
-         acc
-         | file: file,
-           disk_table: dt,
-           boundary: 0,
-           index: DiskIndex.new(),
-           keys: {0, []}
-       }}
+  defp maybe_open(%{table: nil} = acc, opts) do
+    with {:ok, file} <- Persistence.open(opts[:filer].(), write?: true, new?: true) do
+      dt = %__MODULE__{id: file.path, level_key: opts[:level_key], index: MemIndex.new()}
+      tab = %{file: file, disk_table: dt, boundary: 0, block: DiskIndex.new(), keys: {0, []}}
+      {:ok, %{acc | table: tab}}
     end
   end
 
-  defp maybe_init(acc, _lk), do: {:ok, acc}
+  defp maybe_open(acc, _opts), do: {:ok, acc}
 
-  defp maybe_append_index(
-         %{disk_table: %{size: size}, boundary: boundary, index: [{last, _, _} | _]} = acc,
-         key
+  defp maybe_append_block(
+         %{
+           table: %{
+             disk_table: %{size: size},
+             boundary: boundary,
+             block: [{last, _, _} | _]
+           }
+         } = acc,
+         key,
+         opts
        )
-       when size - boundary >= @index_interval and last != key do
-    append_index(acc)
+       when size - boundary >= @block_interval and last != key do
+    append_block(acc, opts)
   end
 
-  defp maybe_append_index(acc, _key), do: {:ok, acc}
+  defp maybe_append_block(acc, _key, _opts), do: {:ok, acc}
 
-  defp maybe_finalize(%{disk_table: %{size: size}, max_size: max_size} = acc)
-       when size >= max_size, do: finalize(acc)
+  defp maybe_finalize(%{table: nil} = acc, _key, _opts), do: {:ok, acc}
 
-  defp maybe_finalize(acc), do: {:ok, acc}
+  defp maybe_finalize(acc, key, opts) do
+    %{disk_table: %{size: size}, keys: {_, [last | _]}} = acc.table
+    if size >= opts[:max_size] and last != key, do: finalize(acc, opts), else: {:ok, acc}
+  end
 
-  defp finalize(acc) do
-    acc = finalize_bloom_filter(acc)
+  defp finalize(%{table: nil} = acc, _opts), do: {:ok, acc}
 
-    with {:ok, %{disk_table: dt} = acc} <- append_and_finalize_index(acc),
-         {:ok, acc} <- append_footer(acc) do
+  defp finalize(acc, opts) do
+    acc = finalize_bloom_filter(acc, opts)
+
+    with {:ok, %{table: %{disk_table: dt}} = acc} <- append_and_finalize_index(acc, opts),
+         {:ok, acc} <- append_footer(acc, opts) do
       {:ok, %{acc | tables: [dt | acc.tables]}}
     end
   end
 
-  defp append_footer(acc) do
+  defp append_footer(acc, opts) do
+    %{disk_table: dt, file: file} = acc.table
+    footer = Map.from_struct(dt)
+
     with {:ok, _} <-
-           Persistence.append(acc.file, acc.disk_table, compress?: acc.compress?, footer?: true),
-         :ok <- Persistence.sync(acc.file),
-         :ok <- Persistence.close(acc.file) do
-      {:ok, %{acc | file: nil, disk_table: nil}}
+           Persistence.append(
+             file,
+             {:footer, {@version, footer}},
+             compress?: opts[:compress?],
+             footer?: true
+           ),
+         :ok <- Persistence.sync(file),
+         :ok <- Persistence.close(file) do
+      {:ok, %{acc | table: nil}}
     end
   end
 
-  defp append_and_finalize_index(acc) do
-    with {:ok, acc} <- append_index(acc) do
-      dt = %{acc.disk_table | index: MemIndex.finalize(acc.disk_table.index)}
-      {:ok, %{acc | disk_table: dt}}
+  defp append_and_finalize_index(acc, opts) do
+    with {:ok, acc} <- append_block(acc, opts) do
+      %{disk_table: dt} = acc.table
+      dt = %{dt | index: MemIndex.finalize(dt.index)}
+      tab = %{acc.table | disk_table: dt}
+      {:ok, %{acc | table: tab}}
     end
   end
 
-  defp append_index(acc) do
-    dt = acc.disk_table
-    {start, disk_index} = DiskIndex.finalize(acc.index)
+  defp append_block(acc, opts) do
+    %{disk_table: dt, block: block, file: file} = acc.table
+    {start, block} = DiskIndex.finalize(block)
 
     with {:ok, inc_size} <-
-           Persistence.append(acc.file, {:index, disk_index}, compress?: acc.compress?) do
+           Persistence.append(file, {:index, block}, compress?: opts[:compress?]) do
       dt = %{dt | size: dt.size + inc_size, index: MemIndex.append(dt.index, start, dt.size)}
-      {:ok, %{acc | disk_table: dt, index: DiskIndex.new(), boundary: dt.size}}
+      tab = %{acc.table | disk_table: dt, block: DiskIndex.new(), boundary: dt.size}
+      {:ok, %{acc | table: tab}}
     end
   end
 
-  defp append_data(acc, triple) do
+  defp append_data(acc, triple, opts) do
     {key, sqn, _} = triple
+    %{disk_table: dt, file: file, block: block, keys: keys} = acc.table
 
     keys =
-      case acc.keys do
+      case keys do
         {no_keys, [^key | _] = keys} -> {no_keys, keys}
         {no_keys, keys} -> {no_keys + 1, [key | keys]}
       end
 
-    with {:ok, size} <- Persistence.append(acc.file, triple, compress?: acc.compress?) do
-      disk_index = DiskIndex.append(acc.index, key, sqn, acc.disk_table.size)
-      dt = update_table(acc.disk_table, triple, size)
-      {:ok, %{acc | disk_table: dt, index: disk_index, keys: keys}}
+    with {:ok, size} <- Persistence.append(file, triple, compress?: opts[:compress?]) do
+      block = DiskIndex.append(block, key, sqn, dt.size)
+      dt = update_table(dt, triple, size)
+      tab = %{acc.table | disk_table: dt, block: block, keys: keys}
+      {:ok, %{acc | table: tab}}
     end
   end
 
@@ -266,11 +271,12 @@ defmodule Goblin.DiskTable do
     }
   end
 
-  defp finalize_bloom_filter(acc) do
-    {no_keys, keys} = acc.keys
-    bf = BloomFilter.new(no_keys, keys, acc.fpp)
-    dt = %{acc.disk_table | bloom_filter: bf}
-    %{acc | disk_table: dt}
+  defp finalize_bloom_filter(acc, opts) do
+    %{disk_table: dt, keys: {no_keys, keys}} = acc.table
+    bf = BloomFilter.new(no_keys, keys, opts[:fpp])
+    dt = %{dt | bloom_filter: bf}
+    tab = %{acc.table | disk_table: dt}
+    %{acc | table: tab}
   end
 
   defp lookup(io, index, key, sqn) do
@@ -279,6 +285,9 @@ defmodule Goblin.DiskTable do
     with {:ok, {:index, disk_index}} <- Persistence.offset_read(io, disk_index_pos),
          {:ok, key_offset} <- key_offset_lookup(disk_index, key, sqn) do
       key_lookup(io, key, key_offset)
+    else
+      {:ok, _} -> {:error, :invalid_index}
+      error -> error
     end
   end
 

@@ -3,6 +3,7 @@ defmodule Goblin.Persistence do
 
   alias Goblin.IOError
 
+  @max_payload_size 0xFFFFFFFF
   @page_size 4096
   @header_size byte_size(<<0::integer-32, 0::integer-32>>)
   @corrupt_reasons [:invalid_size, :invalid_header, :invalid_crc, :invalid_term]
@@ -52,11 +53,8 @@ defmodule Goblin.Persistence do
 
   @spec append(t(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def append(file, term, opts \\ []) do
-    compress? = opts[:compress?] || false
-    footer? = opts[:footer?] || false
-    iolist = encode_to_iolist(term, compress?, footer?)
-
-    with :ok <- :file.write(file.iodev, iolist) do
+    with {:ok, iolist} <- encode_to_iolist(term, opts),
+         :ok <- :file.write(file.iodev, iolist) do
       {:ok, :erlang.iolist_size(iolist)}
     end
   end
@@ -132,7 +130,7 @@ defmodule Goblin.Persistence do
     end
   end
 
-  @spec set_position(t(), non_neg_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
+  @spec set_position(t(), non_neg_integer()) :: :ok | {:error, term()}
   def set_position(file, pos) do
     with {:ok, _} <- :file.position(file.iodev, pos) do
       :ok
@@ -165,9 +163,9 @@ defmodule Goblin.Persistence do
     with :eof <- read.(size), do: {:error, :invalid_size}
   end
 
-  defp encode_to_iolist(terms, compress?, footer?) do
-    opts = if compress?, do: [:compressed], else: []
-    payload = :erlang.term_to_iovec(terms, opts)
+  defp encode_to_iolist(terms, opts) do
+    enc_opts = if opts[:compress?], do: [:compressed], else: []
+    payload = :erlang.term_to_iovec(terms, enc_opts)
     payload_size = :erlang.iolist_size(payload)
 
     header = [
@@ -175,10 +173,9 @@ defmodule Goblin.Persistence do
       <<:erlang.crc32(payload)::integer-32>>
     ]
 
-    case footer? do
-      true -> [header, payload, header]
-      _ -> [header, payload]
-    end
+    if payload_size <= @max_payload_size,
+      do: {:ok, [header, payload | if(opts[:footer?], do: [header], else: [])]},
+      else: {:error, :too_big}
   end
 
   defp decode_payload(payload) do

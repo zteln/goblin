@@ -36,7 +36,7 @@ defmodule Goblin.MemTable do
   end
 
   @spec stream(t()) :: Enumerable.t({term(), non_neg_integer(), term()})
-  @spec stream(t(), non_neg_integer() | :infinity) ::
+  @spec stream(t(), non_neg_integer()) ::
           Enumerable.t({term(), non_neg_integer(), term()})
   @spec stream(t(), term(), non_neg_integer() | :infinity) ::
           Enumerable.t({term(), non_neg_integer(), term()})

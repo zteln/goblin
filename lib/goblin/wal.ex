@@ -9,7 +9,7 @@ defmodule Goblin.WAL do
           io: Persistence.t()
         }
 
-  @spec open(Path.t()) :: {:ok, t()} | {:error, term()}
+  @spec open(Path.t(), boolean()) :: {:ok, t()} | {:error, term()}
   def open(path, new? \\ false) do
     with {:ok, io} <- Persistence.open(path, write?: true, new?: new?) do
       {:ok, %__MODULE__{id: path, io: io}}

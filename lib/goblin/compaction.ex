@@ -1,17 +1,14 @@
-defmodule Goblin.Levels do
+defmodule Goblin.Compaction do
   @moduledoc false
-  # TODO: get tables from MVCC
 
-  @type t :: map()
+  @spec next(list(Goblin.DiskTable.t()), keyword()) ::
+          nil | {:merge, non_neg_integer(), list(Goblin.DiskTable.t()), boolean()}
+  def next(tables, opts) do
+    levels =
+      tables
+      |> Enum.filter(&(&1.level_key >= 0))
+      |> Enum.group_by(& &1.level_key)
 
-  @spec put(t(), Goblin.DiskTable.t()) :: t()
-  def put(levels, dt) do
-    Map.update(levels, dt.level_key, [dt], &[dt | &1])
-  end
-
-  @spec next(t(), keyword()) ::
-          nil | {:merge, non_neg_integer(), list(Goblin.DiskTable.t()), boolean(), t()}
-  def next(levels, opts) do
     case find_overflowing_level(levels, opts) do
       nil ->
         nil
@@ -20,25 +17,8 @@ defmodule Goblin.Levels do
         target_lk = source_lk + 1
         targets = get_targets(levels, target_lk, sources)
         filter_tombstones? = target_lk >= Enum.max(Map.keys(levels), fn -> 0 end)
-
-        levels =
-          levels
-          |> remove_from_level(source_lk, sources)
-          |> remove_from_level(target_lk, targets)
-
-        {:merge, target_lk, sources ++ targets, filter_tombstones?, levels}
+        {:merge, target_lk, sources ++ targets, filter_tombstones?}
     end
-  end
-
-  defp remove_from_level(levels, lk, dts) do
-    level =
-      levels
-      |> Map.get(lk, [])
-      |> Enum.reject(&(&1 in dts))
-
-    if level == [],
-      do: Map.delete(levels, lk),
-      else: Map.put(levels, lk, level)
   end
 
   defp get_targets(levels, lk, sources) do
