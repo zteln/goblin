@@ -82,15 +82,28 @@ Goblin.remove_multi(db, [:bob, :charlie])
 ```
 
 ### Range queries
+Database scans must be enumerated in a read-transaction.
 
 ```elixir
-Goblin.scan(db) |> Enum.to_list()
+Goblin.read(db, fn tx ->
+  tx
+  |> Goblin.Tx.scan()
+  |> Enum.to_list()
+end)
 # => [{:alice, "Alice"}, {:bob, "Bob"}, {:charlie, "Charlie"}]
 
-Goblin.scan(db, min: :bob) |> Enum.to_list()
+Goblin.read(db, fn tx ->
+  tx
+  |> Goblin.Tx.scan(min: :bob)
+  |> Enum.to_list()
+end)
 # => [{:bob, "Bob"}, {:charlie, "Charlie"}]
 
-Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
+Goblin.read(db, fn tx ->
+  tx
+  |> Goblin.Tx.scan(min: :alice, max: :bob)
+  |> Enum.to_list()
+end)
 # => [{:alice, "Alice"}, {:bob, "Bob"}]
 ```
 
@@ -98,7 +111,7 @@ Goblin.scan(db, min: :alice, max: :bob) |> Enum.to_list()
 >
 > Since a key can be any Elixir term, `nil` is a valid key: `min: nil`,
 > `max: nil`, and `tag: nil` refer to the literal value `nil`, not "unset".
-> Take care with dynamically built options — `Goblin.scan(db, min: params[:from])`
+> Take care with dynamically built options — `Goblin.Tx.scan(tx, min: params[:from])`
 > scans from the key `nil` when `params[:from]` is absent, rather than from the
 > beginning. Omit an option entirely to leave it unbounded/untagged.
 
@@ -161,9 +174,6 @@ Goblin.get(db, :alice)
 Goblin.get(db, :alice, tag: :admins)
 # => "Alice"
 
-Goblin.scan(db, tag: :admins) |> Enum.to_list()
-# => [{:alice, "Alice"}]
-
 # Removing without a tag does not affect tagged data
 Goblin.remove(db, :alice)
 Goblin.get(db, :alice, tag: :admins)
@@ -212,9 +222,8 @@ Goblin.get(MyApp.DB, :alice)
 Goblin uses multi-version concurrency control (MVCC).
 
 A new snapshot of the database is published after every commit, flush, and compaction.
-Reads (`Goblin.get/3`, `Goblin.read/2`, `Goblin.scan/2`, and reads within transactions) attach to the latest snapshot when they start and use it for their entire duration.
+Reads (`Goblin.get/3`, `Goblin.get_multi/3`, `Goblin.read/2`, and reads within transactions) attach to the latest snapshot when they start and use it for their entire duration.
 Readers do not block each other or writers.
-`Goblin.scan/2` takes its snapshot at enumeration, not at creation.
 
 Write transactions are executed serially.
 On commit, writes are appended to the write-ahead log and the in-memory table, and a new snapshot is published.
