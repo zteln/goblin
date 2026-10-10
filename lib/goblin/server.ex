@@ -183,7 +183,7 @@ defmodule Goblin.Server do
     end
   end
 
-  def occupied({:call, from}, {:commit_tx, tx_ref, _}, %{writer: {tx_ref, _, _}} = db) do
+  def occupied({:call, from}, {:commit_tx, tx_ref, _}, %{writer: {tx_ref, ref, _}} = db) do
     Process.demonitor(ref, [:flush])
     {:next_state, :idle, %{db | writer: nil}, [{:reply, from, {:error, :invalid_tx}}]}
   end
